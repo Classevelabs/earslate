@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- Radii (ClassEve blueprint: 12/14/28/38) -->
+    <dimen name="radius_sm">12dp</dimen>
+    <dimen name="radius_md">14dp</dimen>
+    <dimen name="radius_lg">28dp</dimen>
+    <dimen name="radius_xl">38dp</dimen>
+    <dimen name="radius_pill">999dp</dimen>
+
+    <!-- Spacing scale (4dp baseline grid) -->
+    <dimen name="spacing_1">4dp</dimen>
+    <dimen name="spacing_2">8dp</dimen>
+    <dimen name="spacing_3">12dp</dimen>
+    <dimen name="spacing_4">16dp</dimen>
+    <dimen name="spacing_5">20dp</dimen>
+    <dimen name="spacing_6">24dp</dimen>
+    <dimen name="spacing_8">32dp</dimen>
+    <dimen name="spacing_10">40dp</dimen>
+    <dimen name="spacing_12">48dp</dimen>
+    <dimen name="spacing_16">64dp</dimen>
+    <dimen name="spacing_20">80dp</dimen>
+    <dimen name="spacing_24">96dp</dimen>
+
+    <!-- Touch targets -->
+    <dimen name="touch_target_min">44dp</dimen>
+    <dimen name="touch_target_default">48dp</dimen>
+
+</resources>

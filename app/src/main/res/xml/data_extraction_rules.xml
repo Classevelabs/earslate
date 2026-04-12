@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <!-- v1: no user data backed up -->
+    </cloud-backup>
+    <device-transfer>
+        <!-- v1: no data transferred -->
+    </device-transfer>
+</data-extraction-rules>
