@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- Canvas & elevation layers -->
+    <color name="earslate_bg_canvas">#FF000000</color>
+    <color name="earslate_bg_elev1">#FF040404</color>
+    <color name="earslate_bg_elev2">#FF080808</color>
+    <color name="earslate_bg_elev3">#FF0C0C0C</color>
+
+    <!-- Surface overlays (white alpha) -->
+    <color name="earslate_surface_ghost">#05FFFFFF</color>
+    <color name="earslate_surface_soft">#0AFFFFFF</color>
+    <color name="earslate_surface_strong">#12FFFFFF</color>
+
+    <!-- Border tiers -->
+    <color name="earslate_border_subtle">#14FFFFFF</color>
+    <color name="earslate_border_default">#1FFFFFFF</color>
+    <color name="earslate_border_strong">#2EFFFFFF</color>
+
+    <!-- Text hierarchy -->
+    <color name="earslate_text_primary">#FFE2DCD2</color>
+    <color name="earslate_text_secondary">#FFB2AA9D</color>
+    <color name="earslate_text_tertiary">#FF787069</color>
+    <color name="earslate_text_disabled">#FF56524C</color>
+
+    <!-- Accent / signal -->
+    <color name="earslate_accent">#FFD3CCC1</color>
+    <color name="earslate_accent_hover">#FFE2DCD2</color>
+    <color name="earslate_accent_pressed">#FFBEB7AC</color>
+    <color name="earslate_signal_soft">#33D3CCC1</color>
+    <color name="earslate_focus_ring">#47E2DCD2</color>
+
+    <!-- States -->
+    <color name="earslate_success">#FFC9D3C6</color>
+    <color name="earslate_warning">#FFD6C7A8</color>
+    <color name="earslate_danger">#FFD3B3AF</color>
+    <color name="earslate_error">#FFFF6B6B</color>
+    <color name="earslate_error_bg">#1AFF6B6B</color>
+    <color name="earslate_error_border">#4DFF6B6B</color>
+
+</resources>

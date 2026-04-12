@@ -1,0 +1,11 @@
+# Android SDK location (required). Android Studio sets this automatically.
+sdk.dir=/path/to/android-sdk
+
+# Gemini Live API credentials.
+# Dev-only. Production credentials must come from the ClassEve Worker bootstrap endpoint
+# (see SessionBootstrapRepository) so raw API keys never ship in the APK.
+GEMINI_API_KEY=your-gemini-live-api-key
+GEMINI_LIVE_MODEL=gemini-3.1-flash-live-preview
+
+# Optional: classeve.com Worker base URL for remote bootstrap when auth lands.
+# WORKER_URL=https://lven-api.lven.workers.dev

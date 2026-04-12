@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <!-- earslate brand mark — notification size.
+         Content ~14dp centered in 24dp with ~5dp padding. -->
+
+    <!-- Left bracket -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M5,5 L10.6,5 L10.6,10.4 L8.7,10.4 L8.7,13.6 L10.6,13.6 L10.6,19 L5,19 Z" />
+
+    <!-- Right bracket (mirrored) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M13.4,5 L19,5 L19,19 L13.4,19 L13.4,13.6 L15.3,13.6 L15.3,10.4 L13.4,10.4 Z" />
+
+</vector>
