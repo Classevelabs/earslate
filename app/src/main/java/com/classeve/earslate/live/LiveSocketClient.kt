@@ -136,7 +136,12 @@ class OkHttpLiveSocketClient(
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             _state.value = LiveSocketState.FAILED
             socket = null
-            Log.w(TAG, "socket failure http=${response?.code}: ${t.message}")
+            // Do NOT log t.message — it frequently embeds the full request URL
+            // which on the legacy dev path ends in `?key=<API_KEY>` and on the
+            // prod path ends in `?access_token=<EPHEMERAL>`. Even the ephemeral
+            // leak would help an attacker correlate a mint to a user. Stick
+            // to a fixed taxonomy of kind + http code only.
+            Log.w(TAG, "socket failure http=${response?.code} kind=${t.javaClass.simpleName}")
         }
     }
 

@@ -8,6 +8,7 @@ import com.classeve.earslate.audio.AudioDeviceMonitor
 import com.classeve.earslate.audio.AudioPlaybackEngine
 import com.classeve.earslate.audio.EnergyVadGate
 import com.classeve.earslate.bootstrap.LocalDevBootstrapRepository
+import com.classeve.earslate.bootstrap.RemoteBootstrapRepository
 import com.classeve.earslate.bootstrap.SessionBootstrapRepository
 import com.classeve.earslate.live.LiveSocketClient
 import com.classeve.earslate.live.OkHttpLiveSocketClient
@@ -44,10 +45,27 @@ object EarslateRuntime {
         }
     }
 
-    private val bootstrapRepository: SessionBootstrapRepository by lazy {
-        // Task 8: release builds swap this for RemoteBootstrapRepository once
-        // the ClassEve Worker /v1/earslate/bootstrap endpoint is deployed.
-        LocalDevBootstrapRepository()
+    @Volatile private var bootstrapRepo: SessionBootstrapRepository? = null
+
+    /**
+     * Release builds must route through the ClassEve Worker so the
+     * long-lived Gemini key never ends up in a shipped APK. Debug builds
+     * use the local-properties key path so developers can iterate
+     * without network auth. The switch happens here, not in
+     * SessionCoordinator, so the coordinator stays transport-agnostic.
+     */
+    fun bootstrapRepository(context: Context): SessionBootstrapRepository {
+        return bootstrapRepo ?: synchronized(this) {
+            bootstrapRepo ?: run {
+                val repo: SessionBootstrapRepository = if (BuildConfig.DEBUG) {
+                    LocalDevBootstrapRepository()
+                } else {
+                    RemoteBootstrapRepository(context.applicationContext)
+                }
+                bootstrapRepo = repo
+                repo
+            }
+        }
     }
 
     private val socketClient: LiveSocketClient by lazy { OkHttpLiveSocketClient() }
@@ -60,15 +78,19 @@ object EarslateRuntime {
         AndroidAudioPlaybackEngine()
     }
 
-    val sessionCoordinator: SessionCoordinator by lazy {
-        SessionCoordinator(
-            bootstrapRepository = bootstrapRepository,
-            socketClient = socketClient,
-            captureEngine = captureEngine,
-            playbackEngine = playbackEngine,
-            captionsStore = captionsStore,
-            stateStore = stateStore,
-        )
+    @Volatile private var sessionCoord: SessionCoordinator? = null
+
+    fun sessionCoordinator(context: Context): SessionCoordinator {
+        return sessionCoord ?: synchronized(this) {
+            sessionCoord ?: SessionCoordinator(
+                bootstrapRepository = bootstrapRepository(context),
+                socketClient = socketClient,
+                captureEngine = captureEngine,
+                playbackEngine = playbackEngine,
+                captionsStore = captionsStore,
+                stateStore = stateStore,
+            ).also { sessionCoord = it }
+        }
     }
 
     @Volatile private var deviceMonitor: AudioDeviceMonitor? = null

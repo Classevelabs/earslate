@@ -18,26 +18,56 @@ val geminiApiKey = (localProperties.getProperty("GEMINI_API_KEY") ?: "").escapeF
 val geminiLiveModel = (localProperties.getProperty("GEMINI_LIVE_MODEL") ?: "gemini-3.1-flash-live-preview").escapeForBuildConfig()
 val workerUrl = (localProperties.getProperty("WORKER_URL") ?: "").escapeForBuildConfig()
 
+// Release keystore — four coordinates come from local.properties so the
+// keystore binary itself stays off-repo. assembleRelease silently produces
+// an UNSIGNED APK if any coordinate is missing, so verify with:
+//   $ jarsigner -verify -verbose app/build/outputs/apk/release/app-release.apk
+val releaseStoreFile = localProperties.getProperty("EARSLATE_STORE_FILE")?.takeIf { it.isNotBlank() }
+val releaseStorePassword = localProperties.getProperty("EARSLATE_STORE_PASSWORD")?.takeIf { it.isNotBlank() }
+val releaseKeyAlias = localProperties.getProperty("EARSLATE_KEY_ALIAS")?.takeIf { it.isNotBlank() }
+val releaseKeyPassword = localProperties.getProperty("EARSLATE_KEY_PASSWORD")?.takeIf { it.isNotBlank() }
+
 android {
     namespace = "com.classeve.earslate"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.classeve.earslate"
         minSdk = 29
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
 
-        buildConfigField("String", "GEMINI_API_KEY", "\"$geminiApiKey\"")
+        // GEMINI_LIVE_MODEL + WORKER_URL are non-secret and ship in every variant.
         buildConfigField("String", "GEMINI_LIVE_MODEL", "\"$geminiLiveModel\"")
         buildConfigField("String", "WORKER_URL", "\"$workerUrl\"")
         vectorDrawables.useSupportLibrary = true
     }
 
+    signingConfigs {
+        if (
+            releaseStoreFile != null &&
+            releaseStorePassword != null &&
+            releaseKeyAlias != null &&
+            releaseKeyPassword != null
+        ) {
+            create("release") {
+                storeFile = file(releaseStoreFile)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
+            // Debug-only: devs can set GEMINI_API_KEY in local.properties for
+            // direct-to-Gemini iteration without having to spin up the Worker.
+            // The constant is blank by default so even debug builds fail closed
+            // when the key isn't set.
+            buildConfigField("String", "GEMINI_API_KEY", "\"$geminiApiKey\"")
         }
         release {
             isMinifyEnabled = true
@@ -46,6 +76,20 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            // Release builds must NEVER carry the long-lived Gemini key. The
+            // constant is defined so code that references BuildConfig.GEMINI_API_KEY
+            // still compiles, but the value is always empty — the session flow
+            // routes through RemoteBootstrapRepository → /v1/earslate/bootstrap →
+            // single-use ephemeral token instead.
+            buildConfigField("String", "GEMINI_API_KEY", "\"\"")
+            if (
+                releaseStoreFile != null &&
+                releaseStorePassword != null &&
+                releaseKeyAlias != null &&
+                releaseKeyPassword != null
+            ) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
@@ -94,6 +138,14 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     implementation(libs.androidx.datastore.preferences)
+
+    // Session storage: EncryptedSharedPreferences-backed AuthStore.
+    // Direct coordinates — adding these to the version catalog collided
+    // with the existing androidx.* group accessors on Gradle 8.5.
+    implementation("androidx.security:security-crypto:1.1.0")
+
+    // Background token refresh via WorkManager (future TokenRefreshWorker).
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
 
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
