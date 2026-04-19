@@ -9,3 +9,14 @@ GEMINI_LIVE_MODEL=gemini-3.1-flash-live-preview
 
 # Optional: classeve.com Worker base URL for remote bootstrap when auth lands.
 # WORKER_URL=https://lven-api.lven.workers.dev
+
+# Release signing. assembleRelease produces an UNSIGNED APK if any of
+# these four are missing — Play Store rejects unsigned uploads. Generate
+# a keystore with:
+#   keytool -genkeypair -v -keystore earslate-release.keystore \
+#     -alias earslate -keyalg RSA -keysize 4096 -validity 25000
+# Then set:
+# EARSLATE_STORE_FILE=/absolute/path/to/earslate-release.keystore
+# EARSLATE_STORE_PASSWORD=...
+# EARSLATE_KEY_ALIAS=earslate
+# EARSLATE_KEY_PASSWORD=...

@@ -85,12 +85,12 @@ class TranslatorService : Service() {
                 val policy = EarslateRuntime.settingsRepository(this)
                     .settings.value
                     .toTranslatorPolicy()
-                EarslateRuntime.sessionCoordinator.start(policy)
+                EarslateRuntime.sessionCoordinator(this).start(policy)
             }
             ACTION_STOP -> {
                 val active = EarslateRuntime.stateStore.state.value.isActive
                 if (active) {
-                    EarslateRuntime.sessionCoordinator.stop()
+                    EarslateRuntime.sessionCoordinator(this).stop()
                 } else {
                     stopForegroundSmart()
                     stopSelf()

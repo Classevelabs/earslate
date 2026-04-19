@@ -168,7 +168,7 @@ class SessionCoordinator(
         }
 
         stateStore.set(RuntimeState.CONNECTING)
-        val url = buildWebSocketUrl(bootstrap.ephemeralToken)
+        val url = buildWebSocketUrl(bootstrap)
         try {
             socketClient.connect(url)
         } catch (t: Throwable) {
@@ -309,13 +309,29 @@ class SessionCoordinator(
         return result != null
     }
 
-    private fun buildWebSocketUrl(apiKey: String): String =
-        "$GEMINI_LIVE_BASE?key=$apiKey"
+    // The "ephemeralToken" carried by SessionBootstrap is either:
+    //   - a long-lived Gemini API key (dev mode, local.properties)
+    //   - a single-use ephemeral token minted by the ClassEve Worker
+    //     via AuthTokenService.CreateToken (production path)
+    //
+    // In production we use access_token=<ephemeral> which routes via the
+    // v1alpha bidi endpoint. In dev the repository sets the source to
+    // LOCAL_DEV and the token IS the raw API key — we switch URL shape
+    // accordingly so the existing dev flow keeps working.
+    private fun buildWebSocketUrl(bootstrap: com.classeve.earslate.bootstrap.SessionBootstrap): String =
+        when (bootstrap.source) {
+            com.classeve.earslate.bootstrap.BootstrapSource.REMOTE_WORKER ->
+                "$GEMINI_LIVE_BASE?access_token=${bootstrap.ephemeralToken}"
+            com.classeve.earslate.bootstrap.BootstrapSource.LOCAL_DEV ->
+                "$GEMINI_LIVE_BASE_V1BETA?key=${bootstrap.ephemeralToken}"
+        }
 
     companion object {
         private const val TAG = "SessionCoord"
         private const val MAX_RECONNECT_ATTEMPTS = 4
         private const val GEMINI_LIVE_BASE =
+            "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent"
+        private const val GEMINI_LIVE_BASE_V1BETA =
             "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
     }
 }
