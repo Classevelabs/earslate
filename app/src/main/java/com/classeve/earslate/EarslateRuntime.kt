@@ -1,6 +1,7 @@
 package com.classeve.earslate
 
 import android.content.Context
+import android.media.AudioManager
 import com.classeve.earslate.audio.AndroidAudioCaptureEngine
 import com.classeve.earslate.audio.AndroidAudioPlaybackEngine
 import com.classeve.earslate.audio.AudioCaptureEngine
@@ -12,6 +13,7 @@ import com.classeve.earslate.bootstrap.RemoteBootstrapRepository
 import com.classeve.earslate.bootstrap.SessionBootstrapRepository
 import com.classeve.earslate.live.LiveSocketClient
 import com.classeve.earslate.live.OkHttpLiveSocketClient
+import com.classeve.earslate.network.TranslateUsageReporter
 import com.classeve.earslate.session.RuntimeStateStore
 import com.classeve.earslate.session.SessionCoordinator
 import com.classeve.earslate.settings.SettingsRepository
@@ -68,6 +70,32 @@ object EarslateRuntime {
         }
     }
 
+    @Volatile private var usageReporter: TranslateUsageReporter? = null
+
+    /**
+     * Live-session usage reporter. Returns null in debug builds where the
+     * bootstrap repo is [LocalDevBootstrapRepository] — the worker would
+     * 401 a heartbeat from a dev session anyway, and we don't want spurious
+     * AUTH_REQUIRED bounces during local iteration.
+     *
+     * In release we keep a single process-wide instance so the
+     * [TranslateUsageReporter.dailyLimitReached] flow can be observed by both
+     * the coordinator and the UI.
+     */
+    fun translateUsageReporterOrNull(context: Context): TranslateUsageReporter? {
+        if (BuildConfig.DEBUG) return null
+        return usageReporter ?: synchronized(this) {
+            usageReporter ?: run {
+                val remote = bootstrapRepository(context) as? RemoteBootstrapRepository
+                    ?: return@run null
+                TranslateUsageReporter(
+                    appContext = context.applicationContext,
+                    bootstrap = remote,
+                ).also { usageReporter = it }
+            }
+        }
+    }
+
     private val socketClient: LiveSocketClient by lazy { OkHttpLiveSocketClient() }
 
     private val captureEngine: AudioCaptureEngine by lazy {
@@ -89,6 +117,10 @@ object EarslateRuntime {
                 playbackEngine = playbackEngine,
                 captionsStore = captionsStore,
                 stateStore = stateStore,
+                audioManager = context.applicationContext
+                    .getSystemService(Context.AUDIO_SERVICE) as AudioManager,
+                deviceMonitor = deviceMonitor(context),
+                usageReporter = translateUsageReporterOrNull(context),
             ).also { sessionCoord = it }
         }
     }

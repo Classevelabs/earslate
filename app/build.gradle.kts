@@ -19,13 +19,26 @@ val geminiLiveModel = (localProperties.getProperty("GEMINI_LIVE_MODEL") ?: "gemi
 val workerUrl = (localProperties.getProperty("WORKER_URL") ?: "").escapeForBuildConfig()
 
 // Release keystore — four coordinates come from local.properties so the
-// keystore binary itself stays off-repo. assembleRelease silently produces
-// an UNSIGNED APK if any coordinate is missing, so verify with:
+// keystore binary itself stays off-repo. If any coordinate is missing the
+// release build falls back to the debug signing config (so the APK is at
+// least installable) and the message below is printed at configure time.
+// Verify the production keystore has been used with:
 //   $ jarsigner -verify -verbose app/build/outputs/apk/release/app-release.apk
 val releaseStoreFile = localProperties.getProperty("EARSLATE_STORE_FILE")?.takeIf { it.isNotBlank() }
 val releaseStorePassword = localProperties.getProperty("EARSLATE_STORE_PASSWORD")?.takeIf { it.isNotBlank() }
 val releaseKeyAlias = localProperties.getProperty("EARSLATE_KEY_ALIAS")?.takeIf { it.isNotBlank() }
 val releaseKeyPassword = localProperties.getProperty("EARSLATE_KEY_PASSWORD")?.takeIf { it.isNotBlank() }
+val hasReleaseKeystore = releaseStoreFile != null &&
+    releaseStorePassword != null &&
+    releaseKeyAlias != null &&
+    releaseKeyPassword != null
+if (!hasReleaseKeystore) {
+    println(
+        "WARNING: EARSLATE_STORE_FILE/PASSWORD/KEY_ALIAS/KEY_PASSWORD not set " +
+            "in local.properties — release builds will be signed with the debug key. " +
+            "Generate a keystore and set the four properties before producing a Play upload.",
+    )
+}
 
 android {
     namespace = "com.classeve.earslate"
@@ -45,14 +58,9 @@ android {
     }
 
     signingConfigs {
-        if (
-            releaseStoreFile != null &&
-            releaseStorePassword != null &&
-            releaseKeyAlias != null &&
-            releaseKeyPassword != null
-        ) {
+        if (hasReleaseKeystore) {
             create("release") {
-                storeFile = file(releaseStoreFile)
+                storeFile = file(releaseStoreFile!!)
                 storePassword = releaseStorePassword
                 keyAlias = releaseKeyAlias
                 keyPassword = releaseKeyPassword
@@ -82,13 +90,16 @@ android {
             // routes through RemoteBootstrapRepository → /v1/earslate/bootstrap →
             // single-use ephemeral token instead.
             buildConfigField("String", "GEMINI_API_KEY", "\"\"")
-            if (
-                releaseStoreFile != null &&
-                releaseStorePassword != null &&
-                releaseKeyAlias != null &&
-                releaseKeyPassword != null
-            ) {
-                signingConfig = signingConfigs.getByName("release")
+            // Wire the production keystore if it's present; otherwise fall back
+            // to the debug key so engineers can still produce a runnable
+            // release-flavoured APK locally for testing minify/shrink. Play
+            // Console will reject debug-signed uploads — use the warning at
+            // configure time to know which signing config is in effect.
+            // (AGP 8.5 implicitly creates the "debug" signingConfig — relying on it.)
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
             }
         }
     }

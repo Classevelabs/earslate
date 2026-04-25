@@ -29,6 +29,7 @@ fun ErrorBanner(
     error: RuntimeError,
     onRetry: (() -> Unit)? = null,
     onDismiss: (() -> Unit)? = null,
+    onViewPlans: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val kickerLabel = when (error.kind) {
@@ -36,8 +37,16 @@ fun ErrorBanner(
         RuntimeError.Kind.BOOTSTRAP_FAILED -> "BOOTSTRAP FAILED"
         RuntimeError.Kind.CONNECT_FAILED -> "CONNECT FAILED"
         RuntimeError.Kind.PERMISSION_DENIED -> "PERMISSION NEEDED"
+        RuntimeError.Kind.AUTH_REQUIRED -> "SIGN-IN REQUIRED"
+        RuntimeError.Kind.SUBSCRIPTION_REQUIRED -> "SUBSCRIPTION REQUIRED"
+        RuntimeError.Kind.DAILY_LIMIT_REACHED -> "DAILY LIMIT REACHED"
         RuntimeError.Kind.UNKNOWN -> "ERROR"
     }
+
+    // SUBSCRIPTION_REQUIRED swaps RETRY for "VIEW PLANS" — retry against a
+    // 402 just gets another 402, but bouncing the user to pricing is
+    // actionable.
+    val showRetry = onRetry != null && error.kind != RuntimeError.Kind.SUBSCRIPTION_REQUIRED
 
     Column(
         modifier = modifier
@@ -64,13 +73,22 @@ fun ErrorBanner(
             style = EarslateTheme.textStyles.body,
             color = EarslateTheme.colors.textPrimary,
         )
-        if (onRetry != null || onDismiss != null) {
+        if (showRetry || onDismiss != null || onViewPlans != null) {
             Row(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                onRetry?.let {
-                    BannerAction(label = "RETRY", primary = true, onClick = it)
+                onViewPlans?.let {
+                    BannerAction(label = "VIEW PLANS", primary = true, onClick = it)
+                }
+                if (showRetry) {
+                    onRetry?.let {
+                        BannerAction(
+                            label = "RETRY",
+                            primary = onViewPlans == null,
+                            onClick = it,
+                        )
+                    }
                 }
                 onDismiss?.let {
                     BannerAction(label = "DISMISS", primary = false, onClick = it)

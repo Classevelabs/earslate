@@ -3,6 +3,8 @@ package com.classeve.earslate.audio
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.NoiseSuppressor
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -12,18 +14,25 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * Owns mic capture. Blueprint §8.3:
- *   - VOICE_RECOGNITION source
+ * Owns mic capture.
+ *   - VOICE_COMMUNICATION source — enables the platform's VoIP DSP chain so
+ *     the HAL can apply hardware AEC / NS against the playback reference mix.
+ *     Without this (or plain MIC / VOICE_RECOGNITION) speaker-mode translation
+ *     feeds its own output back into the mic → self-retranslation loop.
  *   - 16 kHz mono PCM16
  *   - 20 ms internal frames, 60 ms send batches
  *   - Dedicated high-priority IO coroutine
+ *
+ * Callers must flip AudioManager.mode to MODE_IN_COMMUNICATION before [start]
+ * so the HAL wires the AEC path at AudioRecord open time.
  *
  * VAD gating is optional — pass a [VadGate] to enable it, pass null to send
  * every captured batch. V1 ships with the gate wired so we do not flood Gemini
  * with silence.
  */
 interface AudioCaptureEngine {
-    fun start(onBatch: (ByteArray) -> Unit)
+    /** Returns the AudioRecord's audio session id, or 0 on construction failure. */
+    fun start(onBatch: (ByteArray) -> Unit): Int
     fun stop()
 }
 
@@ -42,11 +51,13 @@ class AndroidAudioCaptureEngine(
 
     @Volatile private var record: AudioRecord? = null
     @Volatile private var loopJob: Job? = null
+    @Volatile private var aec: AcousticEchoCanceler? = null
+    @Volatile private var ns: NoiseSuppressor? = null
 
-    override fun start(onBatch: (ByteArray) -> Unit) {
+    override fun start(onBatch: (ByteArray) -> Unit): Int {
         if (loopJob != null) {
             Log.i(TAG, "start called while already capturing; ignoring")
-            return
+            return record?.audioSessionId ?: 0
         }
 
         val minBuffer = AudioRecord.getMinBufferSize(
@@ -56,13 +67,13 @@ class AndroidAudioCaptureEngine(
         )
         if (minBuffer <= 0) {
             Log.w(TAG, "AudioRecord.getMinBufferSize failed: $minBuffer")
-            return
+            return 0
         }
         val bufferBytes = maxOf(minBuffer * 4, bytesPerBatch * 4)
 
         val rec = try {
             AudioRecord(
-                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 sampleRateHz,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,
@@ -70,21 +81,24 @@ class AndroidAudioCaptureEngine(
             )
         } catch (t: Throwable) {
             Log.e(TAG, "AudioRecord construction failed: ${t.message}")
-            return
+            return 0
         }
 
         if (rec.state != AudioRecord.STATE_INITIALIZED) {
             Log.w(TAG, "AudioRecord not initialized (state=${rec.state})")
             rec.release()
-            return
+            return 0
         }
+
+        attachEffects(rec.audioSessionId)
 
         try {
             rec.startRecording()
         } catch (t: Throwable) {
             Log.e(TAG, "AudioRecord.startRecording failed: ${t.message}")
+            releaseEffects()
             rec.release()
-            return
+            return 0
         }
 
         record = rec
@@ -146,16 +160,59 @@ class AndroidAudioCaptureEngine(
                 flushBatch()
             }
         }
+
+        return rec.audioSessionId
     }
 
     override fun stop() {
         loopJob?.cancel()
         loopJob = null
+        releaseEffects()
         record?.let {
             runCatching { it.stop() }
             runCatching { it.release() }
         }
         record = null
+    }
+
+    private fun attachEffects(sessionId: Int) {
+        if (sessionId == 0) {
+            Log.w(TAG, "invalid audio session id; skipping AEC/NS")
+            return
+        }
+        if (AcousticEchoCanceler.isAvailable()) {
+            aec = runCatching { AcousticEchoCanceler.create(sessionId) }
+                .onFailure { Log.w(TAG, "AEC create failed: ${it.message}") }
+                .getOrNull()
+            aec?.let {
+                runCatching { it.enabled = true }
+                Log.i(TAG, "AEC attached enabled=${it.enabled}")
+            }
+        } else {
+            Log.w(TAG, "AEC unavailable on this device")
+        }
+        if (NoiseSuppressor.isAvailable()) {
+            ns = runCatching { NoiseSuppressor.create(sessionId) }
+                .onFailure { Log.w(TAG, "NS create failed: ${it.message}") }
+                .getOrNull()
+            ns?.let {
+                runCatching { it.enabled = true }
+                Log.i(TAG, "NS attached enabled=${it.enabled}")
+            }
+        }
+    }
+
+    private fun releaseEffects() {
+        aec?.let {
+            runCatching { it.enabled = false }
+            runCatching { it.release() }
+        }
+        aec = null
+        ns?.let {
+            runCatching { it.enabled = false }
+            runCatching { it.release() }
+        }
+        ns = null
     }
 
     companion object {
