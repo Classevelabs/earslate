@@ -54,6 +54,18 @@ object AuthStore {
         return System.currentTimeMillis() >= session.expiresAtEpochMs - 5 * 60_000
     }
 
+    /**
+     * Forces [isSessionExpired] to return true on the next read by zeroing the
+     * stored expiry timestamp. Called when the worker rejects a token the
+     * local clock thought was valid (server-side revocation, key rotation,
+     * clock skew) so the next [accessTokenOrNull] check triggers a refresh.
+     */
+    fun markAccessTokenExpired(context: Context) {
+        SecurePrefs.preferences(context, PREFS).edit()
+            .putLong(KEY_EXPIRES_AT, 0L)
+            .apply()
+    }
+
     fun accessTokenOrNull(context: Context): String? = load(context)?.accessToken
     fun refreshTokenOrNull(context: Context): String? = load(context)?.refreshToken
 }

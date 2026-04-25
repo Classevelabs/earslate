@@ -1,15 +1,22 @@
 package com.classeve.earslate.session
 
+import android.media.AudioManager
 import android.util.Log
 import com.classeve.earslate.audio.AudioCaptureEngine
+import com.classeve.earslate.audio.AudioDeviceMonitor
 import com.classeve.earslate.audio.AudioPlaybackEngine
+import com.classeve.earslate.audio.AudioRoute
+import com.classeve.earslate.bootstrap.AuthRequiredException
+import com.classeve.earslate.bootstrap.DailyLimitReachedException
 import com.classeve.earslate.bootstrap.SessionBootstrapRepository
+import com.classeve.earslate.bootstrap.SubscriptionRequiredException
 import com.classeve.earslate.live.LiveEvent
 import com.classeve.earslate.live.LiveMessageParser
 import com.classeve.earslate.live.LiveSessionConfigFactory
 import com.classeve.earslate.live.LiveSocketClient
 import com.classeve.earslate.live.LiveSocketState
 import com.classeve.earslate.live.PromptConfigBuilder
+import com.classeve.earslate.network.TranslateUsageReporter
 import com.classeve.earslate.ui.captions.CaptionsStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -51,6 +58,14 @@ class SessionCoordinator(
     private val playbackEngine: AudioPlaybackEngine,
     private val captionsStore: CaptionsStore,
     private val stateStore: RuntimeStateStore,
+    private val audioManager: AudioManager,
+    private val deviceMonitor: AudioDeviceMonitor,
+    /**
+     * Reports active session seconds to the Worker. Null in dev builds where
+     * the local-properties bootstrap is in use — the worker would reject the
+     * call anyway. Tests can leave it null too.
+     */
+    private val usageReporter: TranslateUsageReporter? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val reconnectManager = ReconnectManager()
@@ -152,10 +167,13 @@ class SessionCoordinator(
             bootstrapRepository.bootstrap()
         } catch (t: Throwable) {
             Log.e(TAG, "bootstrap failed: ${t.message}")
-            val kind = if (t.message?.contains("GEMINI_API_KEY", ignoreCase = true) == true) {
-                RuntimeError.Kind.MISSING_API_KEY
-            } else {
-                RuntimeError.Kind.BOOTSTRAP_FAILED
+            val kind = when {
+                t is AuthRequiredException -> RuntimeError.Kind.AUTH_REQUIRED
+                t is SubscriptionRequiredException -> RuntimeError.Kind.SUBSCRIPTION_REQUIRED
+                t is DailyLimitReachedException -> RuntimeError.Kind.DAILY_LIMIT_REACHED
+                t.message?.contains("GEMINI_API_KEY", ignoreCase = true) == true ->
+                    RuntimeError.Kind.MISSING_API_KEY
+                else -> RuntimeError.Kind.BOOTSTRAP_FAILED
             }
             stateStore.setError(
                 RuntimeError(
@@ -163,6 +181,9 @@ class SessionCoordinator(
                     message = t.message ?: "Bootstrap failed",
                 ),
             )
+            // Reconnect-loop must NOT bounce on a deterministic auth/billing
+            // failure — wasSocketDeath stays false and reconnectLoop returns.
+            wasSocketDeath = false
             stateStore.set(RuntimeState.IDLE)
             return@coroutineScope
         }
@@ -212,9 +233,14 @@ class SessionCoordinator(
         val sent = socketClient.sendText(setupFrame)
         Log.i(TAG, "setup frame sent=$sent model=${bootstrap.model}")
 
+        // Flip to VoIP mode BEFORE constructing AudioRecord — some HALs only wire
+        // the AEC path at open time; changing mode mid-session is a no-op there.
+        val priorAudioMode = audioManager.mode
+        runCatching { audioManager.mode = AudioManager.MODE_IN_COMMUNICATION }
         try {
-            playbackEngine.start()
-            captureEngine.start { frame ->
+            // Capture first: its audioSessionId is the one playback binds to so
+            // hardware AEC can correlate the reference signal with the mic stream.
+            val sessionId = captureEngine.start { frame ->
                 runCatching {
                     if (!playbackGateActive) {
                         val json = LiveSessionConfigFactory.buildAudioChunk(frame)
@@ -222,9 +248,30 @@ class SessionCoordinator(
                     }
                 }
             }
+            if (sessionId == 0) {
+                Log.w(TAG, "capture failed to start")
+                stateStore.setError(
+                    RuntimeError(
+                        kind = RuntimeError.Kind.UNKNOWN,
+                        message = "Could not open the microphone.",
+                    ),
+                )
+                return@coroutineScope
+            }
+            playbackEngine.start(audioSessionId = sessionId)
             stateStore.set(RuntimeState.READY)
             // Successful setup — fresh retry budget for future transient blips.
             reconnectManager.reset()
+            // Heartbeat pump — reports live-session seconds to the Worker so
+            // the daily cap is enforced server-side. Wall-clock based: a long
+            // GC pause shouldn't shorten the report, and a system sleep
+            // shouldn't lengthen it either. Skipped for LOCAL_DEV bootstraps
+            // because the worker would 401 the call anyway.
+            val needHeartbeat = usageReporter != null &&
+                bootstrap.source == com.classeve.earslate.bootstrap.BootstrapSource.REMOTE_WORKER
+            if (needHeartbeat) {
+                launch { runHeartbeat(outer) }
+            }
             awaitCancellation()
         } finally {
             playbackGateActive = false
@@ -232,6 +279,7 @@ class SessionCoordinator(
             runCatching { captureEngine.stop() }
             runCatching { playbackEngine.stop(graceful = true) }
             runCatching { socketClient.close() }
+            runCatching { audioManager.mode = priorAudioMode }
             stateStore.set(RuntimeState.IDLE)
         }
     }
@@ -259,7 +307,7 @@ class SessionCoordinator(
                     val elapsed = android.os.SystemClock.elapsedRealtime() - sessionStartElapsed
                     stateStore.updateMetrics { it.copy(timeToFirstAudioMs = elapsed) }
                 }
-                if (currentPolicy?.externalOnly == true) {
+                if (shouldGateMic()) {
                     playbackGateActive = true
                     gateCooldownJob?.cancel()
                 }
@@ -276,9 +324,10 @@ class SessionCoordinator(
             }
             is LiveEvent.TurnComplete -> {
                 captionsStore.commitLine()
-                if (currentPolicy?.externalOnly == true) {
+                if (shouldGateMic()) {
+                    val cooldownMs = if (deviceMonitor.route.value == AudioRoute.SPEAKER) 1000L else 500L
                     gateCooldownJob = scope.launch {
-                        delay(500)
+                        delay(cooldownMs)
                         playbackGateActive = false
                     }
                 }
@@ -298,6 +347,90 @@ class SessionCoordinator(
             is LiveEvent.Error -> {
                 Log.w(TAG, "live error: ${event.message}")
                 stateStore.set(RuntimeState.DEGRADED)
+            }
+        }
+    }
+
+    // Half-duplex gate: mute the mic while the translator is speaking.
+    // Always active on SPEAKER (hardware AEC alone isn't always enough to
+    // prevent the translator re-ingesting its own output); opt-in on earbud
+    // routes via the externalOnly user setting.
+    private fun shouldGateMic(): Boolean {
+        if (currentPolicy?.externalOnly == true) return true
+        return deviceMonitor.route.value == AudioRoute.SPEAKER
+    }
+
+    /**
+     * Heartbeat pump that runs as a child of [outer] for the lifetime of the
+     * Live session. Each tick reports the wall-clock seconds elapsed since the
+     * last successful POST so the worker accumulates real-listening time, not
+     * timer ticks (a long GC pause or system sleep shouldn't be billed).
+     *
+     * Three terminal cases:
+     *   - 429 → set DAILY_LIMIT_REACHED, cancel outer (session ends).
+     *   - 401 (and refresh failed) → set AUTH_REQUIRED, cancel outer.
+     *   - everything else → log + accumulate the unsent seconds for the next tick.
+     */
+    private suspend fun runHeartbeat(outer: CoroutineScope) {
+        val reporter = usageReporter ?: return
+        var lastReportElapsed = android.os.SystemClock.elapsedRealtime()
+        var carriedSeconds = 0
+        while (true) {
+            delay(HEARTBEAT_INTERVAL_MS)
+            val now = android.os.SystemClock.elapsedRealtime()
+            val deltaSeconds = ((now - lastReportElapsed) / 1000L).toInt()
+            if (deltaSeconds <= 0 && carriedSeconds == 0) continue
+            val toSend = (deltaSeconds + carriedSeconds).coerceAtLeast(1)
+
+            when (val res = reporter.heartbeat(toSend)) {
+                is TranslateUsageReporter.Result.Ok -> {
+                    lastReportElapsed = now
+                    carriedSeconds = 0
+                    if (res.dailyRemainingSeconds <= 0) {
+                        Log.i(TAG, "heartbeat: budget exhausted (remaining=0)")
+                        stateStore.setError(
+                            RuntimeError(
+                                kind = RuntimeError.Kind.DAILY_LIMIT_REACHED,
+                                message = "Daily translation budget reached. Resets at 00:00 UTC.",
+                            ),
+                        )
+                        wasSocketDeath = false
+                        outer.cancel(CancellationException("daily limit reached"))
+                        return
+                    }
+                }
+                is TranslateUsageReporter.Result.LimitReached -> {
+                    Log.i(TAG, "heartbeat: limit reached")
+                    stateStore.setError(
+                        RuntimeError(
+                            kind = RuntimeError.Kind.DAILY_LIMIT_REACHED,
+                            message = "Daily translation budget reached. Resets at 00:00 UTC.",
+                        ),
+                    )
+                    wasSocketDeath = false
+                    outer.cancel(CancellationException("daily limit reached"))
+                    return
+                }
+                is TranslateUsageReporter.Result.AuthRequired -> {
+                    Log.w(TAG, "heartbeat: auth required — bouncing to sign-in")
+                    stateStore.setError(
+                        RuntimeError(
+                            kind = RuntimeError.Kind.AUTH_REQUIRED,
+                            message = "Sign-in required — please pair this device again.",
+                        ),
+                    )
+                    wasSocketDeath = false
+                    outer.cancel(CancellationException("auth required"))
+                    return
+                }
+                is TranslateUsageReporter.Result.TransientError -> {
+                    Log.w(TAG, "heartbeat: transient error: ${res.message}; carrying ${toSend}s")
+                    // Carry the seconds forward so a network blip doesn't lose
+                    // them. We still advance lastReportElapsed because the time
+                    // is encoded into carriedSeconds for the next tick.
+                    lastReportElapsed = now
+                    carriedSeconds = toSend
+                }
             }
         }
     }
@@ -329,6 +462,8 @@ class SessionCoordinator(
     companion object {
         private const val TAG = "SessionCoord"
         private const val MAX_RECONNECT_ATTEMPTS = 4
+        /** ~60 s. The worker caps a single delta at 300 s; we report often enough that no tick exceeds the cap. */
+        private const val HEARTBEAT_INTERVAL_MS = 60_000L
         private const val GEMINI_LIVE_BASE =
             "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent"
         private const val GEMINI_LIVE_BASE_V1BETA =

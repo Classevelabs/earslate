@@ -2,6 +2,7 @@ package com.classeve.earslate.audio
 
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioTrack
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
@@ -13,15 +14,20 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * Owns the translated-audio playback path. Blueprint §8.2 / §8.7.
+ * Owns the translated-audio playback path.
  *
  *   - 24 kHz mono PCM16 stream (Gemini Live native audio output rate)
  *   - AudioTrack STREAM mode
+ *   - USAGE_VOICE_COMMUNICATION so this output becomes part of the HAL's
+ *     AEC reference mix — paired with the capture engine's VOICE_COMMUNICATION
+ *     source, the platform can subtract this signal from the mic stream.
+ *   - Optional session-id coupling with the capture AudioRecord so hardware
+ *     AEC on OEM HALs can correlate reference and error signals.
  *   - JitterBuffer with ~120 ms startup target
  *   - Graceful drain on stop so the last played word is not cut
  */
 interface AudioPlaybackEngine {
-    fun start()
+    fun start(audioSessionId: Int = AudioManager.AUDIO_SESSION_ID_GENERATE)
     fun enqueue(pcm24k: ByteArray)
     fun stop(graceful: Boolean = true)
 }
@@ -40,7 +46,7 @@ class AndroidAudioPlaybackEngine(
     @Volatile private var track: AudioTrack? = null
     @Volatile private var loopJob: Job? = null
 
-    override fun start() {
+    override fun start(audioSessionId: Int) {
         if (track != null) {
             Log.i(TAG, "start called while already running; ignoring")
             return
@@ -58,10 +64,10 @@ class AndroidAudioPlaybackEngine(
         val bufferBytes = maxOf(minBuffer * 2, startupBytes * 2)
 
         val t = try {
-            AudioTrack.Builder()
+            val builder = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build(),
                 )
@@ -74,7 +80,10 @@ class AndroidAudioPlaybackEngine(
                 )
                 .setBufferSizeInBytes(bufferBytes)
                 .setTransferMode(AudioTrack.MODE_STREAM)
-                .build()
+            if (audioSessionId > 0) {
+                builder.setSessionId(audioSessionId)
+            }
+            builder.build()
         } catch (ex: Throwable) {
             Log.e(TAG, "AudioTrack build failed: ${ex.message}")
             return

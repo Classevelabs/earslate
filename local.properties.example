@@ -1,21 +1,41 @@
 # Android SDK location (required). Android Studio sets this automatically.
 sdk.dir=/path/to/android-sdk
 
+# ──────────────────────────────────────────────────────────────────────
 # Gemini Live API credentials.
-# Dev-only. Production credentials must come from the ClassEve Worker bootstrap endpoint
-# (see SessionBootstrapRepository) so raw API keys never ship in the APK.
+# Dev-only. Production credentials must come from the ClassEve Worker bootstrap
+# endpoint (see RemoteBootstrapRepository) so raw API keys never ship in the APK.
+# Release builds force GEMINI_API_KEY to "" via build.gradle.kts.
+# ──────────────────────────────────────────────────────────────────────
 GEMINI_API_KEY=your-gemini-live-api-key
 GEMINI_LIVE_MODEL=gemini-3.1-flash-live-preview
 
-# Optional: classeve.com Worker base URL for remote bootstrap when auth lands.
+# ──────────────────────────────────────────────────────────────────────
+# ClassEve Worker base URL. Used for both:
+#   - device-code sign-in (DeviceLinkClient → /v1/device/code|poll, /v1/auth/refresh)
+#   - ephemeral token bootstrap (RemoteBootstrapRepository → /v1/earslate/bootstrap)
+#   - per-session usage heartbeats (TranslateUsageReporter → /v1/earslate/heartbeat)
+# Defaults to https://lven-api.lven.workers.dev when left blank.
+# ──────────────────────────────────────────────────────────────────────
 # WORKER_URL=https://lven-api.lven.workers.dev
 
-# Release signing. assembleRelease produces an UNSIGNED APK if any of
-# these four are missing — Play Store rejects unsigned uploads. Generate
-# a keystore with:
-#   keytool -genkeypair -v -keystore earslate-release.keystore \
-#     -alias earslate -keyalg RSA -keysize 4096 -validity 25000
-# Then set:
+# ──────────────────────────────────────────────────────────────────────
+# Release signing.
+#
+# All four properties must be set to produce a Play-uploadable release APK.
+# If any are missing, build.gradle.kts falls back to the debug keystore (so
+# engineers can still iterate locally) and prints a configure-time warning.
+#
+# Generate the keystore once with:
+#
+#   keytool -genkeypair -v \
+#     -keystore /absolute/path/to/earslate-release.keystore \
+#     -alias earslate \
+#     -keyalg RSA -keysize 2048 -validity 10000
+#
+# Use a strong password — back it up to a password manager. Losing this
+# keystore means losing the ability to ship updates of this app on Play.
+# ──────────────────────────────────────────────────────────────────────
 # EARSLATE_STORE_FILE=/absolute/path/to/earslate-release.keystore
 # EARSLATE_STORE_PASSWORD=...
 # EARSLATE_KEY_ALIAS=earslate

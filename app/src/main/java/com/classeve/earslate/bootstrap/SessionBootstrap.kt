@@ -38,7 +38,44 @@ interface SessionBootstrapRepository {
     suspend fun bootstrap(): SessionBootstrap
 }
 
-class BootstrapException(
+/**
+ * Generic bootstrap failure. Specific failure modes that the UI must branch on
+ * (subscription required, daily limit hit, sign-in needed) are surfaced as
+ * subclasses below so [SessionCoordinator] can map them to typed
+ * [com.classeve.earslate.session.RuntimeError.Kind]s without re-parsing the
+ * exception message.
+ */
+open class BootstrapException(
     message: String,
     cause: Throwable? = null,
 ) : RuntimeException(message, cause)
+
+/**
+ * Worker returned 402 SUBSCRIPTION_REQUIRED or ENTITLEMENT_MISSING — the user's
+ * plan does not include translate. UI must show a "Subscription required"
+ * dialog with a "View plans" CTA. The destination URL lives in the UI layer
+ * (MainActivity) since the worker has no opinion on which marketing surface
+ * a given product should link to.
+ */
+class SubscriptionRequiredException(
+    message: String,
+) : BootstrapException(message)
+
+/**
+ * Worker returned 429 DAILY_LIMIT_REACHED. UI must surface "Daily limit
+ * reached" and stop the session. Resets at 00:00 UTC; we don't currently
+ * receive an explicit reset timestamp, but the message is rendered.
+ */
+class DailyLimitReachedException(
+    message: String,
+    val dailyCapSeconds: Int? = null,
+    val dailyUsedSeconds: Int? = null,
+) : BootstrapException(message)
+
+/**
+ * Worker returned 401 (or refresh failed locally). The stored session is
+ * invalid — UI must clear it and bounce the user back to the sign-in screen.
+ */
+class AuthRequiredException(
+    message: String = "Sign-in required — please pair this device again.",
+) : BootstrapException(message)
