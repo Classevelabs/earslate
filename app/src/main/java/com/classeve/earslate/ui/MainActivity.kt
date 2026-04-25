@@ -3,8 +3,10 @@ package com.classeve.earslate.ui
 import android.Manifest
 import android.app.StatusBarManager
 import android.content.ComponentName
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.drawable.Icon
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -65,7 +67,9 @@ import androidx.core.content.ContextCompat
 import com.classeve.earslate.EarslateRuntime
 import com.classeve.earslate.R
 import com.classeve.earslate.audio.AudioRoute
+import com.classeve.earslate.auth.AuthStore
 import com.classeve.earslate.service.TranslatorService
+import com.classeve.earslate.session.RuntimeError
 import com.classeve.earslate.session.RuntimeState
 import com.classeve.earslate.session.SupportedLanguages
 import com.classeve.earslate.session.TargetLanguage
@@ -77,6 +81,7 @@ import com.classeve.earslate.ui.components.ErrorBanner
 import com.classeve.earslate.ui.diagnostics.DiagnosticsScreen
 import com.classeve.earslate.ui.help.HelpScreen
 import com.classeve.earslate.ui.onboarding.OnboardingScreen
+import com.classeve.earslate.ui.onboarding.SignInScreen
 import com.classeve.earslate.ui.settings.SettingsScreen
 import com.classeve.earslate.ui.theme.EarslateTheme
 import com.classeve.earslate.ui.theme.MotionBaseMs
@@ -168,7 +173,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { ONBOARDING, MAIN, SETTINGS, DIAGNOSTICS, HELP }
+private enum class Screen { ONBOARDING, SIGN_IN, MAIN, SETTINGS, DIAGNOSTICS, HELP }
 
 @Composable
 private fun EarslateApp(
@@ -183,11 +188,35 @@ private fun EarslateApp(
     val scope = rememberCoroutineScope()
 
     val firstLaunch = remember { !OnboardingPrefs.isCompleted(context) }
-    var screen by rememberSaveable {
-        mutableStateOf(if (firstLaunch) Screen.ONBOARDING else Screen.MAIN)
+    val initialScreen = remember {
+        when {
+            firstLaunch -> Screen.ONBOARDING
+            // Onboarding done but no stored session → require sign-in before
+            // we let the user near the start button. Once paired, the worker's
+            // bootstrap call is the one source of truth for plan + entitlement;
+            // this gate just keeps the user from hitting an inevitable 401.
+            AuthStore.load(context) == null -> Screen.SIGN_IN
+            else -> Screen.MAIN
+        }
+    }
+    var screen by rememberSaveable { mutableStateOf(initialScreen) }
+
+    // If the bootstrap layer determines the stored session is no longer
+    // valid (refresh failed, worker said 401, heartbeat 401), it sets a
+    // typed RuntimeError. Watch for it here and bounce back to sign-in so
+    // the app can never be silently broken.
+    val lastError by EarslateRuntime.stateStore.lastError.collectAsState()
+    LaunchedEffect(lastError) {
+        if (lastError?.kind == RuntimeError.Kind.AUTH_REQUIRED && screen != Screen.SIGN_IN) {
+            AuthStore.clear(context)
+            screen = Screen.SIGN_IN
+            EarslateRuntime.stateStore.clearError()
+        }
     }
 
-    BackHandler(enabled = screen != Screen.MAIN && screen != Screen.ONBOARDING) {
+    BackHandler(
+        enabled = screen != Screen.MAIN && screen != Screen.ONBOARDING && screen != Screen.SIGN_IN,
+    ) {
         screen = when (screen) {
             Screen.DIAGNOSTICS -> Screen.SETTINGS
             Screen.HELP -> Screen.SETTINGS
@@ -226,9 +255,21 @@ private fun EarslateApp(
                 },
                 onContinue = {
                     OnboardingPrefs.markCompleted(context)
-                    screen = Screen.MAIN
+                    // Onboarding only marks the rationale-tour seen. The user
+                    // still needs a paired ClassEve session before bootstrap
+                    // can hit the worker. Send them through sign-in if they
+                    // don't already have one.
+                    screen = if (AuthStore.load(context) == null) {
+                        Screen.SIGN_IN
+                    } else {
+                        Screen.MAIN
+                    }
                     onRequestQsTile()
                 },
+            )
+            Screen.SIGN_IN -> SignInScreen(
+                padding = padding,
+                onSignedIn = { screen = Screen.MAIN },
             )
             Screen.MAIN -> MainScreen(
                 padding = padding,
@@ -348,6 +389,14 @@ private fun MainScreen(
                 RoutePill(route = route)
             }
 
+            AnimatedVisibility(
+                visible = route == AudioRoute.SPEAKER,
+                enter = expandVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeIn(tween(MotionBaseMs)),
+                exit = shrinkVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeOut(tween(MotionBaseMs)),
+            ) {
+                SpeakerEchoNotice()
+            }
+
             PrimaryButton(
                 state = state,
                 onStart = onStart,
@@ -360,10 +409,28 @@ private fun MainScreen(
                 exit = shrinkVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeOut(tween(MotionBaseMs)),
             ) {
                 lastError?.let { err ->
+                    val onViewPlans = if (err.kind == RuntimeError.Kind.SUBSCRIPTION_REQUIRED) {
+                        {
+                            // Custom Tabs would be nicer; we don't yet bundle
+                            // androidx.browser. ACTION_VIEW is acceptable for v0.
+                            runCatching {
+                                context.startActivity(
+                                    Intent(
+                                        Intent.ACTION_VIEW,
+                                        Uri.parse("https://classeve.com/releases/lven/pricing"),
+                                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                )
+                            }
+                            Unit
+                        }
+                    } else {
+                        null
+                    }
                     ErrorBanner(
                         error = err,
                         onRetry = onStart,
                         onDismiss = { EarslateRuntime.stateStore.clearError() },
+                        onViewPlans = onViewPlans,
                     )
                 }
             }
@@ -518,6 +585,37 @@ private fun RoutePill(route: AudioRoute) {
             text = label,
             style = EarslateTheme.textStyles.kicker,
             color = EarslateTheme.colors.textTertiary,
+        )
+    }
+}
+
+@Composable
+private fun SpeakerEchoNotice() {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                color = EarslateTheme.colors.surfaceSoft,
+                shape = EarslateTheme.shapes.md,
+            )
+            .border(
+                width = 1.dp,
+                color = EarslateTheme.colors.borderSubtle,
+                shape = EarslateTheme.shapes.md,
+            )
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .background(color = EarslateTheme.colors.warning, shape = CircleShape),
+        )
+        Text(
+            text = stringResource(R.string.route_speaker_echo_warning),
+            style = EarslateTheme.textStyles.bodyMuted,
+            color = EarslateTheme.colors.textSecondary,
         )
     }
 }
