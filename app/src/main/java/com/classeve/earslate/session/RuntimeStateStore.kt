@@ -65,6 +65,15 @@ data class RuntimeError(
         BOOTSTRAP_FAILED,
         CONNECT_FAILED,
         PERMISSION_DENIED,
+        /**
+         * Worker rejected the access token — session was wiped, user must
+         * pair the device again. UI bounces to the sign-in flow.
+         */
+        AUTH_REQUIRED,
+        /** 402 from /v1/earslate/bootstrap — show pricing CTA. */
+        SUBSCRIPTION_REQUIRED,
+        /** 429 from /v1/earslate/bootstrap or /heartbeat — show "limit reached". */
+        DAILY_LIMIT_REACHED,
         UNKNOWN,
     }
 }

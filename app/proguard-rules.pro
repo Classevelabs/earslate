@@ -17,3 +17,13 @@
 
 # Compose
 -keep class androidx.compose.runtime.** { *; }
+
+# Tink crypto (transitive: errorprone annotations + optional KeysDownloader deps are compile-time / unused)
+-dontwarn com.google.errorprone.annotations.**
+-dontwarn com.google.api.client.**
+-dontwarn org.joda.time.**
+-keep class com.google.crypto.tink.** { *; }
+
+# WorkManager / EncryptedSharedPreferences workers
+-keep class * extends androidx.work.CoroutineWorker { <init>(...); }
+-keep class * extends androidx.work.Worker { <init>(...); }

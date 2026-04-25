@@ -27,6 +27,7 @@
     <string name="route_wired">WIRED</string>
     <string name="route_speaker">SPEAKER</string>
     <string name="route_unknown">ROUTE</string>
+    <string name="route_speaker_echo_warning">Speaker mode may echo — earbuds give the cleanest translation.</string>
 
     <!-- Actions -->
     <string name="action_start">Start listening</string>
