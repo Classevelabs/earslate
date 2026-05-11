@@ -6,8 +6,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.defaultMinSize
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -17,6 +17,11 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.classeve.earslate.ui.theme.EarslateTheme
 
+/**
+ * Back row — a thin meta-label line with a hairline arrow stub, matching the
+ * `.route-indicator` motif from the canonical CSS. Tappable across its full
+ * height so the user doesn't have to hit a pixel target.
+ */
 @Composable
 fun BackRow(
     onBack: () -> Unit,
@@ -32,15 +37,13 @@ fun BackRow(
     ) {
         Box(
             modifier = Modifier
-                .size(8.dp)
-                .background(
-                    color = EarslateTheme.colors.textTertiary,
-                    shape = CircleShape,
-                ),
+                .width(24.dp)
+                .height(1.dp)
+                .background(color = EarslateTheme.colors.textTertiary),
         )
         Text(
             text = "BACK",
-            style = EarslateTheme.textStyles.kicker,
+            style = EarslateTheme.textStyles.meta,
             color = EarslateTheme.colors.textTertiary,
         )
     }

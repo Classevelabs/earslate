@@ -1,7 +1,10 @@
 package com.classeve.earslate
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.AudioManager
+import androidx.core.content.ContextCompat
 import com.classeve.earslate.audio.AndroidAudioCaptureEngine
 import com.classeve.earslate.audio.AndroidAudioPlaybackEngine
 import com.classeve.earslate.audio.AudioCaptureEngine
@@ -98,8 +101,21 @@ object EarslateRuntime {
 
     private val socketClient: LiveSocketClient by lazy { OkHttpLiveSocketClient() }
 
-    private val captureEngine: AudioCaptureEngine by lazy {
-        AndroidAudioCaptureEngine(vadGate = EnergyVadGate())
+    @Volatile private var captureEngine: AudioCaptureEngine? = null
+
+    private fun captureEngine(context: Context): AudioCaptureEngine {
+        val appContext = context.applicationContext
+        return captureEngine ?: synchronized(this) {
+            captureEngine ?: AndroidAudioCaptureEngine(
+                vadGate = EnergyVadGate(),
+                hasRecordAudioPermission = {
+                    ContextCompat.checkSelfPermission(
+                        appContext,
+                        Manifest.permission.RECORD_AUDIO,
+                    ) == PackageManager.PERMISSION_GRANTED
+                },
+            ).also { captureEngine = it }
+        }
     }
 
     private val playbackEngine: AudioPlaybackEngine by lazy {
@@ -113,7 +129,7 @@ object EarslateRuntime {
             sessionCoord ?: SessionCoordinator(
                 bootstrapRepository = bootstrapRepository(context),
                 socketClient = socketClient,
-                captureEngine = captureEngine,
+                captureEngine = captureEngine(context),
                 playbackEngine = playbackEngine,
                 captionsStore = captionsStore,
                 stateStore = stateStore,

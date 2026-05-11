@@ -16,7 +16,7 @@ fun String.escapeForBuildConfig(): String = replace("\\", "\\\\").replace("\"", 
 
 val geminiApiKey = (localProperties.getProperty("GEMINI_API_KEY") ?: "").escapeForBuildConfig()
 val geminiLiveModel = (localProperties.getProperty("GEMINI_LIVE_MODEL") ?: "gemini-3.1-flash-live-preview").escapeForBuildConfig()
-val workerUrl = (localProperties.getProperty("WORKER_URL") ?: "").escapeForBuildConfig()
+val workerUrl = (localProperties.getProperty("WORKER_URL") ?: "https://api.classeve.com").escapeForBuildConfig()
 
 // Release keystore — four coordinates come from local.properties so the
 // keystore binary itself stays off-repo. If any coordinate is missing the
