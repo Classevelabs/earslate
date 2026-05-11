@@ -48,11 +48,11 @@ fun LanguagePickerDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = EarslateTheme.colors.elev1,
-        shape = EarslateTheme.shapes.lg,
+        shape = EarslateTheme.shapes.xl,
         title = {
             Text(
                 text = "Target language",
-                style = EarslateTheme.textStyles.h3,
+                style = EarslateTheme.textStyles.h2,
                 color = EarslateTheme.colors.textPrimary,
             )
         },
@@ -64,7 +64,7 @@ fun LanguagePickerDialog(
                     placeholder = {
                         Text(
                             text = "Search languages...",
-                            style = EarslateTheme.textStyles.bodyMuted,
+                            style = EarslateTheme.textStyles.body,
                             color = EarslateTheme.colors.textTertiary,
                         )
                     },
@@ -73,9 +73,9 @@ fun LanguagePickerDialog(
                         color = EarslateTheme.colors.textPrimary,
                     ),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = EarslateTheme.colors.accent,
+                        focusedBorderColor = EarslateTheme.colors.ember,
                         unfocusedBorderColor = EarslateTheme.colors.borderDefault,
-                        cursorColor = EarslateTheme.colors.accent,
+                        cursorColor = EarslateTheme.colors.ember,
                     ),
                     shape = EarslateTheme.shapes.md,
                     modifier = Modifier.fillMaxWidth(),
@@ -101,8 +101,8 @@ fun LanguagePickerDialog(
         confirmButton = {
             TextButton(onClick = onDismiss) {
                 Text(
-                    text = "Cancel",
-                    style = EarslateTheme.textStyles.kicker,
+                    text = "CANCEL",
+                    style = EarslateTheme.textStyles.meta,
                     color = EarslateTheme.colors.textSecondary,
                 )
             }
@@ -116,11 +116,10 @@ private fun LanguageRow(
     isSelected: Boolean,
     onClick: () -> Unit,
 ) {
-    val bg = if (isSelected) {
-        EarslateTheme.colors.surfaceStrong
-    } else {
-        EarslateTheme.colors.surfaceGhost
-    }
+    // Selected row → ember-soft fill, ember text + ember BCP-47 chip.
+    // Idle row → bg-elev-2 fill, cream text, creamSoft BCP-47 chip.
+    val bg = if (isSelected) EarslateTheme.colors.emberSoft else EarslateTheme.colors.elev2
+    val nameColor = if (isSelected) EarslateTheme.colors.ember else EarslateTheme.colors.textPrimary
 
     Row(
         modifier = Modifier
@@ -134,16 +133,12 @@ private fun LanguageRow(
         Text(
             text = language.displayName,
             style = EarslateTheme.textStyles.body,
-            color = if (isSelected) {
-                EarslateTheme.colors.accent
-            } else {
-                EarslateTheme.colors.textPrimary
-            },
+            color = nameColor,
         )
         Text(
-            text = language.bcp47,
-            style = EarslateTheme.textStyles.kicker,
-            color = EarslateTheme.colors.textTertiary,
+            text = language.bcp47.uppercase(),
+            style = EarslateTheme.textStyles.meta,
+            color = if (isSelected) EarslateTheme.colors.ember else EarslateTheme.colors.textTertiary,
         )
     }
 }

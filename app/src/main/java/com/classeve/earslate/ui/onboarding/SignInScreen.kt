@@ -3,7 +3,7 @@ package com.classeve.earslate.ui.onboarding
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,9 +16,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -27,16 +24,17 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import com.classeve.earslate.auth.AuthSession
 import com.classeve.earslate.auth.AuthStore
 import com.classeve.earslate.auth.DeviceCodeResponse
 import com.classeve.earslate.auth.DeviceLinkClient
 import com.classeve.earslate.auth.PollResult
-import com.classeve.earslate.ui.components.SectionHeader
 import com.classeve.earslate.ui.theme.EarslateTheme
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -44,19 +42,16 @@ import kotlinx.coroutines.launch
 
 /**
  * Sign-in via RFC 8628 device-authorization grant. Mirrors the Lven-Android
- * pairing flow but rendered in Compose to match earslate's UI conventions.
+ * pairing flow but rendered in Compose with the ClassEve brand v6 (matte ember).
  *
  * State machine, all internal:
  *
  *   [Phase.Idle]      → user has not tapped sign-in. CTA visible.
- *   [Phase.Requesting]→ POSTing /v1/device/code; spinner.
+ *   [Phase.Requesting]→ POSTing /v1/device/code.
  *   [Phase.Pairing]   → user-code visible, browser CTA visible, polling.
  *   [Phase.Expired]   → 15-min code lifetime hit; show retry.
  *   [Phase.Denied]    → user denied on the web; show retry.
  *   [Phase.Error]     → transient failure; show retry + message.
- *
- * On [Phase.Authorized] we persist the session via [AuthStore.save] then call
- * [onSignedIn] — the parent activity navigates to the main UI from there.
  */
 @Composable
 fun SignInScreen(
@@ -70,9 +65,7 @@ fun SignInScreen(
     var pollJob by remember { mutableStateOf<Job?>(null) }
 
     // Cancel polling on screen leave so we don't leak a coroutine if the
-    // caller navigates away mid-flow. DisposableEffect with Unit key fires
-    // its onDispose only when the composable leaves the tree — exactly the
-    // semantics we want for the *current* pollJob, not a snapshot of it.
+    // caller navigates away mid-flow.
     DisposableEffect(Unit) {
         onDispose { pollJob?.cancel() }
     }
@@ -91,16 +84,30 @@ fun SignInScreen(
                 .padding(horizontal = 24.dp, vertical = 48.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
+            // Section meta-label: mono, uppercase, +0.12em tracking, textTertiary.
             Text(
-                text = "EARSLATE",
-                style = EarslateTheme.textStyles.kicker,
+                text = "EARSLATE / SIGN IN",
+                style = EarslateTheme.textStyles.meta,
                 color = EarslateTheme.colors.textTertiary,
             )
 
-            SectionHeader(
-                kicker = "Sign in",
-                headline = "Sign in with classeve.com.",
-                support = "Translation runs through your ClassEve account so we can enforce your subscription and daily usage caps.",
+            // Brand hero. Space Grotesk bold, 36sp+, letter-spacing -1.5sp.
+            Text(
+                text = "Pair this device.",
+                style = EarslateTheme.textStyles.display.copy(
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 40.sp,
+                    lineHeight = 42.sp,
+                    letterSpacing = (-1.5).sp,
+                ),
+                color = EarslateTheme.colors.textPrimary,
+            )
+
+            // Support copy: Inter regular, textSecondary.
+            Text(
+                text = "Translation runs through your ClassEve account so we can enforce your subscription and daily usage caps. Sign in once — this device stays paired until you sign out.",
+                style = EarslateTheme.textStyles.body,
+                color = EarslateTheme.colors.textSecondary,
             )
 
             Spacer(Modifier.height(8.dp))
@@ -143,17 +150,17 @@ fun SignInScreen(
                     },
                 )
                 Phase.Expired -> RetryPanel(
-                    title = "Code expired",
+                    kicker = "CODE EXPIRED",
                     body = "The sign-in code is good for 15 minutes. Tap retry to start over.",
                     onRetry = { phase = Phase.Idle },
                 )
                 Phase.Denied -> RetryPanel(
-                    title = "Sign-in denied",
+                    kicker = "SIGN-IN DENIED",
                     body = "The sign-in was rejected on the web. Tap retry to try again.",
                     onRetry = { phase = Phase.Idle },
                 )
                 is Phase.Error -> RetryPanel(
-                    title = "Sign-in failed",
+                    kicker = "SIGN-IN FAILED",
                     body = current.message,
                     onRetry = { phase = Phase.Idle },
                 )
@@ -175,28 +182,16 @@ private sealed class Phase {
 
 @Composable
 private fun SignInCta(onSignIn: () -> Unit) {
-    Column(
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
             text = "Tap below to start. We open your browser to classeve.com so you can confirm.",
-            style = EarslateTheme.textStyles.bodyMuted,
+            style = EarslateTheme.textStyles.body,
             color = EarslateTheme.colors.textSecondary,
         )
-        Button(
+        EmberPill(
+            label = "Open classeve.com/link",
             onClick = onSignIn,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = EarslateTheme.colors.accent,
-                contentColor = EarslateTheme.colors.canvas,
-            ),
-            shape = EarslateTheme.shapes.md,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(
-                text = "Sign in with classeve.com",
-                style = EarslateTheme.textStyles.body.copy(fontWeight = FontWeight.SemiBold),
-            )
-        }
+        )
     }
 }
 
@@ -206,62 +201,47 @@ private fun PairingPanel(
     onOpenBrowser: () -> Unit,
     onCancel: () -> Unit,
 ) {
+    // Code-band: bg-elev-1 flat fill, no border, rounded-lg.
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(
-                color = EarslateTheme.colors.surfaceSoft,
-                shape = EarslateTheme.shapes.md,
+                color = EarslateTheme.colors.elev1,
+                shape = EarslateTheme.shapes.lg,
             )
-            .border(
-                width = 1.dp,
-                color = EarslateTheme.colors.borderSubtle,
-                shape = EarslateTheme.shapes.md,
-            )
-            .padding(horizontal = 18.dp, vertical = 18.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .padding(horizontal = 22.dp, vertical = 22.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text(
             text = "YOUR CODE",
-            style = EarslateTheme.textStyles.kicker,
+            style = EarslateTheme.textStyles.meta,
             color = EarslateTheme.colors.textTertiary,
         )
+        // Code display — JetBrains Mono, large (40sp), ember color, +0.18em tracking.
         Text(
             text = response.userCode,
-            style = EarslateTheme.textStyles.display,
-            color = EarslateTheme.colors.accent,
+            style = EarslateTheme.textStyles.meta.copy(
+                fontWeight = FontWeight.Bold,
+                fontSize = 40.sp,
+                lineHeight = 44.sp,
+                letterSpacing = 7.2.sp, // ≈ +0.18em at 40sp
+            ),
+            color = EarslateTheme.colors.ember,
         )
         Text(
             text = "We've opened your browser to classeve.com. Confirm the code there to finish signing in.",
-            style = EarslateTheme.textStyles.bodyMuted,
+            style = EarslateTheme.textStyles.body,
             color = EarslateTheme.colors.textSecondary,
         )
         Spacer(Modifier.height(4.dp))
-        Button(
+        EmberPill(
+            label = "Open browser again",
             onClick = onOpenBrowser,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = EarslateTheme.colors.accent,
-                contentColor = EarslateTheme.colors.canvas,
-            ),
-            shape = EarslateTheme.shapes.md,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(
-                text = "Open browser again",
-                style = EarslateTheme.textStyles.body.copy(fontWeight = FontWeight.SemiBold),
-            )
-        }
-        OutlinedButton(
+        )
+        SecondaryPill(
+            label = "Cancel",
             onClick = onCancel,
-            shape = EarslateTheme.shapes.md,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(
-                text = "Cancel",
-                style = EarslateTheme.textStyles.body,
-                color = EarslateTheme.colors.textSecondary,
-            )
-        }
+        )
     }
 }
 
@@ -271,19 +251,14 @@ private fun StatusPanel(message: String) {
         modifier = Modifier
             .fillMaxWidth()
             .background(
-                color = EarslateTheme.colors.surfaceSoft,
-                shape = EarslateTheme.shapes.md,
+                color = EarslateTheme.colors.elev1,
+                shape = EarslateTheme.shapes.lg,
             )
-            .border(
-                width = 1.dp,
-                color = EarslateTheme.colors.borderSubtle,
-                shape = EarslateTheme.shapes.md,
-            )
-            .padding(horizontal = 18.dp, vertical = 22.dp),
+            .padding(horizontal = 22.dp, vertical = 26.dp),
     ) {
         Text(
             text = message,
-            style = EarslateTheme.textStyles.bodyMuted,
+            style = EarslateTheme.textStyles.body,
             color = EarslateTheme.colors.textSecondary,
         )
     }
@@ -291,49 +266,73 @@ private fun StatusPanel(message: String) {
 
 @Composable
 private fun RetryPanel(
-    title: String,
+    kicker: String,
     body: String,
     onRetry: () -> Unit,
 ) {
+    // Hard-error band — oxblood-soft flat fill, cream text, ember retry CTA.
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(
-                color = EarslateTheme.colors.errorBg,
-                shape = EarslateTheme.shapes.md,
+                color = EarslateTheme.colors.oxbloodSoft,
+                shape = EarslateTheme.shapes.lg,
             )
-            .border(
-                width = 1.dp,
-                color = EarslateTheme.colors.errorBorder,
-                shape = EarslateTheme.shapes.md,
-            )
-            .padding(horizontal = 18.dp, vertical = 18.dp),
+            .padding(horizontal = 22.dp, vertical = 20.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Text(
-            text = title.uppercase(),
-            style = EarslateTheme.textStyles.kicker,
-            color = EarslateTheme.colors.danger,
+            text = kicker,
+            style = EarslateTheme.textStyles.meta,
+            color = EarslateTheme.colors.creamSoft,
         )
         Text(
             text = body,
             style = EarslateTheme.textStyles.body,
-            color = EarslateTheme.colors.textPrimary,
+            color = EarslateTheme.colors.cream,
         )
-        Button(
+        EmberPill(
+            label = "Try again",
             onClick = onRetry,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = EarslateTheme.colors.accent,
-                contentColor = EarslateTheme.colors.canvas,
-            ),
-            shape = EarslateTheme.shapes.md,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(
-                text = "Try again",
-                style = EarslateTheme.textStyles.body.copy(fontWeight = FontWeight.SemiBold),
-            )
-        }
+        )
+    }
+}
+
+/** Primary CTA — ember pill with onEmber text, full-width. */
+@Composable
+private fun EmberPill(label: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(color = EarslateTheme.colors.ember, shape = EarslateTheme.shapes.pill)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 22.dp, vertical = 14.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label.uppercase(),
+            style = EarslateTheme.textStyles.meta.copy(fontWeight = FontWeight.SemiBold),
+            color = EarslateTheme.colors.onEmber,
+        )
+    }
+}
+
+/** Secondary CTA — bg-elev-2 pill with cream text. Flat, no border. */
+@Composable
+private fun SecondaryPill(label: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(color = EarslateTheme.colors.elev2, shape = EarslateTheme.shapes.pill)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 22.dp, vertical = 14.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label.uppercase(),
+            style = EarslateTheme.textStyles.meta,
+            color = EarslateTheme.colors.cream,
+        )
     }
 }
 
@@ -407,8 +406,7 @@ private fun decodeJwtEmail(token: String): String? = try {
 /**
  * Open the verification URL. Prefer Custom Tabs if androidx.browser is on the
  * classpath; otherwise fall back to a plain ACTION_VIEW. Today earslate does
- * not bundle androidx.browser, so we use the fallback. The integration plan
- * §5 mentions Custom Tabs — easy upgrade later.
+ * not bundle androidx.browser, so we use the fallback.
  */
 private fun openBrowser(context: android.content.Context, url: String) {
     runCatching {
@@ -418,4 +416,3 @@ private fun openBrowser(context: android.content.Context, url: String) {
         )
     }
 }
-

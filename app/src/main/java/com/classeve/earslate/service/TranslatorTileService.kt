@@ -1,5 +1,6 @@
 package com.classeve.earslate.service
 
+import android.annotation.SuppressLint
 import android.Manifest
 import android.app.PendingIntent
 import android.content.Intent
@@ -106,6 +107,7 @@ class TranslatorTileService : TileService() {
      * Opens MainActivity for the permission flow or as a fallback when the
      * foreground service can't be started from the tile context.
      */
+    @SuppressLint("StartActivityAndCollapseDeprecated")
     private fun launchMainActivity() {
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK

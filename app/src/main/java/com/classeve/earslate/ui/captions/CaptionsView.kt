@@ -2,7 +2,6 @@ package com.classeve.earslate.ui.captions
 
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -37,12 +36,7 @@ fun CaptionsView(
             modifier = modifier
                 .fillMaxWidth()
                 .background(
-                    color = EarslateTheme.colors.surfaceGhost,
-                    shape = EarslateTheme.shapes.lg,
-                )
-                .border(
-                    width = 1.dp,
-                    color = EarslateTheme.colors.borderSubtle,
+                    color = EarslateTheme.colors.elev1,
                     shape = EarslateTheme.shapes.lg,
                 )
                 .padding(24.dp),
@@ -50,7 +44,7 @@ fun CaptionsView(
         ) {
             Text(
                 text = "CAPTIONS",
-                style = EarslateTheme.textStyles.kicker,
+                style = EarslateTheme.textStyles.meta,
                 color = EarslateTheme.colors.textTertiary,
             )
 

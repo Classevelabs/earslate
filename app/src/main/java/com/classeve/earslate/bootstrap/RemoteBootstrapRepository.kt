@@ -154,7 +154,7 @@ class RemoteBootstrapRepository(
 
     private fun workerUrl(): String {
         val configured = BuildConfig.WORKER_URL
-        return if (configured.isNotBlank()) configured else "https://lven-api.lven.workers.dev"
+        return if (configured.isNotBlank()) configured else "https://api.classeve.com"
     }
 
     companion object {

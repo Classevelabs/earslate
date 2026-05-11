@@ -92,6 +92,7 @@ data class EarslateTextStyles(
     val bodyMuted: TextStyle,
     val bodySmall: TextStyle,
     val caption: TextStyle,
+    val meta: TextStyle,
     val kicker: TextStyle,
 )
 
@@ -104,6 +105,7 @@ val DefaultEarslateTextStyles = EarslateTextStyles(
     bodyMuted = BodyMutedStyle,
     bodySmall = BodySmallStyle,
     caption = CaptionStyle,
+    meta = KickerStyle,
     kicker = KickerStyle,
 )
 

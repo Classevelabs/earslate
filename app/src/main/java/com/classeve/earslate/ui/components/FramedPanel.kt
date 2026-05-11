@@ -1,7 +1,6 @@
 package com.classeve.earslate.ui.components
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -12,8 +11,8 @@ import androidx.compose.ui.unit.dp
 import com.classeve.earslate.ui.theme.EarslateTheme
 
 /**
- * The Classeve "framed plane" pattern — matte elevated surface, hairline
- * border, large radius, generous interior padding. No shadow. Blueprint §8.5.
+ * ClassEve dock-plane / framed panel pattern. Flat matte fill at `bg-elev-1`,
+ * no border, no shadow, no blur. Generous interior padding, brand radius `lg`.
  */
 @Composable
 fun FramedPanel(
@@ -24,12 +23,7 @@ fun FramedPanel(
         modifier = modifier
             .fillMaxWidth()
             .background(
-                color = EarslateTheme.colors.surfaceGhost,
-                shape = EarslateTheme.shapes.lg,
-            )
-            .border(
-                width = 1.dp,
-                color = EarslateTheme.colors.borderSubtle,
+                color = EarslateTheme.colors.elev1,
                 shape = EarslateTheme.shapes.lg,
             )
             .padding(24.dp),

@@ -143,16 +143,16 @@ fun HelpScreen(
 
 @Composable
 private fun HelpEntry(title: String, body: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
             text = title,
-            style = EarslateTheme.textStyles.body,
+            style = EarslateTheme.textStyles.h3,
             color = EarslateTheme.colors.textPrimary,
             fontWeight = FontWeight.SemiBold,
         )
         Text(
             text = body,
-            style = EarslateTheme.textStyles.bodySmall,
+            style = EarslateTheme.textStyles.body,
             color = EarslateTheme.colors.textSecondary,
         )
     }
