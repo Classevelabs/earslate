@@ -34,11 +34,8 @@ import com.classeve.earslate.ui.settings.LanguagePickerDialog
 import com.classeve.earslate.ui.theme.EarslateTheme
 
 /**
- * First-run walkthrough. Blueprint §18.3:
- *   - choose native language (Step 0, prominent picker — user must not miss this)
- *   - mic + notification permissions rationale
- *   - Quick Settings tile hint
- *   - playback route test
+ * First-run walkthrough. ClassEve brand v6 — matte ember, flat fills, no
+ * gradient, no border, no glass.
  *
  * Single scrolling screen, no multi-step pager — less ceremony, easier to
  * understand, matches the Classeve "no fluff" design voice.
@@ -65,8 +62,8 @@ fun OnboardingScreen(
             verticalArrangement = Arrangement.spacedBy(24.dp),
         ) {
             Text(
-                text = "EARSLATE",
-                style = EarslateTheme.textStyles.kicker,
+                text = "EARSLATE / WELCOME",
+                style = EarslateTheme.textStyles.meta,
                 color = EarslateTheme.colors.textTertiary,
             )
 
@@ -102,11 +99,11 @@ fun OnboardingScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(
-                            color = EarslateTheme.colors.surfaceStrong,
-                            shape = EarslateTheme.shapes.md,
+                            color = EarslateTheme.colors.elev2,
+                            shape = EarslateTheme.shapes.lg,
                         )
                         .clickable { showPicker = true }
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                        .padding(horizontal = 18.dp, vertical = 16.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -114,19 +111,30 @@ fun OnboardingScreen(
                         Text(
                             text = selectedLanguage.displayName,
                             style = EarslateTheme.textStyles.h3,
-                            color = EarslateTheme.colors.accent,
+                            color = EarslateTheme.colors.cream,
                         )
+                        Spacer(Modifier.height(2.dp))
                         Text(
                             text = "Tap to change",
-                            style = EarslateTheme.textStyles.kicker,
+                            style = EarslateTheme.textStyles.meta,
                             color = EarslateTheme.colors.textTertiary,
                         )
                     }
-                    Text(
-                        text = selectedLanguage.bcp47,
-                        style = EarslateTheme.textStyles.bodyMuted,
-                        color = EarslateTheme.colors.textSecondary,
-                    )
+                    // BCP-47 chip — pill, surfaceSoft, mono uppercase, creamSoft.
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                color = EarslateTheme.colors.surfaceSoft,
+                                shape = EarslateTheme.shapes.pill,
+                            )
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                    ) {
+                        Text(
+                            text = selectedLanguage.bcp47.uppercase(),
+                            style = EarslateTheme.textStyles.meta,
+                            color = EarslateTheme.colors.creamSoft,
+                        )
+                    }
                 }
             }
 
@@ -155,18 +163,19 @@ fun OnboardingScreen(
 
             Spacer(Modifier.height(8.dp))
 
+            // Continue — ember pill, onEmber text. Full-width primary CTA.
             Button(
                 onClick = onContinue,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = EarslateTheme.colors.accent,
-                    contentColor = EarslateTheme.colors.canvas,
+                    containerColor = EarslateTheme.colors.ember,
+                    contentColor = EarslateTheme.colors.onEmber,
                 ),
-                shape = EarslateTheme.shapes.md,
+                shape = EarslateTheme.shapes.pill,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(
-                    text = "Continue",
-                    style = EarslateTheme.textStyles.body.copy(fontWeight = FontWeight.SemiBold),
+                    text = "CONTINUE",
+                    style = EarslateTheme.textStyles.meta.copy(fontWeight = FontWeight.SemiBold),
                 )
             }
         }
@@ -179,13 +188,13 @@ private fun OnboardingStep(
     title: String,
     body: String,
 ) {
-    Column(
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
+    // Each step uses the ember section-counter motif: ember mono index +
+    // display-weight title + body copy.
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(
             text = index,
-            style = EarslateTheme.textStyles.kicker,
-            color = EarslateTheme.colors.textTertiary,
+            style = EarslateTheme.textStyles.meta,
+            color = EarslateTheme.colors.ember,
         )
         Text(
             text = title,
@@ -194,7 +203,7 @@ private fun OnboardingStep(
         )
         Text(
             text = body,
-            style = EarslateTheme.textStyles.bodyMuted,
+            style = EarslateTheme.textStyles.body,
             color = EarslateTheme.colors.textSecondary,
         )
     }

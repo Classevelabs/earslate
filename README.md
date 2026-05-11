@@ -42,4 +42,6 @@ app/src/main/java/com/classeve/earslate/
 
 ## Auth
 
-Authentication integration with **classeve.com** is deferred. v1 runs on a local-dev bootstrap that reads `GEMINI_API_KEY` from `local.properties`. When auth lands we swap in a `RemoteBootstrapRepository` that mints ephemeral Live credentials through the ClassEve Worker — no raw API keys in the APK.
+Sign-in goes through the **ClassEve Worker** via the RFC 8628 device-authorization grant — same pairing flow as Lven. On first launch the user opens [classeve.com/link](https://classeve.com/link) with the displayed code, signs in, and tokens land in EncryptedSharedPreferences. The Worker mints short-lived Gemini Live credentials per session — **no raw API keys ship in the release APK**. `local.properties` still holds a `GEMINI_API_KEY` for `assembleDebug` builds only; release builds force the field empty (see `app/build.gradle.kts`).
+
+Daily usage caps are enforced by `TranslateUsageReporter` heartbeating `/v1/earslate/heartbeat` every 60 seconds; on `429 DAILY_LIMIT_REACHED` the session stops and the UI surfaces a "Daily limit reached" banner.

@@ -6,17 +6,17 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.unit.dp
 
-// ClassEve radii: sm=12 md=14 lg=28 xl=38 pill=999
-val RadiusSm = 12.dp
-val RadiusMd = 14.dp
-val RadiusLg = 28.dp
-val RadiusXl = 38.dp
+// CLASSEVE v6 radii: sm=6 md=10 lg=16 xl=22. Controls use md, not capsules.
+val RadiusSm = 6.dp
+val RadiusMd = 10.dp
+val RadiusLg = 16.dp
+val RadiusXl = 22.dp
 
 val ShapeSm = RoundedCornerShape(RadiusSm)
 val ShapeMd = RoundedCornerShape(RadiusMd)
 val ShapeLg = RoundedCornerShape(RadiusLg)
 val ShapeXl = RoundedCornerShape(RadiusXl)
-val ShapePill = RoundedCornerShape(percent = 50)
+val ShapePill = ShapeMd
 
 @Immutable
 data class EarslateShapes(

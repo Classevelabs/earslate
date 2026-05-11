@@ -1,5 +1,6 @@
 package com.classeve.earslate.audio
 
+import android.annotation.SuppressLint
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -41,6 +42,7 @@ class AndroidAudioCaptureEngine(
     private val frameMs: Int = 20,
     private val framesPerBatch: Int = 2,
     private val vadGate: VadGate? = null,
+    private val hasRecordAudioPermission: () -> Boolean = { true },
 ) : AudioCaptureEngine {
 
     private val samplesPerFrame = (sampleRateHz * frameMs) / 1000
@@ -54,10 +56,15 @@ class AndroidAudioCaptureEngine(
     @Volatile private var aec: AcousticEchoCanceler? = null
     @Volatile private var ns: NoiseSuppressor? = null
 
+    @SuppressLint("MissingPermission")
     override fun start(onBatch: (ByteArray) -> Unit): Int {
         if (loopJob != null) {
             Log.i(TAG, "start called while already capturing; ignoring")
             return record?.audioSessionId ?: 0
+        }
+        if (!hasRecordAudioPermission()) {
+            Log.w(TAG, "AudioRecord start rejected: RECORD_AUDIO permission missing")
+            return 0
         }
 
         val minBuffer = AudioRecord.getMinBufferSize(
