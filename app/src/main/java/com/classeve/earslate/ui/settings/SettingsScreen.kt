@@ -8,7 +8,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -40,14 +39,8 @@ import com.classeve.earslate.ui.theme.MotionBaseMs
 import com.classeve.earslate.ui.theme.PreciseEasing
 
 /**
- * Settings screen — Classeve-style vertical list of options, no chrome. Blueprint §18.2.
- *
- * V1 surfaces only the settings that actually move runtime behavior:
- *   - Target language
- *   - Captions on/off
- *   - Output voice (placeholder until Gemini voice list is surfaced)
- *   - Earbud preference
- *   - Diagnostics toggle
+ * Settings — ClassEve brand v6. Flat rows inside framed dock-planes, ember
+ * boxy toggles, mono uppercase meta-labels. No border, no shadow, no glass.
  */
 @Composable
 fun SettingsScreen(
@@ -286,7 +279,7 @@ private fun SettingsRow(
         )
         Text(
             text = value,
-            style = EarslateTheme.textStyles.bodyMuted,
+            style = EarslateTheme.textStyles.body,
             color = EarslateTheme.colors.textSecondary,
         )
     }
@@ -328,36 +321,28 @@ private fun ToggleRow(
 
 @Composable
 private fun TogglePill(value: Boolean) {
+    // Toggle pill — ember when on, surfaceSoft when off. Mono uppercase label
+    // with the brand meta letter-spacing. No border.
     val animSpec = tween<androidx.compose.ui.graphics.Color>(MotionBaseMs, easing = PreciseEasing)
     val bg by animateColorAsState(
-        targetValue = if (value) EarslateTheme.colors.accent else EarslateTheme.colors.surfaceStrong,
+        targetValue = if (value) EarslateTheme.colors.ember else EarslateTheme.colors.surfaceSoft,
         animationSpec = animSpec,
         label = "toggle-bg",
     )
     val fg by animateColorAsState(
-        targetValue = if (value) EarslateTheme.colors.canvas else EarslateTheme.colors.textTertiary,
+        targetValue = if (value) EarslateTheme.colors.onEmber else EarslateTheme.colors.creamSoft,
         animationSpec = animSpec,
         label = "toggle-fg",
-    )
-    val borderColor by animateColorAsState(
-        targetValue = if (value) EarslateTheme.colors.accent else EarslateTheme.colors.borderDefault,
-        animationSpec = animSpec,
-        label = "toggle-border",
     )
     val stateLabel = if (value) "ON" else "OFF"
     Box(
         modifier = Modifier
             .background(color = bg, shape = EarslateTheme.shapes.pill)
-            .border(
-                width = 1.dp,
-                color = borderColor,
-                shape = EarslateTheme.shapes.pill,
-            )
             .padding(horizontal = 14.dp, vertical = 6.dp),
     ) {
         Text(
             text = stateLabel,
-            style = EarslateTheme.textStyles.kicker,
+            style = EarslateTheme.textStyles.meta,
             color = fg,
         )
     }
@@ -365,6 +350,7 @@ private fun TogglePill(value: Boolean) {
 
 @Composable
 private fun Divider() {
+    // One-edge separator, brand `--border-subtle` (cream @ 8% alpha).
     Box(
         modifier = Modifier
             .fillMaxWidth()

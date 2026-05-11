@@ -81,6 +81,8 @@ fun DiagnosticsScreen(
 
 @Composable
 private fun StatRow(label: String, value: String) {
+    // Label uses the meta-label motif (mono, uppercase, +0.12em tracking,
+    // textTertiary). Value renders in mono for that classeve "tickers" feel.
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -89,13 +91,13 @@ private fun StatRow(label: String, value: String) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = label,
-            style = EarslateTheme.textStyles.bodyMuted,
-            color = EarslateTheme.colors.textSecondary,
+            text = label.uppercase(),
+            style = EarslateTheme.textStyles.meta,
+            color = EarslateTheme.colors.textTertiary,
         )
         Text(
             text = value,
-            style = EarslateTheme.textStyles.body,
+            style = EarslateTheme.textStyles.meta,
             color = EarslateTheme.colors.textPrimary,
         )
     }

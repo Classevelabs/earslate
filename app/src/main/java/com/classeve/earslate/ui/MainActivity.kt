@@ -25,7 +25,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -378,7 +377,7 @@ private fun MainScreen(
 
             Text(
                 text = stringResource(R.string.hero_body, currentLanguage.displayName),
-                style = EarslateTheme.textStyles.bodyMuted,
+                style = EarslateTheme.textStyles.body,
                 color = EarslateTheme.colors.textSecondary,
             )
 
@@ -449,13 +448,17 @@ private fun MainScreen(
 
 @Composable
 private fun TopBar(onOpenSettings: () -> Unit) {
+    // Top bar — bgCanvas (matches page), no shadow, no elevation. The settings
+    // entry is rendered as the canonical ember profile-capsule pill.
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(EarslateTheme.colors.canvas),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = stringResource(R.string.app_name).uppercase(),
-            style = EarslateTheme.textStyles.kicker,
+            style = EarslateTheme.textStyles.meta,
             color = EarslateTheme.colors.textTertiary,
         )
         Spacer(modifier = Modifier.weight(1f))
@@ -467,20 +470,15 @@ private fun TopBar(onOpenSettings: () -> Unit) {
                 )
                 .semantics { contentDescription = "Settings" }
                 .background(
-                    color = EarslateTheme.colors.surfaceGhost,
+                    color = EarslateTheme.colors.ember,
                     shape = EarslateTheme.shapes.pill,
                 )
-                .border(
-                    width = 1.dp,
-                    color = EarslateTheme.colors.borderSubtle,
-                    shape = EarslateTheme.shapes.pill,
-                )
-                .padding(horizontal = 14.dp, vertical = 8.dp),
+                .padding(horizontal = 18.dp, vertical = 10.dp),
         ) {
             Text(
                 text = stringResource(R.string.label_settings),
-                style = EarslateTheme.textStyles.kicker,
-                color = EarslateTheme.colors.textTertiary,
+                style = EarslateTheme.textStyles.meta,
+                color = EarslateTheme.colors.onEmber,
             )
         }
     }
@@ -496,20 +494,26 @@ private fun PrimaryButton(
     val labelRes = if (isActive) R.string.action_stop else R.string.action_start
     val label = stringResource(labelRes)
 
+    // Ember block — primary action. onEmber text, brand md radius.
+    // STOP variant uses bg-elev-2 + cream so the user gets a strong visual
+    // signal that this is a destructive / "leave the active state" action.
+    val container = if (isActive) EarslateTheme.colors.elev2 else EarslateTheme.colors.ember
+    val content = if (isActive) EarslateTheme.colors.cream else EarslateTheme.colors.onEmber
+
     Button(
         onClick = { if (isActive) onStop() else onStart() },
         colors = ButtonDefaults.buttonColors(
-            containerColor = EarslateTheme.colors.accent,
-            contentColor = EarslateTheme.colors.canvas,
+            containerColor = container,
+            contentColor = content,
         ),
-        shape = EarslateTheme.shapes.md,
+        shape = EarslateTheme.shapes.pill,
         modifier = Modifier
             .fillMaxWidth()
             .semantics { contentDescription = label },
     ) {
         Text(
-            text = label,
-            style = EarslateTheme.textStyles.body.copy(fontWeight = FontWeight.SemiBold),
+            text = label.uppercase(),
+            style = EarslateTheme.textStyles.meta.copy(fontWeight = FontWeight.SemiBold),
         )
     }
 }
@@ -517,42 +521,50 @@ private fun PrimaryButton(
 @Composable
 private fun StatusPill(state: RuntimeState) {
     val label = stringResource(statusLabelFor(state))
-    val targetTint = when (state) {
-        RuntimeState.IDLE, RuntimeState.STOPPING -> EarslateTheme.colors.textTertiary
-        RuntimeState.LISTENING, RuntimeState.PLAYING, RuntimeState.READY -> EarslateTheme.colors.accent
-        RuntimeState.RECONNECTING, RuntimeState.RESUMING -> EarslateTheme.colors.warning
-        RuntimeState.DEGRADED -> EarslateTheme.colors.danger
-        else -> EarslateTheme.colors.textSecondary
+    // Tag-chip palette per brand: idle = surfaceSoft + creamSoft text;
+    // active = ember + onEmber text; warning/degraded keep amber/danger ramps
+    // while staying inside the brand cream/ember family.
+    val active = when (state) {
+        RuntimeState.LISTENING, RuntimeState.PLAYING, RuntimeState.READY -> true
+        else -> false
     }
-    val tint by animateColorAsState(
-        targetValue = targetTint,
+    val targetBg = when {
+        active -> EarslateTheme.colors.ember
+        state == RuntimeState.DEGRADED -> EarslateTheme.colors.oxbloodSoft
+        else -> EarslateTheme.colors.surfaceSoft
+    }
+    val targetFg = when {
+        active -> EarslateTheme.colors.onEmber
+        state == RuntimeState.RECONNECTING || state == RuntimeState.RESUMING -> EarslateTheme.colors.warning
+        state == RuntimeState.DEGRADED -> EarslateTheme.colors.cream
+        else -> EarslateTheme.colors.creamSoft
+    }
+    val bg by animateColorAsState(
+        targetValue = targetBg,
         animationSpec = tween(MotionBaseMs, easing = PreciseEasing),
-        label = "status-tint",
+        label = "status-bg",
+    )
+    val fg by animateColorAsState(
+        targetValue = targetFg,
+        animationSpec = tween(MotionBaseMs, easing = PreciseEasing),
+        label = "status-fg",
     )
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         modifier = Modifier
-            .background(
-                color = EarslateTheme.colors.surfaceSoft,
-                shape = EarslateTheme.shapes.pill,
-            )
-            .border(
-                width = 1.dp,
-                color = EarslateTheme.colors.borderSubtle,
-                shape = EarslateTheme.shapes.pill,
-            )
+            .background(color = bg, shape = EarslateTheme.shapes.pill)
             .padding(horizontal = 14.dp, vertical = 8.dp),
     ) {
         Box(
             modifier = Modifier
-                .size(8.dp)
-                .background(color = tint, shape = CircleShape),
+                .size(6.dp)
+                .background(color = fg, shape = CircleShape),
         )
         Text(
             text = label.uppercase(),
-            style = EarslateTheme.textStyles.kicker,
-            color = tint,
+            style = EarslateTheme.textStyles.meta,
+            color = fg,
         )
     }
 }
@@ -567,54 +579,46 @@ private fun RoutePill(route: AudioRoute) {
             AudioRoute.UNKNOWN -> R.string.route_unknown
         },
     )
+    // Route tag-chip — surfaceSoft fill, creamSoft mono uppercase.
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .background(
-                color = EarslateTheme.colors.surfaceGhost,
-                shape = EarslateTheme.shapes.pill,
-            )
-            .border(
-                width = 1.dp,
-                color = EarslateTheme.colors.borderSubtle,
+                color = EarslateTheme.colors.surfaceSoft,
                 shape = EarslateTheme.shapes.pill,
             )
             .padding(horizontal = 14.dp, vertical = 8.dp),
     ) {
         Text(
             text = label,
-            style = EarslateTheme.textStyles.kicker,
-            color = EarslateTheme.colors.textTertiary,
+            style = EarslateTheme.textStyles.meta,
+            color = EarslateTheme.colors.creamSoft,
         )
     }
 }
 
 @Composable
 private fun SpeakerEchoNotice() {
+    // Speaker-echo notice — flat bg-elev-1 plate, no border.
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(
-                color = EarslateTheme.colors.surfaceSoft,
-                shape = EarslateTheme.shapes.md,
+                color = EarslateTheme.colors.elev1,
+                shape = EarslateTheme.shapes.lg,
             )
-            .border(
-                width = 1.dp,
-                color = EarslateTheme.colors.borderSubtle,
-                shape = EarslateTheme.shapes.md,
-            )
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 18.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Box(
             modifier = Modifier
                 .size(6.dp)
-                .background(color = EarslateTheme.colors.warning, shape = CircleShape),
+                .background(color = EarslateTheme.colors.ember, shape = CircleShape),
         )
         Text(
             text = stringResource(R.string.route_speaker_echo_warning),
-            style = EarslateTheme.textStyles.bodyMuted,
+            style = EarslateTheme.textStyles.body,
             color = EarslateTheme.colors.textSecondary,
         )
     }

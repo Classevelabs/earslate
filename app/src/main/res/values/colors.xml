@@ -1,41 +1,63 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
+    <!-- CLASSEVE brand palette v6 (matte ember). Mirrors `SYSTEM/_brand/tokens.kt`. -->
+
     <!-- Canvas & elevation layers -->
-    <color name="earslate_bg_canvas">#FF000000</color>
-    <color name="earslate_bg_elev1">#FF040404</color>
-    <color name="earslate_bg_elev2">#FF080808</color>
-    <color name="earslate_bg_elev3">#FF0C0C0C</color>
+    <color name="earslate_bg_canvas">#FF1A1612</color>
+    <color name="earslate_bg_elev1">#FF221C16</color>
+    <color name="earslate_bg_elev2">#FF2A2218</color>
+    <color name="earslate_bg_elev3">#FF3A2F23</color>
 
-    <!-- Surface overlays (white alpha) -->
-    <color name="earslate_surface_ghost">#05FFFFFF</color>
-    <color name="earslate_surface_soft">#0AFFFFFF</color>
-    <color name="earslate_surface_strong">#12FFFFFF</color>
+    <!-- Surface overlays (cream alpha) -->
+    <color name="earslate_surface_ghost">#0AECE3D2</color>
+    <color name="earslate_surface_soft">#12ECE3D2</color>
+    <color name="earslate_surface_strong">#1FECE3D2</color>
 
-    <!-- Border tiers -->
-    <color name="earslate_border_subtle">#14FFFFFF</color>
-    <color name="earslate_border_default">#1FFFFFFF</color>
-    <color name="earslate_border_strong">#2EFFFFFF</color>
+    <!-- Border tiers (cream alpha) -->
+    <color name="earslate_border_subtle">#14E7D9C4</color>
+    <color name="earslate_border_default">#24E7D9C4</color>
+    <color name="earslate_border_strong">#38E7D9C4</color>
+
+    <!-- Cream family -->
+    <color name="earslate_cream">#FFECE3D2</color>
+    <color name="earslate_cream_soft">#FFD8CDB7</color>
+    <color name="earslate_cream_deep">#FFC7BBA2</color>
 
     <!-- Text hierarchy -->
-    <color name="earslate_text_primary">#FFE2DCD2</color>
-    <color name="earslate_text_secondary">#FFB2AA9D</color>
-    <color name="earslate_text_tertiary">#FF787069</color>
-    <color name="earslate_text_disabled">#FF56524C</color>
+    <color name="earslate_text_primary">#FFECE3D2</color>
+    <color name="earslate_text_secondary">#FFB8AA8E</color>
+    <color name="earslate_text_tertiary">#FF80735C</color>
+    <color name="earslate_text_disabled">#FF4A4032</color>
 
-    <!-- Accent / signal -->
-    <color name="earslate_accent">#FFD3CCC1</color>
-    <color name="earslate_accent_hover">#FFE2DCD2</color>
-    <color name="earslate_accent_pressed">#FFBEB7AC</color>
-    <color name="earslate_signal_soft">#33D3CCC1</color>
-    <color name="earslate_focus_ring">#47E2DCD2</color>
+    <!-- Ember accent -->
+    <color name="earslate_ember">#FFC2410C</color>
+    <color name="earslate_ember_hover">#FFD85317</color>
+    <color name="earslate_ember_pressed">#FFA93609</color>
+    <color name="earslate_ember_soft">#2EC2410C</color>
+    <color name="earslate_ember_glow">#66FF7828</color>
+    <color name="earslate_ember_line">#8CE76C20</color>
+    <color name="earslate_on_ember">#FF1A0C06</color>
+
+    <!-- Oxblood -->
+    <color name="earslate_oxblood">#FF8B1E1E</color>
+    <color name="earslate_oxblood_soft">#388B1E1E</color>
+
+    <!-- Legacy accent aliases — ember -->
+    <color name="earslate_accent">#FFC2410C</color>
+    <color name="earslate_accent_hover">#FFD85317</color>
+    <color name="earslate_accent_pressed">#FFA93609</color>
+    <color name="earslate_signal_soft">#2EC2410C</color>
+    <color name="earslate_focus_ring">#52FF7828</color>
 
     <!-- States -->
     <color name="earslate_success">#FFC9D3C6</color>
     <color name="earslate_warning">#FFD6C7A8</color>
     <color name="earslate_danger">#FFD3B3AF</color>
-    <color name="earslate_error">#FFFF6B6B</color>
-    <color name="earslate_error_bg">#1AFF6B6B</color>
-    <color name="earslate_error_border">#4DFF6B6B</color>
+
+    <!-- Error band — flat oxblood-soft, no glaring red. -->
+    <color name="earslate_error">#FF8B1E1E</color>
+    <color name="earslate_error_bg">#388B1E1E</color>
+    <color name="earslate_error_border">#FF8B1E1E</color>
 
 </resources>

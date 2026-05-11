@@ -7,41 +7,55 @@ import androidx.compose.ui.graphics.Color
 // Raw tokens — keep in sync with res/values/colors.xml
 
 // Canvas & elevation
-val Canvas = Color(0xFF000000)
-val Elev1 = Color(0xFF040404)
-val Elev2 = Color(0xFF080808)
-val Elev3 = Color(0xFF0C0C0C)
+val Canvas = Color(0xFF1A1612)
+val Elev1 = Color(0xFF221C16)
+val Elev2 = Color(0xFF2A2218)
+val Elev3 = Color(0xFF3A2F23)
 
-// Surfaces (alpha-over-white)
-val SurfaceGhost = Color(0x05FFFFFF)
-val SurfaceSoft = Color(0x0AFFFFFF)
-val SurfaceStrong = Color(0x12FFFFFF)
+// Surfaces (alpha-over-cream)
+val SurfaceGhost = Color(0x0AECE3D2)
+val SurfaceSoft = Color(0x12ECE3D2)
+val SurfaceStrong = Color(0x1FECE3D2)
 
 // Borders
-val BorderSubtle = Color(0x14FFFFFF)
-val BorderDefault = Color(0x1FFFFFFF)
-val BorderStrong = Color(0x2EFFFFFF)
+val BorderSubtle = Color(0x14E7D9C4)
+val BorderDefault = Color(0x24E7D9C4)
+val BorderStrong = Color(0x38E7D9C4)
 
 // Text
-val TextPrimary = Color(0xFFE2DCD2)
-val TextSecondary = Color(0xFFB2AA9D)
-val TextTertiary = Color(0xFF787069)
-val TextDisabled = Color(0xFF56524C)
+val Cream = Color(0xFFECE3D2)
+val CreamSoft = Color(0xFFD8CDB7)
+val CreamDeep = Color(0xFFC7BBA2)
+val TextPrimary = Color(0xFFECE3D2)
+val TextSecondary = Color(0xFFB8AA8E)
+val TextTertiary = Color(0xFF80735C)
+val TextDisabled = Color(0xFF4A4032)
 
-// Accent & focus
-val Accent = Color(0xFFD3CCC1)
-val AccentHover = Color(0xFFE2DCD2)
-val AccentPressed = Color(0xFFBEB7AC)
-val SignalSoft = Color(0x33D3CCC1)
-val FocusRing = Color(0x47E2DCD2)
+// Ember / oxblood accents
+val Ember = Color(0xFFC2410C)
+val EmberHover = Color(0xFFD85317)
+val EmberPressed = Color(0xFFA93609)
+val EmberSoft = Color(0x2EC2410C)
+val EmberGlow = Color(0x66FF7828)
+val EmberLine = Color(0x8CE76C20)
+val Oxblood = Color(0xFF8B1E1E)
+val OxbloodSoft = Color(0x388B1E1E)
+val OnEmber = Color(0xFF1A0C06)
+
+// Legacy accent aliases
+val Accent = Ember
+val AccentHover = EmberHover
+val AccentPressed = EmberPressed
+val SignalSoft = EmberSoft
+val FocusRing = Color(0x52FF7828)
 
 // States
 val Success = Color(0xFFC9D3C6)
 val Warning = Color(0xFFD6C7A8)
 val Danger = Color(0xFFD3B3AF)
-val ErrorStrong = Color(0xFFFF6B6B)
-val ErrorBg = Color(0x1AFF6B6B)
-val ErrorBorder = Color(0x4DFF6B6B)
+val ErrorStrong = Oxblood
+val ErrorBg = OxbloodSoft
+val ErrorBorder = Oxblood
 
 @Immutable
 data class EarslateColors(
@@ -59,6 +73,18 @@ data class EarslateColors(
     val textSecondary: Color,
     val textTertiary: Color,
     val textDisabled: Color,
+    val cream: Color,
+    val creamSoft: Color,
+    val creamDeep: Color,
+    val ember: Color,
+    val emberHover: Color,
+    val emberPressed: Color,
+    val emberSoft: Color,
+    val emberGlow: Color,
+    val emberLine: Color,
+    val oxblood: Color,
+    val oxbloodSoft: Color,
+    val onEmber: Color,
     val accent: Color,
     val accentHover: Color,
     val accentPressed: Color,
@@ -87,6 +113,18 @@ val DarkEarslateColors = EarslateColors(
     textSecondary = TextSecondary,
     textTertiary = TextTertiary,
     textDisabled = TextDisabled,
+    cream = Cream,
+    creamSoft = CreamSoft,
+    creamDeep = CreamDeep,
+    ember = Ember,
+    emberHover = EmberHover,
+    emberPressed = EmberPressed,
+    emberSoft = EmberSoft,
+    emberGlow = EmberGlow,
+    emberLine = EmberLine,
+    oxblood = Oxblood,
+    oxbloodSoft = OxbloodSoft,
+    onEmber = OnEmber,
     accent = Accent,
     accentHover = AccentHover,
     accentPressed = AccentPressed,

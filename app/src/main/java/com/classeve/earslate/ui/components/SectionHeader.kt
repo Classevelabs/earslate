@@ -9,9 +9,9 @@ import androidx.compose.ui.unit.dp
 import com.classeve.earslate.ui.theme.EarslateTheme
 
 /**
- * Classeve-style section opener: uppercase kicker label, big display-weight
- * headline, optional support line. Matches the "Section Opener" pattern from
- * the website blueprint §8.4.
+ * ClassEve section opener — mono uppercase meta-label, big display headline,
+ * optional support line. Mirrors the `.section-opener` pattern from the
+ * canonical reference CSS.
  */
 @Composable
 fun SectionHeader(
@@ -26,7 +26,7 @@ fun SectionHeader(
     ) {
         Text(
             text = kicker.uppercase(),
-            style = EarslateTheme.textStyles.kicker,
+            style = EarslateTheme.textStyles.meta,
             color = EarslateTheme.colors.textTertiary,
         )
         Text(
@@ -37,7 +37,7 @@ fun SectionHeader(
         if (!support.isNullOrBlank()) {
             Text(
                 text = support,
-                style = EarslateTheme.textStyles.bodyMuted,
+                style = EarslateTheme.textStyles.body,
                 color = EarslateTheme.colors.textSecondary,
             )
         }
