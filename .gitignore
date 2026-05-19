@@ -9,3 +9,16 @@ captures
 local.properties
 *.keystore
 *.jks
+
+
+# Assistant context files — local-only, never on origin.
+CLAUDE.md
+AGENTS.md
+.claude/
+.cursor/
+.cursorrules
+.aider*
+.continue/
+.codex-screenshots/
+GEMINI.md
+CONTEXT.md
