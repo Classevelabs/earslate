@@ -27,3 +27,17 @@
 # WorkManager / EncryptedSharedPreferences workers
 -keep class * extends androidx.work.CoroutineWorker { <init>(...); }
 -keep class * extends androidx.work.Worker { <init>(...); }
+
+# Strip android.util.Log calls in release builds — mirrors Lven-Android.
+# Logcat is world-readable to any adb-attached host and to system bugreports;
+# parser/serialization error messages can embed frame excerpts (translated
+# conversation content) and network errors can embed request detail. Debug
+# builds keep full logging. The compiler can remove these because Log.*
+# returns an Int that is never used.
+-assumenosideeffects class android.util.Log {
+    public static int v(...);
+    public static int d(...);
+    public static int i(...);
+    public static int w(...);
+    public static int e(...);
+}
