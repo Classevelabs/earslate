@@ -288,8 +288,10 @@ class SessionCoordinator(
         socketClient.frames.collect { raw ->
             val parsed = LiveMessageParser.parse(raw)
             parsed.forEach { event ->
+                // Log the event TYPE only — CaptionDelta carries translated
+                // conversation content and must never reach logcat.
                 runCatching { dispatch(event) }
-                    .onFailure { Log.e(TAG, "dispatch failed for $event: ${it.message}", it) }
+                    .onFailure { Log.e(TAG, "dispatch failed for ${event.javaClass.simpleName}: ${it.message}", it) }
                 _events.tryEmit(event)
             }
         }

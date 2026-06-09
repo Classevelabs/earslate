@@ -73,8 +73,10 @@ class DailyLimitReachedException(
 ) : BootstrapException(message)
 
 /**
- * Worker returned 401 (or refresh failed locally). The stored session is
- * invalid — UI must clear it and bounce the user back to the sign-in screen.
+ * Worker returned 401 (or the refresh token was definitively rejected). The
+ * UI bounces the user to the sign-in screen. Local tokens are deliberately
+ * KEPT — once paired, only manual sign-out or a successful re-pair replaces
+ * them, so a spurious server-side 401 can never permanently un-pair a device.
  */
 class AuthRequiredException(
     message: String = "Sign-in required — please pair this device again.",
