@@ -30,7 +30,7 @@ import java.util.concurrent.TimeUnit
  * Worker error mapping (see /home/mani/Music/SYSTEM/Lven /Lven-Infrastructure
  * /cloudflare-worker/src/routes/earslate.ts):
  *
- *   401              → AuthRequiredException        — refresh failed; clear session
+ *   401              → AuthRequiredException        — sign-in required (session kept; re-pair overwrites)
  *   402 SUBSCRIPTION_REQUIRED / ENTITLEMENT_MISSING → SubscriptionRequiredException
  *   429 DAILY_LIMIT_REACHED → DailyLimitReachedException
  *   anything else    → BootstrapException
@@ -87,8 +87,20 @@ class RemoteBootstrapRepository(
 
     /**
      * Returns a non-expired access token, refreshing if needed. Returns null
-     * (and clears the stored session) if no refresh token is present or the
-     * refresh failed — the caller treats null as "user must sign in again".
+     * if no refresh token is present or the Worker definitively rejected the
+     * refresh — the caller treats null as "user must sign in again".
+     *
+     * Transient refresh failures (5xx/429/network) propagate as IOException
+     * from [DeviceLinkClient.refresh] so they surface as BOOTSTRAP_FAILED
+     * (retry later), never as a sign-in bounce.
+     *
+     * NOTE: this method never clears the stored session. Auth UX directive:
+     * once a device is paired it stays paired — only an explicit user
+     * sign-out (or a successful re-pair overwriting the slot) may replace
+     * tokens. Even on a definitive rejection we keep the local session so a
+     * server-side hiccup misclassified as a 4xx cannot permanently un-pair
+     * the device; the user lands on the sign-in screen and re-pairing
+     * overwrites the session.
      */
     suspend fun ensureFreshAccessToken(): String? = withContext(Dispatchers.IO) {
         if (!AuthStore.isSessionExpired(appContext)) {
@@ -109,10 +121,7 @@ class RemoteBootstrapRepository(
                 )
                 result.accessToken
             }
-            RefreshResult.Failed -> {
-                AuthStore.clear(appContext)
-                null
-            }
+            RefreshResult.Failed -> null
         }
     }
 
@@ -131,9 +140,13 @@ class RemoteBootstrapRepository(
 
         return when {
             httpStatus == 401 -> {
-                // Access token rejected even after refresh — wipe it so we
-                // don't loop. The session may have been revoked server-side.
-                AuthStore.clear(appContext)
+                // Access token rejected. Zero the stored expiry so the next
+                // attempt is forced through a refresh-token rotation instead
+                // of replaying the same rejected access token. Deliberately
+                // NOT AuthStore.clear(): once paired, only manual sign-out
+                // (or a successful re-pair) replaces local tokens — a spurious
+                // 401 must never permanently un-pair the device.
+                AuthStore.markAccessTokenExpired(appContext)
                 AuthRequiredException(message)
             }
             httpStatus == 402 || code == "SUBSCRIPTION_REQUIRED" || code == "ENTITLEMENT_MISSING" -> {

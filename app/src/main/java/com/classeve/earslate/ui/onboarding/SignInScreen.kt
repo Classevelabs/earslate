@@ -409,6 +409,10 @@ private fun decodeJwtEmail(token: String): String? = try {
  * not bundle androidx.browser, so we use the fallback.
  */
 private fun openBrowser(context: android.content.Context, url: String) {
+    // Defense-in-depth: the verification URI arrives from the Worker over
+    // TLS, but never hand a non-https URI to ACTION_VIEW — a crafted scheme
+    // (intent://, file://) could route into arbitrary exported components.
+    if (!url.startsWith("https://")) return
     runCatching {
         context.startActivity(
             Intent(Intent.ACTION_VIEW, Uri.parse(url))

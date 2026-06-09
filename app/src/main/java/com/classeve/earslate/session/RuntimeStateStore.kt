@@ -66,8 +66,9 @@ data class RuntimeError(
         CONNECT_FAILED,
         PERMISSION_DENIED,
         /**
-         * Worker rejected the access token — session was wiped, user must
-         * pair the device again. UI bounces to the sign-in flow.
+         * Worker rejected the access token — user must pair the device
+         * again. UI bounces to the sign-in flow. Stored tokens are kept
+         * (never auto-logout); a successful re-pair overwrites them.
          */
         AUTH_REQUIRED,
         /** 402 from /v1/earslate/bootstrap — show pricing CTA. */
