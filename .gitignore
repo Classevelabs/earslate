@@ -12,7 +12,7 @@ local.properties
 
 
 # Assistant context files — local-only, never on origin.
-CLAUDE.md
+AGENTS.md
 AGENTS.md
 .claude/
 .cursor/

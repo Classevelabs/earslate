@@ -2,7 +2,12 @@
 
 Always-available live speech translator for Android. Listens continuously, translates nearby speech into the user's native language, and plays the translated audio through earbuds or speaker.
 
-Part of the **ClassEve** product family alongside [Lven](https://classeve.com).
+A separate ClassEve product with its own subscription — not bundled into Lven Instant or Lven Cloud. Powered by **Google Gemini Live** over a direct device-to-Live WebSocket. Pricing page: [`classeve.com/releases/earslate/pricing`](https://classeve.com/releases/earslate/pricing) (coming soon).
+
+## Status
+
+- Android: live. APK at [`classeve.com/downloads/Earslate.apk`](https://classeve.com/downloads/Earslate.apk).
+- iOS: source-ready (see [`../earslate-ios/`](../earslate-ios/)); shipping status TBD pending macOS build + App Store review.
 
 ## Quick start
 
