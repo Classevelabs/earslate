@@ -5,6 +5,7 @@ import android.util.Log
 import com.classeve.earslate.BuildConfig
 import com.classeve.earslate.auth.AuthStore
 import com.classeve.earslate.bootstrap.RemoteBootstrapRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -68,9 +69,18 @@ class TranslateUsageReporter(
         if (secondsActive <= 0) return Result.Ok(0, 0)
         val capped = secondsActive.coerceAtMost(MAX_DELTA_SECONDS)
 
-        // First attempt with the current token.
-        var token = bootstrap.ensureFreshAccessToken()
-            ?: return Result.AuthRequired
+        // First attempt with the current token. A transient refresh failure
+        // (5xx/network — surfaced as an exception from ensureFreshAccessToken)
+        // must NOT escape: the heartbeat contract is "never throws", and an
+        // exception here would crash the whole live session instead of just
+        // carrying the unsent seconds to the next tick.
+        var token = try {
+            bootstrap.ensureFreshAccessToken()
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            return Result.TransientError(t.message ?: "Token refresh failed")
+        } ?: return Result.AuthRequired
 
         var result = postOnce(token, capped)
 
@@ -79,7 +89,13 @@ class TranslateUsageReporter(
         // refresh by zeroing the stored token's expiry, then retry once.
         if (result is Result.AuthRequired) {
             AuthStore.markAccessTokenExpired(appContext)
-            token = bootstrap.ensureFreshAccessToken() ?: return Result.AuthRequired
+            token = try {
+                bootstrap.ensureFreshAccessToken()
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                return Result.TransientError(t.message ?: "Token refresh failed")
+            } ?: return Result.AuthRequired
             result = postOnce(token, capped)
         }
 

@@ -40,6 +40,13 @@ sealed class PollResult {
 
 sealed class RefreshResult {
     data class Success(val accessToken: String, val refreshToken: String, val expiresInSeconds: Long) : RefreshResult()
+
+    /**
+     * The Worker definitively rejected the refresh token (4xx). Transient
+     * failures (5xx, 429, 408, network errors) are surfaced as [java.io.IOException]
+     * from [DeviceLinkClient.refresh] instead — callers must NOT treat them
+     * as a revoked session.
+     */
     data object Failed : RefreshResult()
 }
 
@@ -112,7 +119,18 @@ object DeviceLinkClient {
             .build()
         client.newCall(req).execute().use { resp ->
             val raw = resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) return@withContext RefreshResult.Failed
+            if (!resp.isSuccessful) {
+                // 5xx / 429 / 408 are transient (Worker hiccup, CF maintenance,
+                // rate limiting) — the refresh token is still good. Surface as
+                // IOException so callers retry later. Returning Failed here used
+                // to wipe the stored session on any server blip, silently
+                // un-pairing the device (auth UX directive: once paired, only
+                // manual sign-out clears tokens).
+                if (resp.code in 500..599 || resp.code == 429 || resp.code == 408) {
+                    throw IOException("Refresh transient failure (HTTP ${resp.code})")
+                }
+                return@withContext RefreshResult.Failed
+            }
             val json = JSONObject(raw)
             RefreshResult.Success(
                 accessToken = json.getString("access_token"),

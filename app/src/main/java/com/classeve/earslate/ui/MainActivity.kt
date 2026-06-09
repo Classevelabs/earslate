@@ -201,13 +201,15 @@ private fun EarslateApp(
     var screen by rememberSaveable { mutableStateOf(initialScreen) }
 
     // If the bootstrap layer determines the stored session is no longer
-    // valid (refresh failed, worker said 401, heartbeat 401), it sets a
+    // valid (refresh rejected, worker said 401, heartbeat 401), it sets a
     // typed RuntimeError. Watch for it here and bounce back to sign-in so
-    // the app can never be silently broken.
+    // the app can never be silently broken. The stored tokens are NOT
+    // cleared — once paired, only manual sign-out or a successful re-pair
+    // replaces them (a spurious server 401 must never permanently un-pair
+    // the device). Re-pairing on the sign-in screen overwrites the session.
     val lastError by EarslateRuntime.stateStore.lastError.collectAsState()
     LaunchedEffect(lastError) {
         if (lastError?.kind == RuntimeError.Kind.AUTH_REQUIRED && screen != Screen.SIGN_IN) {
-            AuthStore.clear(context)
             screen = Screen.SIGN_IN
             EarslateRuntime.stateStore.clearError()
         }

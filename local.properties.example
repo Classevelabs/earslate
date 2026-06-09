@@ -15,9 +15,10 @@ GEMINI_LIVE_MODEL=gemini-3.1-flash-live-preview
 #   - device-code sign-in (DeviceLinkClient → /v1/device/code|poll, /v1/auth/refresh)
 #   - ephemeral token bootstrap (RemoteBootstrapRepository → /v1/earslate/bootstrap)
 #   - per-session usage heartbeats (TranslateUsageReporter → /v1/earslate/heartbeat)
-# Defaults to https://lven-api.lven.workers.dev when left blank.
+# Defaults to https://api.classeve.com when left blank. (The old
+# lven-api.lven.workers.dev route is DISABLED — do not point at it.)
 # ──────────────────────────────────────────────────────────────────────
-# WORKER_URL=https://lven-api.lven.workers.dev
+# WORKER_URL=https://api.classeve.com
 
 # ──────────────────────────────────────────────────────────────────────
 # Release signing.
