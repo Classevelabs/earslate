@@ -15,7 +15,7 @@ val localProperties = Properties().apply {
 fun String.escapeForBuildConfig(): String = replace("\\", "\\\\").replace("\"", "\\\"")
 
 val geminiApiKey = (localProperties.getProperty("GEMINI_API_KEY") ?: "").escapeForBuildConfig()
-val geminiLiveModel = (localProperties.getProperty("GEMINI_LIVE_MODEL") ?: "gemini-3.1-flash-live-preview").escapeForBuildConfig()
+val geminiLiveModel = (localProperties.getProperty("GEMINI_LIVE_MODEL") ?: "gemini-3.5-live-translate-preview").escapeForBuildConfig()
 val workerUrl = (localProperties.getProperty("WORKER_URL") ?: "https://api.classeve.com").escapeForBuildConfig()
 
 // Release keystore — four coordinates come from local.properties so the
@@ -48,8 +48,8 @@ android {
         applicationId = "com.classeve.earslate"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
 
         // GEMINI_LIVE_MODEL + WORKER_URL are non-secret and ship in every variant.
         buildConfigField("String", "GEMINI_LIVE_MODEL", "\"$geminiLiveModel\"")
