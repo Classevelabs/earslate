@@ -172,7 +172,7 @@ class RemoteBootstrapRepository(
 
     companion object {
         private val JSON = "application/json".toMediaType()
-        const val DEFAULT_MODEL: String = "gemini-3.1-flash-live-preview"
+        const val DEFAULT_MODEL: String = "gemini-3.5-live-translate-preview"
     }
 }
 
