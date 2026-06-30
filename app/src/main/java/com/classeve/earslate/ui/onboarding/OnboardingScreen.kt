@@ -1,5 +1,7 @@
 package com.classeve.earslate.ui.onboarding
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -25,6 +27,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.classeve.earslate.session.TargetLanguage
@@ -142,7 +145,7 @@ fun OnboardingScreen(
                 OnboardingStep(
                     index = "01",
                     title = "Microphone access",
-                    body = "earslate only translates what it can hear. Android will ask once; grant it and you never see the prompt again.",
+                    body = "earslate listens through your microphone and streams that audio to Google's Gemini service to translate it in real time. Android asks for mic access once, and you'll confirm the audio handling before the first session.",
                 )
                 OnboardingStep(
                     index = "02",
@@ -158,6 +161,30 @@ fun OnboardingScreen(
                     index = "04",
                     title = "Earbuds recommended",
                     body = "Bluetooth or wired earbuds dramatically reduce echo. Speaker mode works but is less reliable in noisy spaces.",
+                )
+            }
+
+            // Prominent audio-egress disclosure (Google Play User Data policy).
+            val context = LocalContext.current
+            FramedPanel {
+                SectionHeader(
+                    kicker = "Your audio",
+                    headline = "Sent to Google to translate.",
+                    support = "earslate streams the audio it captures to Google's Gemini service over an encrypted connection to translate it in real time. Google processes that audio and may retain it under Google's terms. earslate stores no audio of its own.",
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "Read our privacy policy →",
+                    style = EarslateTheme.textStyles.body,
+                    color = EarslateTheme.colors.ember,
+                    modifier = Modifier.clickable {
+                        runCatching {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse("https://classeve.com/privacy"))
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        }
+                    },
                 )
             }
 

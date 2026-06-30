@@ -38,6 +38,13 @@
     <string name="action_continue">Continue</string>
     <string name="action_cancel">Cancel</string>
 
+    <!-- Audio-egress prominent disclosure (Google Play User Data policy) -->
+    <string name="audio_disclosure_title">How your audio is used</string>
+    <string name="audio_disclosure_body">To translate, earslate sends the audio it captures to Google\'s Gemini service over an encrypted connection. Google processes that audio to produce the translation in real time and may retain it under Google\'s terms. earslate stores no audio of its own. Tap I agree to allow this, or open our privacy policy to learn more.</string>
+    <string name="audio_disclosure_agree">I agree</string>
+    <string name="audio_disclosure_decline">Not now</string>
+    <string name="audio_disclosure_privacy">Privacy policy</string>
+
     <!-- Settings screen -->
     <string name="settings_kicker">Settings</string>
     <string name="settings_headline">Runtime controls.</string>
