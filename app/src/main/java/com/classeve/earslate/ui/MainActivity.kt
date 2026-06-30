@@ -1,6 +1,7 @@
 package com.classeve.earslate.ui
 
 import android.Manifest
+import android.app.AlertDialog
 import android.app.StatusBarManager
 import android.content.ComponentName
 import android.content.Intent
@@ -81,6 +82,7 @@ import com.classeve.earslate.ui.diagnostics.DiagnosticsScreen
 import com.classeve.earslate.ui.help.HelpScreen
 import com.classeve.earslate.ui.onboarding.OnboardingScreen
 import com.classeve.earslate.ui.onboarding.SignInScreen
+import com.classeve.earslate.ui.settings.LanguagePickerDialog
 import com.classeve.earslate.ui.settings.SettingsScreen
 import com.classeve.earslate.ui.theme.EarslateTheme
 import com.classeve.earslate.ui.theme.MotionBaseMs
@@ -156,6 +158,19 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestStart() {
+        // Play Prominent Disclosure & Consent: the user must affirmatively
+        // acknowledge that captured audio is streamed to Google's Gemini
+        // service for translation BEFORE the first microphone capture — on
+        // EVERY entry point (start button, QS tile, REQUEST_START intent),
+        // which all funnel through here. Once accepted, this is a no-op.
+        if (!OnboardingPrefs.isAudioDisclosureAccepted(this)) {
+            showAudioEgressDisclosure()
+            return
+        }
+        proceedStart()
+    }
+
+    private fun proceedStart() {
         val needed = buildList {
             add(Manifest.permission.RECORD_AUDIO)
             if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
@@ -169,6 +184,33 @@ class MainActivity : ComponentActivity() {
         } else {
             permissionLauncher.launch(missing.toTypedArray())
         }
+    }
+
+    /**
+     * Prominent in-app disclosure (Google Play User Data policy): names the
+     * third party (Google Gemini), the data (microphone audio), the purpose
+     * (live translation), and retention, gated behind an explicit "I agree".
+     * Shown before the FIRST capture on any entry point; the choice persists.
+     */
+    private fun showAudioEgressDisclosure() {
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.audio_disclosure_title))
+            .setMessage(getString(R.string.audio_disclosure_body))
+            .setCancelable(true)
+            .setPositiveButton(getString(R.string.audio_disclosure_agree)) { _, _ ->
+                OnboardingPrefs.markAudioDisclosureAccepted(this)
+                proceedStart()
+            }
+            .setNegativeButton(getString(R.string.audio_disclosure_decline), null)
+            .setNeutralButton(getString(R.string.audio_disclosure_privacy)) { _, _ ->
+                runCatching {
+                    startActivity(
+                        Intent(Intent.ACTION_VIEW, Uri.parse("https://classeve.com/privacy"))
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                }
+            }
+            .show()
     }
 }
 
@@ -226,14 +268,13 @@ private fun EarslateApp(
     }
 
     // Resolve persisted BCP-47 tags to TargetLanguage objects.
-    val currentLanguage = remember(userSettings.targetLanguageBcp47) {
-        SupportedLanguages.firstOrNull { it.bcp47 == userSettings.targetLanguageBcp47 }
+    val currentLanguage = remember(userSettings.myLanguageBcp47) {
+        SupportedLanguages.firstOrNull { it.bcp47 == userSettings.myLanguageBcp47 }
             ?: TargetLanguage.EnglishUS
     }
-    val currentSecondary = remember(userSettings.secondaryLanguageBcp47) {
-        userSettings.secondaryLanguageBcp47?.let { bcp ->
-            SupportedLanguages.firstOrNull { it.bcp47 == bcp }
-        }
+    val currentTheirs = remember(userSettings.theirLanguageBcp47) {
+        SupportedLanguages.firstOrNull { it.bcp47 == userSettings.theirLanguageBcp47 }
+            ?: TargetLanguage.EnglishUS
     }
 
     // On first launch, pre-select the device locale so the onboarding picker
@@ -252,7 +293,7 @@ private fun EarslateApp(
                 padding = padding,
                 initialLanguage = currentLanguage,
                 onLanguageChange = { lang ->
-                    scope.launch { settingsRepo.setTargetLanguage(lang.bcp47) }
+                    scope.launch { settingsRepo.setMyLanguage(lang.bcp47) }
                 },
                 onContinue = {
                     OnboardingPrefs.markCompleted(context)
@@ -278,29 +319,28 @@ private fun EarslateApp(
                 onStop = onStop,
                 onOpenSettings = { screen = Screen.SETTINGS },
                 currentLanguage = currentLanguage,
+                currentTheirLanguage = currentTheirs,
+                onMyLanguageChange = { lang ->
+                    scope.launch { settingsRepo.setMyLanguage(lang.bcp47) }
+                },
+                onTheirLanguageChange = { lang ->
+                    scope.launch { settingsRepo.setTheirLanguage(lang.bcp47) }
+                },
             )
             Screen.SETTINGS -> SettingsScreen(
                 padding = padding,
-                initialTargetLanguage = currentLanguage,
-                initialSecondaryLanguage = currentSecondary,
-                initialConversationMode = userSettings.conversationMode,
-                initialExternalOnly = userSettings.externalOnly,
+                initialMyLanguage = currentLanguage,
+                initialTheirLanguage = currentTheirs,
                 initialCaptionsEnabled = userSettings.captionsEnabled,
                 initialPreferEarbuds = userSettings.preferEarbuds,
                 initialDiagnosticsEnabled = userSettings.diagnosticsEnabled,
                 initialPersistentNotification = userSettings.persistentNotification,
                 onBack = { screen = Screen.MAIN },
-                onTargetLanguageChange = { lang ->
-                    scope.launch { settingsRepo.setTargetLanguage(lang.bcp47) }
+                onMyLanguageChange = { lang ->
+                    scope.launch { settingsRepo.setMyLanguage(lang.bcp47) }
                 },
-                onSecondaryLanguageChange = { lang ->
-                    scope.launch { settingsRepo.setSecondaryLanguage(lang?.bcp47) }
-                },
-                onConversationModeChange = { enabled ->
-                    scope.launch { settingsRepo.setConversationMode(enabled) }
-                },
-                onExternalOnlyChange = { enabled ->
-                    scope.launch { settingsRepo.setExternalOnly(enabled) }
+                onTheirLanguageChange = { lang ->
+                    scope.launch { settingsRepo.setTheirLanguage(lang.bcp47) }
                 },
                 onCaptionsEnabledChange = { enabled ->
                     scope.launch { settingsRepo.setCaptionsEnabled(enabled) }
@@ -342,6 +382,9 @@ private fun MainScreen(
     onStop: () -> Unit,
     onOpenSettings: () -> Unit,
     currentLanguage: TargetLanguage = TargetLanguage.EnglishUS,
+    currentTheirLanguage: TargetLanguage = TargetLanguage.EnglishUS,
+    onMyLanguageChange: (TargetLanguage) -> Unit = {},
+    onTheirLanguageChange: (TargetLanguage) -> Unit = {},
 ) {
     val context = LocalContext.current
     val deviceMonitor = remember(context) { EarslateRuntime.deviceMonitor(context) }
@@ -351,6 +394,23 @@ private fun MainScreen(
     val captionLines by EarslateRuntime.captionsStore.lines.collectAsState()
     val captionPending by EarslateRuntime.captionsStore.pending.collectAsState()
     val lastError by EarslateRuntime.stateStore.lastError.collectAsState()
+
+    var showMyPicker by remember { mutableStateOf(false) }
+    var showTheirPicker by remember { mutableStateOf(false) }
+    if (showMyPicker) {
+        LanguagePickerDialog(
+            currentLanguage = currentLanguage,
+            onSelect = { onMyLanguageChange(it); showMyPicker = false },
+            onDismiss = { showMyPicker = false },
+        )
+    }
+    if (showTheirPicker) {
+        LanguagePickerDialog(
+            currentLanguage = currentTheirLanguage,
+            onSelect = { onTheirLanguageChange(it); showTheirPicker = false },
+            onDismiss = { showTheirPicker = false },
+        )
+    }
 
     Box(
         modifier = Modifier
@@ -398,6 +458,13 @@ private fun MainScreen(
                 SpeakerEchoNotice()
             }
 
+            LanguageBar(
+                mine = currentLanguage,
+                theirs = currentTheirLanguage,
+                onPickMine = { showMyPicker = true },
+                onPickTheirs = { showTheirPicker = true },
+            )
+
             PrimaryButton(
                 state = state,
                 onStart = onStart,
@@ -418,7 +485,7 @@ private fun MainScreen(
                                 context.startActivity(
                                     Intent(
                                         Intent.ACTION_VIEW,
-                                        Uri.parse("https://classeve.com/releases/lven/pricing"),
+                                        Uri.parse("https://classeve.com/releases/earslate/pricing"),
                                     ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                                 )
                             }
@@ -483,6 +550,55 @@ private fun TopBar(onOpenSettings: () -> Unit) {
                 color = EarslateTheme.colors.onEmber,
             )
         }
+    }
+}
+
+@Composable
+private fun LanguageBar(
+    mine: TargetLanguage,
+    theirs: TargetLanguage,
+    onPickMine: () -> Unit,
+    onPickTheirs: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        LangChip(role = "YOU", lang = mine, modifier = Modifier.weight(1f), onClick = onPickMine)
+        Text(
+            text = "⇄",
+            style = EarslateTheme.textStyles.body,
+            color = EarslateTheme.colors.textTertiary,
+        )
+        LangChip(role = "THEM", lang = theirs, modifier = Modifier.weight(1f), onClick = onPickTheirs)
+    }
+}
+
+@Composable
+private fun LangChip(
+    role: String,
+    lang: TargetLanguage,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Column(
+        modifier = modifier
+            .clickable(onClick = onClick)
+            .background(color = EarslateTheme.colors.elev1, shape = EarslateTheme.shapes.lg)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(
+            text = role,
+            style = EarslateTheme.textStyles.meta,
+            color = EarslateTheme.colors.textTertiary,
+        )
+        Text(
+            text = lang.displayName,
+            style = EarslateTheme.textStyles.body,
+            color = EarslateTheme.colors.textPrimary,
+        )
     }
 }
 
