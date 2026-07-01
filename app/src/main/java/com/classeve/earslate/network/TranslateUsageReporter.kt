@@ -105,6 +105,42 @@ class TranslateUsageReporter(
         return result
     }
 
+    /**
+     * Reports the session as closed so the worker refunds the UNUSED tail of the
+     * reserve-at-mint budget grant (it debited window*legs up front). [usedSeconds]
+     * is the session's real wall-clock duration. Best-effort, never throws — a
+     * missed close just means the (already-cost-bounded) reservation stands.
+     */
+    suspend fun close(sessionId: String, usedSeconds: Int) {
+        if (sessionId.isBlank()) return
+        val token = try {
+            bootstrap.ensureFreshAccessToken()
+        } catch (c: CancellationException) {
+            throw c
+        } catch (_: Throwable) {
+            return
+        } ?: return
+        withContext(Dispatchers.IO) {
+            val req = Request.Builder()
+                .url("${workerUrl()}/v1/earslate/close")
+                .header("Authorization", "Bearer $token")
+                .header("Content-Type", "application/json")
+                .post(
+                    JSONObject()
+                        .put("session_id", sessionId)
+                        .put("used_seconds", usedSeconds.coerceAtLeast(0))
+                        .toString()
+                        .toRequestBody(JSON),
+                )
+                .build()
+            try {
+                httpClient.newCall(req).execute().use { /* ignore body */ }
+            } catch (t: Throwable) {
+                Log.w(TAG, "close network error: ${t.message}")
+            }
+        }
+    }
+
     private suspend fun postOnce(token: String, seconds: Int): Result = withContext(Dispatchers.IO) {
         val req = Request.Builder()
             .url("${workerUrl()}/v1/earslate/heartbeat")
@@ -157,9 +193,12 @@ class TranslateUsageReporter(
         /**
          * Worker caps a single heartbeat at 300 s. We send 60 by default so
          * one missed tick can still be made up on the next, but never more
-         * than the worker accepts.
+         * than the worker accepts. Public so callers (SessionCoordinator) can
+         * carry forward whatever this clamp silently drops instead of
+         * treating a successful capped call as if the full requested amount
+         * was reported.
          */
-        private const val MAX_DELTA_SECONDS = 300
+        const val MAX_DELTA_SECONDS = 300
 
         private val JSON = "application/json".toMediaType()
 

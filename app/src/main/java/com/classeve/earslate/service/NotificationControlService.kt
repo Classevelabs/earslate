@@ -4,11 +4,8 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ServiceInfo
-import android.os.Build
 import android.os.IBinder
 import android.util.Log
-import androidx.core.content.ContextCompat
 import com.classeve.earslate.EarslateRuntime
 import com.classeve.earslate.session.RuntimeState
 import com.classeve.earslate.session.SupportedLanguages
@@ -47,21 +44,26 @@ class NotificationControlService : Service() {
             this, RuntimeState.IDLE, currentLanguageName(),
         )
 
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                startForeground(
-                    NotificationFactory.NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
-                )
-            } else {
-                startForeground(NotificationFactory.NOTIFICATION_ID, notification)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "startForeground failed: ${e.message}", e)
+        // Persistent control notification WITHOUT a foreground service. A
+        // dedicated FGS here would have to be FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+        // — this service does no mic/media work itself, it only mirrors start/stop
+        // controls — which Google Play scrutinises heavily. The notification is
+        // ongoing and outlives this lightweight started service; when a session
+        // actually runs, TranslatorService (microphone FGS) owns and updates the
+        // shared notification. A plain NotificationManager post is the correct,
+        // policy-clean way to keep idle controls in the shade.
+        val manager = getSystemService(NotificationManager::class.java)
+        if (manager == null) {
             stopSelf()
             return
         }
+        // Guarded like the state-collect loop's notify() below — an OEM channel
+        // quirk or a not-yet-fully-registered channel throwing here would
+        // otherwise crash onCreate() (and this ran unguarded while the later
+        // call site, doing the same thing, already had a runCatching).
+        runCatching {
+            manager.notify(NotificationFactory.NOTIFICATION_ID, notification)
+        }.onFailure { Log.w(TAG, "initial notification post failed: ${it.message}") }
 
         stateJob = scope.launch {
             EarslateRuntime.stateStore.state.collect { state ->
@@ -102,7 +104,7 @@ class NotificationControlService : Service() {
         return runCatching {
             val settings = EarslateRuntime.settingsRepository(this).settings.value
             SupportedLanguages
-                .firstOrNull { it.bcp47 == settings.targetLanguageBcp47 }
+                .firstOrNull { it.bcp47 == settings.myLanguageBcp47 }
                 ?.displayName ?: "English"
         }.getOrDefault("English")
     }
@@ -112,8 +114,7 @@ class NotificationControlService : Service() {
 
         fun start(context: Context) {
             runCatching {
-                ContextCompat.startForegroundService(
-                    context,
+                context.startService(
                     Intent(context, NotificationControlService::class.java),
                 )
             }.onFailure { Log.w(TAG, "start failed: ${it.message}") }
