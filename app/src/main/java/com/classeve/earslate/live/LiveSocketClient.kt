@@ -35,8 +35,9 @@ interface LiveSocketClient {
     /** Current socket lifecycle state. */
     val state: StateFlow<LiveSocketState>
 
-    /** Open the socket. Suspends until the listener is attached. */
-    suspend fun connect(url: String)
+    /** Open the socket. Suspends until the listener is attached. [headers] are added to the
+     *  WebSocket upgrade request (used to carry `Authorization: Token <ephemeral>` for Gemini). */
+    suspend fun connect(url: String, headers: Map<String, String> = emptyMap())
 
     /** Send a text frame. Returns false if the socket is not open. */
     fun sendText(json: String): Boolean
@@ -73,12 +74,21 @@ class OkHttpLiveSocketClient(
 
     @Volatile private var socket: WebSocket? = null
 
-    override suspend fun connect(url: String) {
+    override suspend fun connect(url: String, headers: Map<String, String>) {
         _state.value = LiveSocketState.CONNECTING
-        val request = Request.Builder()
-            .url(url)
-            .build()
-        socket = httpClient.newWebSocket(request, Listener())
+        try {
+            val builder = Request.Builder().url(url)
+            for ((name, value) in headers) builder.addHeader(name, value)
+            socket = httpClient.newWebSocket(builder.build(), Listener())
+        } catch (t: Throwable) {
+            // Request.Builder().url() throws IllegalArgumentException on a
+            // malformed URL. The caller (SessionCoordinator) already wraps
+            // connect() in try/catch, so this doesn't crash — but without
+            // updating _state here, THIS socket's own reported state stayed
+            // stuck at CONNECTING forever for anything observing it directly.
+            _state.value = LiveSocketState.FAILED
+            throw t
+        }
     }
 
     override fun sendText(json: String): Boolean {

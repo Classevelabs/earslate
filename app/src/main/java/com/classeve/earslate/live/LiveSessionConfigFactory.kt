@@ -1,26 +1,27 @@
 package com.classeve.earslate.live
 
 import android.util.Base64
-import com.classeve.earslate.session.SessionPolicy
-import com.classeve.earslate.session.TranslatorPolicy
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.buildJsonObject
 
 /**
- * Builds the client-side wire messages for the Gemini Live API session.
+ * Builds the client-side wire messages for a `gemini-3.5-live-translate-preview`
+ * Live session.
+ *
+ * This model is a purpose-built speech-to-speech translator, NOT a general
+ * assistant. The whole session is configured by one structured field —
+ * `generationConfig.translationConfig` (target language + echo toggle) — and the
+ * model auto-detects the source language. There is no systemInstruction; sending
+ * one (the old approach) made the model echo the source and lag by seconds.
  *
  * Two outputs:
- * - [buildSetup] — the very first frame after the socket opens. Bundles model,
- *   system instruction, speech/voice config, session resumption + compression
- *   toggles, and optional transcription settings.
- * - [buildAudioChunk] — per-frame realtime input. Base64-encoded 16 kHz PCM16
- *   mono audio wrapped in a `realtimeInput.mediaChunks` envelope.
+ * - [buildSetup] — first frame after the socket opens. model + translationConfig
+ *   + audio-in/out transcription (for captions).
+ * - [buildAudioChunk] — per-batch realtime input as `realtimeInput.mediaChunks`
+ *   (the singular `audio` field is ignored by this model). 16 kHz PCM16 mono.
  *
- * Isolated on purpose: this is the piece most likely to need revision when we
- * test against the actual preview model. Nothing outside this file should
- * assemble Gemini Live JSON by hand.
+ * Every shape here was verified live end-to-end against the real model.
  */
 object LiveSessionConfigFactory {
 
@@ -30,36 +31,26 @@ object LiveSessionConfigFactory {
     }
 
     fun buildSetup(
-        policy: TranslatorPolicy,
         model: String,
-        systemInstruction: String,
-        resumptionHandle: String?,
+        targetLanguageCode: String,
+        echoTargetLanguage: Boolean,
+        captionsEnabled: Boolean,
     ): String {
         val setup = ClientSetupPayload(
             model = normalizeModel(model),
             generationConfig = GenerationConfig(
                 responseModalities = listOf("AUDIO"),
-                speechConfig = policy.voiceName?.let { voice ->
-                    SpeechConfig(
-                        voiceConfig = VoiceConfig(
-                            prebuiltVoiceConfig = PrebuiltVoiceConfig(voiceName = voice),
-                        ),
-                    )
-                },
+                translationConfig = TranslationConfig(
+                    targetLanguageCode = targetLanguageCode,
+                    echoTargetLanguage = echoTargetLanguage,
+                ),
             ),
-            systemInstruction = Content(
-                parts = listOf(Part(text = systemInstruction)),
-                role = "system",
-            ),
-            sessionResumption = if (policy.sessionPolicy.enableResumption) {
-                SessionResumptionHandle(handle = resumptionHandle)
-            } else null,
-            contextWindowCompression = if (policy.sessionPolicy.enableCompression) {
-                ContextWindowCompression(slidingWindow = JsonObject(emptyMap()))
-            } else null,
-            outputAudioTranscription = if (policy.captionsEnabled) {
-                JsonObject(emptyMap())
-            } else null,
+            // Transcription drives the captions UI. The model returns input
+            // (what it heard) + output (the translation) transcriptions. These
+            // are setup-LEVEL fields — nesting them inside generationConfig is
+            // rejected by the model ("Unknown name ... at setup.generation_config").
+            inputAudioTranscription = if (captionsEnabled) JsonObject(emptyMap()) else null,
+            outputAudioTranscription = if (captionsEnabled) JsonObject(emptyMap()) else null,
         )
         return json.encodeToString(ClientSetupFrame(setup = setup))
     }
@@ -68,9 +59,8 @@ object LiveSessionConfigFactory {
         val base64 = Base64.encodeToString(pcm16k, Base64.NO_WRAP)
         val frame = ClientRealtimeFrame(
             realtimeInput = RealtimeInput(
-                audio = AudioBlob(
-                    data = base64,
-                    mimeType = "audio/pcm;rate=16000",
+                mediaChunks = listOf(
+                    AudioBlob(data = base64, mimeType = "audio/pcm;rate=16000"),
                 ),
             ),
         )
@@ -78,10 +68,27 @@ object LiveSessionConfigFactory {
     }
 
     /**
-     * Gemini Live expects the model prefixed with `models/`. Callers may pass the
-     * bare name (`gemini-3.1-flash-live-preview`) or the fully qualified form;
-     * normalize both.
+     * Gemini Live expects the model prefixed with `models/`.
      */
     private fun normalizeModel(raw: String): String =
         if (raw.startsWith("models/")) raw else "models/$raw"
+
+    /**
+     * Map an app BCP-47 tag (e.g. "es-ES", "hi-IN", "zh-CN") to the
+     * `targetLanguageCode` the translate model accepts.
+     *
+     * Verified live: the model takes the PRIMARY SUBTAG ("es", "hi", "fr", "en")
+     * and REJECTS region forms ("es-ES", "hi-IN" → close 1007 invalid argument).
+     * The sole exception is Chinese, where the script/region is meaningful and
+     * the model accepts (and needs) "zh-CN" / "zh-TW".
+     */
+    fun translateCodeFor(bcp47: String): String {
+        val code = if (bcp47.startsWith("zh", ignoreCase = true)) bcp47
+                    else bcp47.substringBefore('-')
+        // A blank/corrupted language entry would otherwise flow straight into
+        // the setup frame as an empty targetLanguageCode, which the model
+        // will reject — fail to a safe default instead of sending garbage
+        // over the wire.
+        return code.ifBlank { "en" }
+    }
 }
