@@ -16,24 +16,32 @@ import kotlinx.coroutines.launch
 
 /**
  * Owns mic capture.
- *   - VOICE_COMMUNICATION source — enables the platform's VoIP DSP chain so
- *     the HAL can apply hardware AEC / NS against the playback reference mix.
- *     Without this (or plain MIC / VOICE_RECOGNITION) speaker-mode translation
- *     feeds its own output back into the mic → self-retranslation loop.
+ *   - VOICE_RECOGNITION source — the documented source for feeding speech to a
+ *     recognizer/translator. It gives CLEAN, minimally-processed audio: no
+ *     telephony AGC, no aggressive call-grade echo cancellation. The earlier
+ *     VOICE_COMMUNICATION source (+ MODE_IN_COMMUNICATION + AEC/NS) is tuned for
+ *     phone CALLS and mangles/over-suppresses speech — it was why the model
+ *     "couldn't recognize speech" on-device. Speaker-mode feedback is handled by
+ *     the half-duplex mic gate in the SessionCoordinator, not by call-grade AEC.
  *   - 16 kHz mono PCM16
- *   - 20 ms internal frames, 60 ms send batches
+ *   - 20 ms internal frames, ~100 ms send batches
  *   - Dedicated high-priority IO coroutine
  *
- * Callers must flip AudioManager.mode to MODE_IN_COMMUNICATION before [start]
- * so the HAL wires the AEC path at AudioRecord open time.
- *
  * VAD gating is optional — pass a [VadGate] to enable it, pass null to send
- * every captured batch. V1 ships with the gate wired so we do not flood Gemini
- * with silence.
+ * every captured batch (default now: the translate model has its own VAD).
  */
 interface AudioCaptureEngine {
-    /** Returns the AudioRecord's audio session id, or 0 on construction failure. */
-    fun start(onBatch: (ByteArray) -> Unit): Int
+    /**
+     * Returns the AudioRecord's audio session id, or 0 on construction failure.
+     *
+     * [onCaptureError] fires at most once, from the capture coroutine, if a
+     * FATAL AudioRecord.read() error ends capture after a successful start
+     * (ERROR_INVALID_OPERATION / ERROR_BAD_VALUE / ERROR_DEAD_OBJECT). Without
+     * it, capture died silently: the Gemini socket stayed open, stateStore
+     * stayed at READY/LISTENING, and no audio was ever sent again — the
+     * caller had no way to learn the session was actually dead.
+     */
+    fun start(onBatch: (ByteArray) -> Unit, onCaptureError: () -> Unit = {}): Int
     fun stop()
 }
 
@@ -57,7 +65,7 @@ class AndroidAudioCaptureEngine(
     @Volatile private var ns: NoiseSuppressor? = null
 
     @SuppressLint("MissingPermission")
-    override fun start(onBatch: (ByteArray) -> Unit): Int {
+    override fun start(onBatch: (ByteArray) -> Unit, onCaptureError: () -> Unit): Int {
         if (loopJob != null) {
             Log.i(TAG, "start called while already capturing; ignoring")
             return record?.audioSessionId ?: 0
@@ -80,7 +88,7 @@ class AndroidAudioCaptureEngine(
 
         val rec = try {
             AudioRecord(
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
                 sampleRateHz,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,
@@ -97,7 +105,9 @@ class AndroidAudioCaptureEngine(
             return 0
         }
 
-        attachEffects(rec.audioSessionId)
+        // Deliberately NO AcousticEchoCanceler / NoiseSuppressor: on-device they
+        // over-suppressed quiet/far speech and distorted the signal the model
+        // needs. Clean audio in → correct, fast translation out.
 
         try {
             rec.startRecording()
@@ -142,6 +152,7 @@ class AndroidAudioCaptureEngine(
                             read == AudioRecord.ERROR_DEAD_OBJECT
                         ) {
                             Log.w(TAG, "AudioRecord.read error: $read")
+                            runCatching { onCaptureError() }
                             break
                         }
                         continue

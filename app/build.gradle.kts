@@ -48,8 +48,8 @@ android {
         applicationId = "com.classeve.earslate"
         minSdk = 29
         targetSdk = 35
-        versionCode = 10
-        versionName = "0.1.9"
+        versionCode = 11
+        versionName = "0.1.10"
 
         // GEMINI_LIVE_MODEL + WORKER_URL are non-secret and ship in every variant.
         buildConfigField("String", "GEMINI_LIVE_MODEL", "\"$geminiLiveModel\"")
