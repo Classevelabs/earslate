@@ -160,9 +160,18 @@ class MainActivity : ComponentActivity() {
     private fun requestStart() {
         // Play Prominent Disclosure & Consent: the user must affirmatively
         // acknowledge that captured audio is streamed to Google's Gemini
-        // service for translation BEFORE the first microphone capture — on
-        // EVERY entry point (start button, QS tile, REQUEST_START intent),
-        // which all funnel through here. Once accepted, this is a no-op.
+        // service for translation BEFORE the first microphone capture. This
+        // is the in-app path (start button, REQUEST_START intent) and it's
+        // where the disclosure dialog is actually shown, since only an
+        // Activity can present it. It is NOT the only gate: the QS tile and
+        // the idle notification's "Start" action can both reach
+        // TranslatorService directly without passing through here, so the
+        // authoritative check lives in TranslatorService.onStartCommand()
+        // (ACTION_START) — it bounces back to this activity via the same
+        // REQUEST_START intent if consent hasn't been accepted yet. This
+        // check here is what lets the button flow show the dialog inline
+        // instead of round-tripping through the service first. Once accepted,
+        // this is a no-op.
         if (!OnboardingPrefs.isAudioDisclosureAccepted(this)) {
             showAudioEgressDisclosure()
             return

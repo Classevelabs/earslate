@@ -4,8 +4,6 @@ import android.annotation.SuppressLint
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
-import android.media.audiofx.AcousticEchoCanceler
-import android.media.audiofx.NoiseSuppressor
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -61,8 +59,6 @@ class AndroidAudioCaptureEngine(
 
     @Volatile private var record: AudioRecord? = null
     @Volatile private var loopJob: Job? = null
-    @Volatile private var aec: AcousticEchoCanceler? = null
-    @Volatile private var ns: NoiseSuppressor? = null
 
     @SuppressLint("MissingPermission")
     override fun start(onBatch: (ByteArray) -> Unit, onCaptureError: () -> Unit): Int {
@@ -113,7 +109,6 @@ class AndroidAudioCaptureEngine(
             rec.startRecording()
         } catch (t: Throwable) {
             Log.e(TAG, "AudioRecord.startRecording failed: ${t.message}")
-            releaseEffects()
             rec.release()
             return 0
         }
@@ -185,52 +180,11 @@ class AndroidAudioCaptureEngine(
     override fun stop() {
         loopJob?.cancel()
         loopJob = null
-        releaseEffects()
         record?.let {
             runCatching { it.stop() }
             runCatching { it.release() }
         }
         record = null
-    }
-
-    private fun attachEffects(sessionId: Int) {
-        if (sessionId == 0) {
-            Log.w(TAG, "invalid audio session id; skipping AEC/NS")
-            return
-        }
-        if (AcousticEchoCanceler.isAvailable()) {
-            aec = runCatching { AcousticEchoCanceler.create(sessionId) }
-                .onFailure { Log.w(TAG, "AEC create failed: ${it.message}") }
-                .getOrNull()
-            aec?.let {
-                runCatching { it.enabled = true }
-                Log.i(TAG, "AEC attached enabled=${it.enabled}")
-            }
-        } else {
-            Log.w(TAG, "AEC unavailable on this device")
-        }
-        if (NoiseSuppressor.isAvailable()) {
-            ns = runCatching { NoiseSuppressor.create(sessionId) }
-                .onFailure { Log.w(TAG, "NS create failed: ${it.message}") }
-                .getOrNull()
-            ns?.let {
-                runCatching { it.enabled = true }
-                Log.i(TAG, "NS attached enabled=${it.enabled}")
-            }
-        }
-    }
-
-    private fun releaseEffects() {
-        aec?.let {
-            runCatching { it.enabled = false }
-            runCatching { it.release() }
-        }
-        aec = null
-        ns?.let {
-            runCatching { it.enabled = false }
-            runCatching { it.release() }
-        }
-        ns = null
     }
 
     companion object {

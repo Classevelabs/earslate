@@ -1,18 +1,22 @@
 package com.classeve.earslate.service
 
+import android.Manifest
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.classeve.earslate.EarslateRuntime
+import com.classeve.earslate.ui.MainActivity
 import com.classeve.earslate.session.RuntimeState
 import com.classeve.earslate.session.SupportedLanguages
 import com.classeve.earslate.session.isActive
+import com.classeve.earslate.settings.OnboardingPrefs
 import com.classeve.earslate.settings.toTranslatorPolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -43,18 +47,42 @@ class TranslatorService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        // RECORD_AUDIO can be revoked while the ongoing notification (or a QS tile)
+        // still offers a "Start" action. On Android 14+ a microphone-typed
+        // startForeground without the permission throws SecurityException, which
+        // would crash-loop the service under START_STICKY. Bounce to MainActivity
+        // to re-request the permission and bail out cleanly instead.
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            runCatching {
+                startActivity(
+                    Intent(this, MainActivity::class.java)
+                        .setAction(MainActivity.ACTION_REQUEST_START)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }
+            stopSelf()
+            return
+        }
         NotificationFactory.ensureChannel(this)
         val notification = NotificationFactory.buildTranslatorNotification(
             this, RuntimeState.IDLE, currentLanguageName(),
         )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(
-                NotificationFactory.NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
-            )
-        } else {
-            startForeground(NotificationFactory.NOTIFICATION_ID, notification)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    NotificationFactory.NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
+                )
+            } else {
+                startForeground(NotificationFactory.NOTIFICATION_ID, notification)
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "startForeground failed", t)
+            stopSelf()
+            return
         }
         // Warm up the audio device monitor so the UI route indicator populates immediately.
         EarslateRuntime.deviceMonitor(this)
@@ -82,6 +110,31 @@ class TranslatorService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
+                // Play Prominent Disclosure & Consent gate. MainActivity.requestStart()
+                // is not the only entry point that can reach here — the QS tile
+                // (TranslatorTileService.safeStart()) and the idle notification's
+                // "Start" action both call TranslatorService.start() directly,
+                // bypassing MainActivity entirely when RECORD_AUDIO is already
+                // granted. This is the single choke point every ACTION_START passes
+                // through before a capture session begins, so the consent check
+                // belongs here, not just in the activity. If the user hasn't
+                // accepted the audio-egress disclosure yet, don't start capture —
+                // bounce to MainActivity (which owns the AlertDialog UI; a Service
+                // has no window to show it in) so requestStart() can show the
+                // disclosure and the user must explicitly agree before any mic
+                // audio reaches Gemini.
+                if (!OnboardingPrefs.isAudioDisclosureAccepted(this)) {
+                    runCatching {
+                        startActivity(
+                            Intent(this, MainActivity::class.java)
+                                .setAction(MainActivity.ACTION_REQUEST_START)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                    }
+                    stopForegroundSmart()
+                    stopSelf()
+                    return START_STICKY
+                }
                 val policy = EarslateRuntime.settingsRepository(this)
                     .settings.value
                     .toTranslatorPolicy()
@@ -131,7 +184,7 @@ class TranslatorService : Service() {
     private fun currentLanguageName(): String {
         val settings = EarslateRuntime.settingsRepository(this).settings.value
         return SupportedLanguages
-            .firstOrNull { it.bcp47 == settings.targetLanguageBcp47 }
+            .firstOrNull { it.bcp47 == settings.myLanguageBcp47 }
             ?.displayName ?: "English"
     }
 
