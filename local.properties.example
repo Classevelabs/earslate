@@ -2,23 +2,15 @@
 sdk.dir=/path/to/android-sdk
 
 # ──────────────────────────────────────────────────────────────────────
-# Gemini Live API credentials.
-# Dev-only. Production credentials must come from the ClassEve Worker bootstrap
-# endpoint (see RemoteBootstrapRepository) so raw API keys never ship in the APK.
-# Release builds force GEMINI_API_KEY to "" via build.gradle.kts.
+# earslate is bring-your-own-key: there is no server, account, or
+# ClassEve-minted credential involved. The Gemini API key is entered by the
+# user at runtime (see GeminiKeyStore) and stored only in encrypted
+# on-device storage — never in local.properties or BuildConfig.
+#
+# GEMINI_LIVE_MODEL is the only build-time setting left: a non-secret model
+# id override for local development.
 # ──────────────────────────────────────────────────────────────────────
-GEMINI_API_KEY=your-gemini-live-api-key
-GEMINI_LIVE_MODEL=gemini-3.1-flash-live-preview
-
-# ──────────────────────────────────────────────────────────────────────
-# ClassEve Worker base URL. Used for both:
-#   - device-code sign-in (DeviceLinkClient → /v1/device/code|poll, /v1/auth/refresh)
-#   - ephemeral token bootstrap (RemoteBootstrapRepository → /v1/earslate/bootstrap)
-#   - per-session usage heartbeats (TranslateUsageReporter → /v1/earslate/heartbeat)
-# Defaults to https://api.classeve.com when left blank. (The old
-# lven-api.lven.workers.dev route is DISABLED — do not point at it.)
-# ──────────────────────────────────────────────────────────────────────
-# WORKER_URL=https://api.classeve.com
+GEMINI_LIVE_MODEL=gemini-3.5-live-translate-preview
 
 # ──────────────────────────────────────────────────────────────────────
 # Release signing.

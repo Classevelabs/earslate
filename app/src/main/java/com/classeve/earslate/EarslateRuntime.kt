@@ -10,13 +10,10 @@ import com.classeve.earslate.audio.AndroidAudioPlaybackEngine
 import com.classeve.earslate.audio.AudioCaptureEngine
 import com.classeve.earslate.audio.AudioDeviceMonitor
 import com.classeve.earslate.audio.AudioPlaybackEngine
-import com.classeve.earslate.audio.EnergyVadGate
-import com.classeve.earslate.bootstrap.LocalDevBootstrapRepository
-import com.classeve.earslate.bootstrap.RemoteBootstrapRepository
 import com.classeve.earslate.bootstrap.SessionBootstrapRepository
+import com.classeve.earslate.bootstrap.UserKeyBootstrapRepository
 import com.classeve.earslate.live.LiveSocketClient
 import com.classeve.earslate.live.OkHttpLiveSocketClient
-import com.classeve.earslate.network.TranslateUsageReporter
 import com.classeve.earslate.session.RuntimeStateStore
 import com.classeve.earslate.session.SessionCoordinator
 import com.classeve.earslate.settings.SettingsRepository
@@ -53,53 +50,21 @@ object EarslateRuntime {
     @Volatile private var bootstrapRepo: SessionBootstrapRepository? = null
 
     /**
-     * Release builds must route through the ClassEve Worker so the
-     * long-lived Gemini key never ends up in a shipped APK. Debug builds
-     * use the local-properties key path so developers can iterate
-     * without network auth. The switch happens here, not in
-     * SessionCoordinator, so the coordinator stays transport-agnostic.
+     * earslate is bring-your-own-key: always resolves to
+     * [UserKeyBootstrapRepository], which reads the user's own Gemini API key
+     * from on-device encrypted storage. There is no server, account, or
+     * build-variant switch involved.
      */
     fun bootstrapRepository(context: Context): SessionBootstrapRepository {
         return bootstrapRepo ?: synchronized(this) {
-            bootstrapRepo ?: run {
-                val repo: SessionBootstrapRepository = if (BuildConfig.DEBUG) {
-                    LocalDevBootstrapRepository()
-                } else {
-                    RemoteBootstrapRepository(context.applicationContext)
-                }
-                bootstrapRepo = repo
-                repo
-            }
+            bootstrapRepo ?: UserKeyBootstrapRepository(context.applicationContext)
+                .also { bootstrapRepo = it }
         }
     }
 
-    @Volatile private var usageReporter: TranslateUsageReporter? = null
-
-    /**
-     * Live-session usage reporter. Returns null in debug builds where the
-     * bootstrap repo is [LocalDevBootstrapRepository] — the worker would
-     * 401 a heartbeat from a dev session anyway, and we don't want spurious
-     * AUTH_REQUIRED bounces during local iteration.
-     *
-     * In release we keep a single process-wide instance so the
-     * [TranslateUsageReporter.dailyLimitReached] flow can be observed by both
-     * the coordinator and the UI.
-     */
-    fun translateUsageReporterOrNull(context: Context): TranslateUsageReporter? {
-        if (BuildConfig.DEBUG) return null
-        return usageReporter ?: synchronized(this) {
-            usageReporter ?: run {
-                val remote = bootstrapRepository(context) as? RemoteBootstrapRepository
-                    ?: return@run null
-                TranslateUsageReporter(
-                    appContext = context.applicationContext,
-                    bootstrap = remote,
-                ).also { usageReporter = it }
-            }
-        }
-    }
-
-    private val socketClient: LiveSocketClient by lazy { OkHttpLiveSocketClient() }
+    // A FACTORY, not a singleton: the conversation translator opens one socket
+    // per direction (up to two legs), so each session needs its own client.
+    private val socketFactory: () -> LiveSocketClient = { OkHttpLiveSocketClient() }
 
     @Volatile private var captureEngine: AudioCaptureEngine? = null
 
@@ -107,7 +72,12 @@ object EarslateRuntime {
         val appContext = context.applicationContext
         return captureEngine ?: synchronized(this) {
             captureEngine ?: AndroidAudioCaptureEngine(
-                vadGate = EnergyVadGate(),
+                // Send EVERYTHING (no local VAD gate). The translate model has its
+                // own VAD and auto-detects speech; local gating risked clipping
+                // quiet/far-field speech (the exact "it didn't hear me" failure),
+                // and billing is by session time so over-sending costs nothing.
+                framesPerBatch = 5, // 100 ms batches — the model's recommended chunk
+                vadGate = null,
                 hasRecordAudioPermission = {
                     ContextCompat.checkSelfPermission(
                         appContext,
@@ -128,7 +98,7 @@ object EarslateRuntime {
         return sessionCoord ?: synchronized(this) {
             sessionCoord ?: SessionCoordinator(
                 bootstrapRepository = bootstrapRepository(context),
-                socketClient = socketClient,
+                socketFactory = socketFactory,
                 captureEngine = captureEngine(context),
                 playbackEngine = playbackEngine,
                 captionsStore = captionsStore,
@@ -136,7 +106,6 @@ object EarslateRuntime {
                 audioManager = context.applicationContext
                     .getSystemService(Context.AUDIO_SERVICE) as AudioManager,
                 deviceMonitor = deviceMonitor(context),
-                usageReporter = translateUsageReporterOrNull(context),
             ).also { sessionCoord = it }
         }
     }

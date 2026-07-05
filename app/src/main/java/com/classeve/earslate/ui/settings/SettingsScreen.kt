@@ -19,9 +19,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -29,34 +33,32 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import com.classeve.earslate.auth.GeminiKeyStore
 import com.classeve.earslate.session.TargetLanguage
 import com.classeve.earslate.ui.components.BackRow
 import com.classeve.earslate.ui.components.FramedPanel
 import com.classeve.earslate.ui.components.SectionHeader
 import com.classeve.earslate.ui.theme.EarslateTheme
-import com.classeve.earslate.ui.theme.MotionBaseMs
-import com.classeve.earslate.ui.theme.PreciseEasing
 
 /**
- * Settings — ClassEve brand v6. Flat rows inside framed dock-planes, ember
- * boxy toggles, mono uppercase meta-labels. No border, no shadow, no glass.
+ * Settings — ClassEve brand v6. earslate is a bidirectional conversation
+ * translator with NO modes: the only translation settings are the two
+ * languages. Flat rows inside framed dock-planes, ember boxy toggles.
  */
 @Composable
 fun SettingsScreen(
-    initialTargetLanguage: TargetLanguage = TargetLanguage.EnglishUS,
-    initialSecondaryLanguage: TargetLanguage? = null,
-    initialConversationMode: Boolean = false,
-    initialExternalOnly: Boolean = false,
+    initialMyLanguage: TargetLanguage = TargetLanguage.EnglishUS,
+    initialTheirLanguage: TargetLanguage = TargetLanguage.EnglishUS,
     initialCaptionsEnabled: Boolean = true,
     initialPreferEarbuds: Boolean = true,
     initialDiagnosticsEnabled: Boolean = false,
     initialPersistentNotification: Boolean = false,
     onBack: () -> Unit,
-    onTargetLanguageChange: (TargetLanguage) -> Unit = {},
-    onSecondaryLanguageChange: (TargetLanguage?) -> Unit = {},
-    onConversationModeChange: (Boolean) -> Unit = {},
-    onExternalOnlyChange: (Boolean) -> Unit = {},
+    onMyLanguageChange: (TargetLanguage) -> Unit = {},
+    onTheirLanguageChange: (TargetLanguage) -> Unit = {},
     onCaptionsEnabledChange: (Boolean) -> Unit = {},
     onPreferEarbudsChange: (Boolean) -> Unit = {},
     onDiagnosticsEnabledChange: (Boolean) -> Unit = {},
@@ -64,40 +66,76 @@ fun SettingsScreen(
     onOpenDiagnostics: () -> Unit = {},
     onOpenOnboarding: () -> Unit = {},
     onOpenHelp: () -> Unit = {},
+    onOpenApiKeySetup: () -> Unit = {},
     padding: PaddingValues = PaddingValues(0.dp),
 ) {
-    var targetLanguage by remember { mutableStateOf(initialTargetLanguage) }
-    var secondaryLanguage by remember { mutableStateOf(initialSecondaryLanguage) }
-    var conversationMode by remember { mutableStateOf(initialConversationMode) }
-    var externalOnly by remember { mutableStateOf(initialExternalOnly) }
+    val context = LocalContext.current
+    var myLanguage by remember { mutableStateOf(initialMyLanguage) }
+    var theirLanguage by remember { mutableStateOf(initialTheirLanguage) }
     var captionsEnabled by remember { mutableStateOf(initialCaptionsEnabled) }
     var preferEarbuds by remember { mutableStateOf(initialPreferEarbuds) }
     var diagnosticsEnabled by remember { mutableStateOf(initialDiagnosticsEnabled) }
     var persistentNotification by remember { mutableStateOf(initialPersistentNotification) }
-    var showNativePicker by remember { mutableStateOf(false) }
-    var showSecondaryPicker by remember { mutableStateOf(false) }
+    var showMyPicker by remember { mutableStateOf(false) }
+    var showTheirPicker by remember { mutableStateOf(false) }
 
-    if (showNativePicker) {
-        LanguagePickerDialog(
-            currentLanguage = targetLanguage,
-            onSelect = { selected ->
-                targetLanguage = selected
-                onTargetLanguageChange(selected)
-                showNativePicker = false
+    // BYO-key state: read once per composition of this screen, refreshed
+    // locally after a remove. The key itself never renders — only a suffix.
+    var storedKeySuffix by remember { mutableStateOf(GeminiKeyStore.load(context)?.takeLast(4)) }
+    var showRemoveKeyDialog by remember { mutableStateOf(false) }
+
+    if (showRemoveKeyDialog) {
+        AlertDialog(
+            onDismissRequest = { showRemoveKeyDialog = false },
+            containerColor = EarslateTheme.colors.elev2,
+            titleContentColor = EarslateTheme.colors.textPrimary,
+            textContentColor = EarslateTheme.colors.textSecondary,
+            title = { Text("Remove your API key?") },
+            text = {
+                Text(
+                    "earslate can't translate without a key. You can paste the same " +
+                        "key again later — removing it here doesn't delete it from " +
+                        "your Google account.",
+                )
             },
-            onDismiss = { showNativePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    GeminiKeyStore.clear(context)
+                    storedKeySuffix = null
+                    showRemoveKeyDialog = false
+                }) {
+                    Text("Remove", color = EarslateTheme.colors.ember)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRemoveKeyDialog = false }) {
+                    Text("Keep it", color = EarslateTheme.colors.textSecondary)
+                }
+            },
         )
     }
 
-    if (showSecondaryPicker) {
+    if (showMyPicker) {
         LanguagePickerDialog(
-            currentLanguage = secondaryLanguage ?: TargetLanguage.EnglishUS,
+            currentLanguage = myLanguage,
             onSelect = { selected ->
-                secondaryLanguage = selected
-                onSecondaryLanguageChange(selected)
-                showSecondaryPicker = false
+                myLanguage = selected
+                onMyLanguageChange(selected)
+                showMyPicker = false
             },
-            onDismiss = { showSecondaryPicker = false },
+            onDismiss = { showMyPicker = false },
+        )
+    }
+
+    if (showTheirPicker) {
+        LanguagePickerDialog(
+            currentLanguage = theirLanguage,
+            onSelect = { selected ->
+                theirLanguage = selected
+                onTheirLanguageChange(selected)
+                showTheirPicker = false
+            },
+            onDismiss = { showTheirPicker = false },
         )
     }
 
@@ -118,50 +156,22 @@ fun SettingsScreen(
             BackRow(onBack = onBack)
 
             SectionHeader(
-                kicker = "Language",
-                headline = "Translation.",
-                support = "Set your native language and how the translator behaves.",
+                kicker = "Languages",
+                headline = "Conversation.",
+                support = "Both directions translate automatically — each person hears the other in their own language.",
             )
 
             FramedPanel {
                 SettingsRow(
                     label = "Your language",
-                    value = targetLanguage.displayName,
-                    onClick = { showNativePicker = true },
+                    value = myLanguage.displayName,
+                    onClick = { showMyPicker = true },
                 )
                 Divider()
-                ToggleRow(
-                    label = "Conversation mode",
-                    helper = "Bidirectional: foreign speech → your language, your speech → secondary language.",
-                    value = conversationMode,
-                    onChange = {
-                        conversationMode = it
-                        onConversationModeChange(it)
-                    },
-                )
-                AnimatedVisibility(
-                    visible = conversationMode,
-                    enter = expandVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeIn(tween(MotionBaseMs)),
-                    exit = shrinkVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeOut(tween(MotionBaseMs)),
-                ) {
-                    Column {
-                        Divider()
-                        SettingsRow(
-                            label = "Secondary language",
-                            value = secondaryLanguage?.displayName ?: "Select",
-                            onClick = { showSecondaryPicker = true },
-                        )
-                    }
-                }
-                Divider()
-                ToggleRow(
-                    label = "External only",
-                    helper = "Only translate external speech. Suppresses translation of your own voice and speaker playback.",
-                    value = externalOnly,
-                    onChange = {
-                        externalOnly = it
-                        onExternalOnlyChange(it)
-                    },
+                SettingsRow(
+                    label = "Their language",
+                    value = theirLanguage.displayName,
+                    onClick = { showTheirPicker = true },
                 )
             }
 
@@ -204,6 +214,31 @@ fun SettingsScreen(
             }
 
             SectionHeader(
+                kicker = "API key",
+                headline = "Your Gemini key.",
+                support = "earslate runs on your own free Google Gemini key. It's stored " +
+                    "encrypted on this device and is only ever sent to Google.",
+            )
+
+            FramedPanel {
+                SettingsRow(
+                    label = "Gemini API key",
+                    value = storedKeySuffix?.let { "Saved ····$it" } ?: "Not set",
+                    onClick = onOpenApiKeySetup,
+                    onClickLabel = "Manage your Gemini API key",
+                )
+                if (storedKeySuffix != null) {
+                    Divider()
+                    SettingsRow(
+                        label = "Remove key",
+                        value = "Clear",
+                        onClick = { showRemoveKeyDialog = true },
+                        onClickLabel = "Remove the saved Gemini API key from this device",
+                    )
+                }
+            }
+
+            SectionHeader(
                 kicker = "Help",
                 headline = "Resources.",
                 support = "User guide and onboarding walkthrough.",
@@ -241,8 +276,8 @@ fun SettingsScreen(
                 )
                 AnimatedVisibility(
                     visible = diagnosticsEnabled,
-                    enter = expandVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeIn(tween(MotionBaseMs)),
-                    exit = shrinkVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeOut(tween(MotionBaseMs)),
+                    enter = expandVertically(tween(220)) + fadeIn(tween(220)),
+                    exit = shrinkVertically(tween(220)) + fadeOut(tween(220)),
                 ) {
                     Column {
                         Divider()
@@ -263,11 +298,17 @@ private fun SettingsRow(
     label: String,
     value: String,
     onClick: () -> Unit,
+    onClickLabel: String? = null,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .defaultMinSize(minHeight = 48.dp)
+            .clickable(
+                onClick = onClick,
+                onClickLabel = onClickLabel,
+                role = Role.Button,
+            )
             .padding(vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
@@ -295,13 +336,22 @@ private fun ToggleRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onChange(!value) }
+            .defaultMinSize(minHeight = 48.dp)
+            // toggleable() (rather than clickable) gives TalkBack the switch
+            // role plus a spoken "on/off" state and the correct toggle action.
+            .toggleable(
+                value = value,
+                role = Role.Switch,
+                onValueChange = onChange,
+            )
             .padding(vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.Top,
     ) {
         Column(
-            modifier = Modifier.padding(end = 16.dp),
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 16.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Text(
@@ -321,17 +371,14 @@ private fun ToggleRow(
 
 @Composable
 private fun TogglePill(value: Boolean) {
-    // Toggle pill — ember when on, surfaceSoft when off. Mono uppercase label
-    // with the brand meta letter-spacing. No border.
-    val animSpec = tween<androidx.compose.ui.graphics.Color>(MotionBaseMs, easing = PreciseEasing)
     val bg by animateColorAsState(
         targetValue = if (value) EarslateTheme.colors.ember else EarslateTheme.colors.surfaceSoft,
-        animationSpec = animSpec,
+        animationSpec = tween(220),
         label = "toggle-bg",
     )
     val fg by animateColorAsState(
         targetValue = if (value) EarslateTheme.colors.onEmber else EarslateTheme.colors.creamSoft,
-        animationSpec = animSpec,
+        animationSpec = tween(220),
         label = "toggle-fg",
     )
     val stateLabel = if (value) "ON" else "OFF"
@@ -350,7 +397,6 @@ private fun TogglePill(value: Boolean) {
 
 @Composable
 private fun Divider() {
-    // One-edge separator, brand `--border-subtle` (cream @ 8% alpha).
     Box(
         modifier = Modifier
             .fillMaxWidth()

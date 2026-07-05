@@ -20,6 +20,11 @@ import com.classeve.earslate.service.TranslatorTileService
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -27,12 +32,15 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -42,8 +50,12 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -57,8 +69,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -67,7 +83,7 @@ import androidx.core.content.ContextCompat
 import com.classeve.earslate.EarslateRuntime
 import com.classeve.earslate.R
 import com.classeve.earslate.audio.AudioRoute
-import com.classeve.earslate.auth.AuthStore
+import com.classeve.earslate.auth.GeminiKeyStore
 import com.classeve.earslate.service.TranslatorService
 import com.classeve.earslate.session.RuntimeError
 import com.classeve.earslate.session.RuntimeState
@@ -80,13 +96,16 @@ import com.classeve.earslate.ui.captions.CaptionsView
 import com.classeve.earslate.ui.components.ErrorBanner
 import com.classeve.earslate.ui.diagnostics.DiagnosticsScreen
 import com.classeve.earslate.ui.help.HelpScreen
+import com.classeve.earslate.ui.onboarding.ApiKeySetupScreen
 import com.classeve.earslate.ui.onboarding.OnboardingScreen
-import com.classeve.earslate.ui.onboarding.SignInScreen
 import com.classeve.earslate.ui.settings.LanguagePickerDialog
 import com.classeve.earslate.ui.settings.SettingsScreen
+import com.classeve.earslate.ui.components.ListeningIndicator
 import com.classeve.earslate.ui.theme.EarslateTheme
 import com.classeve.earslate.ui.theme.MotionBaseMs
+import com.classeve.earslate.ui.theme.MotionFastMs
 import com.classeve.earslate.ui.theme.PreciseEasing
+import com.classeve.earslate.ui.theme.rememberReducedMotion
 import com.classeve.earslate.service.NotificationControlService
 import com.classeve.earslate.service.NotificationFactory
 import kotlinx.coroutines.launch
@@ -223,7 +242,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { ONBOARDING, SIGN_IN, MAIN, SETTINGS, DIAGNOSTICS, HELP }
+private enum class Screen { ONBOARDING, API_KEY_SETUP, MAIN, SETTINGS, DIAGNOSTICS, HELP }
 
 @Composable
 private fun EarslateApp(
@@ -241,37 +260,50 @@ private fun EarslateApp(
     val initialScreen = remember {
         when {
             firstLaunch -> Screen.ONBOARDING
-            // Onboarding done but no stored session → require sign-in before
-            // we let the user near the start button. Once paired, the worker's
-            // bootstrap call is the one source of truth for plan + entitlement;
-            // this gate just keeps the user from hitting an inevitable 401.
-            AuthStore.load(context) == null -> Screen.SIGN_IN
+            // Onboarding done but no Gemini key stored yet → route to the
+            // BYO-key setup screen before the user can reach the start
+            // button. earslate has no account/server — this is purely a
+            // local on-device gate.
+            !GeminiKeyStore.hasKey(context) -> Screen.API_KEY_SETUP
             else -> Screen.MAIN
         }
     }
     var screen by rememberSaveable { mutableStateOf(initialScreen) }
 
-    // If the bootstrap layer determines the stored session is no longer
-    // valid (refresh rejected, worker said 401, heartbeat 401), it sets a
-    // typed RuntimeError. Watch for it here and bounce back to sign-in so
-    // the app can never be silently broken. The stored tokens are NOT
-    // cleared — once paired, only manual sign-out or a successful re-pair
-    // replaces them (a spurious server 401 must never permanently un-pair
-    // the device). Re-pairing on the sign-in screen overwrites the session.
+    // Where the key-setup screen should return to on save/back. MAIN for
+    // first-run / missing-key routing, SETTINGS when opened from Settings.
+    var keySetupReturn by rememberSaveable { mutableStateOf(Screen.MAIN) }
+
+    // Observable mirror of GeminiKeyStore.hasKey — refreshed on every screen
+    // change (the key can only change via the setup screen or Settings, both
+    // of which force a navigation).
+    var hasStoredKey by remember { mutableStateOf(GeminiKeyStore.hasKey(context)) }
+    LaunchedEffect(screen) { hasStoredKey = GeminiKeyStore.hasKey(context) }
+
+    // If the bootstrap layer finds no stored key when a session is started
+    // (e.g. cleared from Settings), it sets a typed RuntimeError. Watch for
+    // it here and bounce back to the key-setup screen.
     val lastError by EarslateRuntime.stateStore.lastError.collectAsState()
     LaunchedEffect(lastError) {
-        if (lastError?.kind == RuntimeError.Kind.AUTH_REQUIRED && screen != Screen.SIGN_IN) {
-            screen = Screen.SIGN_IN
+        if (lastError?.kind == RuntimeError.Kind.MISSING_API_KEY && screen != Screen.API_KEY_SETUP) {
+            keySetupReturn = Screen.MAIN
+            screen = Screen.API_KEY_SETUP
             EarslateRuntime.stateStore.clearError()
         }
     }
 
+    // System back mirrors the on-screen BACK affordances. On first-run key
+    // setup (no key yet) the handler is disabled so back exits the app
+    // instead of trapping the user on a screen they can't leave.
     BackHandler(
-        enabled = screen != Screen.MAIN && screen != Screen.ONBOARDING && screen != Screen.SIGN_IN,
+        enabled = screen != Screen.MAIN &&
+            screen != Screen.ONBOARDING &&
+            !(screen == Screen.API_KEY_SETUP && !hasStoredKey),
     ) {
         screen = when (screen) {
             Screen.DIAGNOSTICS -> Screen.SETTINGS
             Screen.HELP -> Screen.SETTINGS
+            Screen.API_KEY_SETUP -> keySetupReturn
             else -> Screen.MAIN
         }
     }
@@ -307,26 +339,37 @@ private fun EarslateApp(
                 onContinue = {
                     OnboardingPrefs.markCompleted(context)
                     // Onboarding only marks the rationale-tour seen. The user
-                    // still needs a paired ClassEve session before bootstrap
-                    // can hit the worker. Send them through sign-in if they
-                    // don't already have one.
-                    screen = if (AuthStore.load(context) == null) {
-                        Screen.SIGN_IN
+                    // still needs to supply their own Gemini key before a
+                    // session can start. Send them through key setup if they
+                    // don't already have one stored.
+                    screen = if (!GeminiKeyStore.hasKey(context)) {
+                        Screen.API_KEY_SETUP
                     } else {
                         Screen.MAIN
                     }
                     onRequestQsTile()
                 },
             )
-            Screen.SIGN_IN -> SignInScreen(
+            Screen.API_KEY_SETUP -> ApiKeySetupScreen(
                 padding = padding,
-                onSignedIn = { screen = Screen.MAIN },
+                onKeySaved = {
+                    hasStoredKey = true
+                    screen = keySetupReturn
+                },
+                // The setup screen only shows the BACK row when a key is
+                // already stored (re-entry); on first run there is nowhere
+                // to go back to.
+                onBack = { screen = keySetupReturn },
             )
             Screen.MAIN -> MainScreen(
                 padding = padding,
                 onStart = onStart,
                 onStop = onStop,
                 onOpenSettings = { screen = Screen.SETTINGS },
+                onOpenApiKeySetup = {
+                    keySetupReturn = Screen.MAIN
+                    screen = Screen.API_KEY_SETUP
+                },
                 currentLanguage = currentLanguage,
                 currentTheirLanguage = currentTheirs,
                 onMyLanguageChange = { lang ->
@@ -344,7 +387,16 @@ private fun EarslateApp(
                 initialPreferEarbuds = userSettings.preferEarbuds,
                 initialDiagnosticsEnabled = userSettings.diagnosticsEnabled,
                 initialPersistentNotification = userSettings.persistentNotification,
-                onBack = { screen = Screen.MAIN },
+                onBack = {
+                    // If the key was removed from Settings, land on key setup
+                    // instead of a main screen that can't start a session.
+                    screen = if (GeminiKeyStore.hasKey(context)) {
+                        Screen.MAIN
+                    } else {
+                        keySetupReturn = Screen.MAIN
+                        Screen.API_KEY_SETUP
+                    }
+                },
                 onMyLanguageChange = { lang ->
                     scope.launch { settingsRepo.setMyLanguage(lang.bcp47) }
                 },
@@ -371,6 +423,10 @@ private fun EarslateApp(
                 onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
                 onOpenOnboarding = { screen = Screen.ONBOARDING },
                 onOpenHelp = { screen = Screen.HELP },
+                onOpenApiKeySetup = {
+                    keySetupReturn = Screen.SETTINGS
+                    screen = Screen.API_KEY_SETUP
+                },
             )
             Screen.DIAGNOSTICS -> DiagnosticsScreen(
                 padding = padding,
@@ -390,6 +446,7 @@ private fun MainScreen(
     onStart: () -> Unit,
     onStop: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenApiKeySetup: () -> Unit = {},
     currentLanguage: TargetLanguage = TargetLanguage.EnglishUS,
     currentTheirLanguage: TargetLanguage = TargetLanguage.EnglishUS,
     onMyLanguageChange: (TargetLanguage) -> Unit = {},
@@ -472,6 +529,10 @@ private fun MainScreen(
                 theirs = currentTheirLanguage,
                 onPickMine = { showMyPicker = true },
                 onPickTheirs = { showTheirPicker = true },
+                onSwap = {
+                    onMyLanguageChange(currentTheirLanguage)
+                    onTheirLanguageChange(currentLanguage)
+                },
             )
 
             PrimaryButton(
@@ -486,26 +547,16 @@ private fun MainScreen(
                 exit = shrinkVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeOut(tween(MotionBaseMs)),
             ) {
                 lastError?.let { err ->
-                    val onViewPlans = if (err.kind == RuntimeError.Kind.SUBSCRIPTION_REQUIRED) {
-                        {
-                            // Custom Tabs would be nicer; we don't yet bundle
-                            // androidx.browser. ACTION_VIEW is acceptable for v0.
-                            runCatching {
-                                context.startActivity(
-                                    Intent(
-                                        Intent.ACTION_VIEW,
-                                        Uri.parse("https://classeve.com/releases/earslate/pricing"),
-                                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                                )
-                            }
-                            Unit
-                        }
+                    // MISSING_API_KEY has no useful "retry" — the fix is to go
+                    // add a key, not to re-attempt the same failing bootstrap.
+                    val onViewPlans = if (err.kind == RuntimeError.Kind.MISSING_API_KEY) {
+                        { onOpenApiKeySetup() }
                     } else {
                         null
                     }
                     ErrorBanner(
                         error = err,
-                        onRetry = onStart,
+                        onRetry = if (err.kind == RuntimeError.Kind.MISSING_API_KEY) null else onStart,
                         onDismiss = { EarslateRuntime.stateStore.clearError() },
                         onViewPlans = onViewPlans,
                     )
@@ -517,6 +568,7 @@ private fun MainScreen(
             CaptionsView(
                 lines = captionLines,
                 pending = captionPending,
+                active = state.isActive,
             )
 
             Spacer(Modifier.height(16.dp))
@@ -527,7 +579,8 @@ private fun MainScreen(
 @Composable
 private fun TopBar(onOpenSettings: () -> Unit) {
     // Top bar — bgCanvas (matches page), no shadow, no elevation. The settings
-    // entry is rendered as the canonical ember profile-capsule pill.
+    // entry is rendered as the canonical ember profile-capsule pill with a
+    // full 48dp touch target and a bounded ripple.
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -542,16 +595,17 @@ private fun TopBar(onOpenSettings: () -> Unit) {
         Spacer(modifier = Modifier.weight(1f))
         Box(
             modifier = Modifier
+                .defaultMinSize(minHeight = 48.dp, minWidth = 48.dp)
+                .clip(EarslateTheme.shapes.pill)
+                .background(EarslateTheme.colors.ember)
                 .clickable(
                     onClick = onOpenSettings,
                     onClickLabel = "Open settings",
+                    role = Role.Button,
                 )
                 .semantics { contentDescription = "Settings" }
-                .background(
-                    color = EarslateTheme.colors.ember,
-                    shape = EarslateTheme.shapes.pill,
-                )
-                .padding(horizontal = 18.dp, vertical = 10.dp),
+                .padding(horizontal = 18.dp),
+            contentAlignment = Alignment.Center,
         ) {
             Text(
                 text = stringResource(R.string.label_settings),
@@ -568,38 +622,67 @@ private fun LanguageBar(
     theirs: TargetLanguage,
     onPickMine: () -> Unit,
     onPickTheirs: () -> Unit,
+    onSwap: () -> Unit = {},
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        LangChip(role = "YOU", lang = mine, modifier = Modifier.weight(1f), onClick = onPickMine)
-        Text(
-            text = "⇄",
-            style = EarslateTheme.textStyles.body,
-            color = EarslateTheme.colors.textTertiary,
+        LangChip(
+            roleLabel = "YOU",
+            lang = mine,
+            a11yLabel = "Your language: ${mine.displayName}",
+            onClickLabel = "Change your language",
+            modifier = Modifier.weight(1f),
+            onClick = onPickMine,
         )
-        LangChip(role = "THEM", lang = theirs, modifier = Modifier.weight(1f), onClick = onPickTheirs)
+        IconButton(
+            onClick = onSwap,
+            modifier = Modifier.size(48.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.SwapHoriz,
+                contentDescription = "Swap languages",
+                tint = EarslateTheme.colors.textTertiary,
+            )
+        }
+        LangChip(
+            roleLabel = "THEM",
+            lang = theirs,
+            a11yLabel = "Their language: ${theirs.displayName}",
+            onClickLabel = "Change their language",
+            modifier = Modifier.weight(1f),
+            onClick = onPickTheirs,
+        )
     }
 }
 
 @Composable
 private fun LangChip(
-    role: String,
+    roleLabel: String,
     lang: TargetLanguage,
+    a11yLabel: String,
+    onClickLabel: String,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
     Column(
         modifier = modifier
-            .clickable(onClick = onClick)
-            .background(color = EarslateTheme.colors.elev1, shape = EarslateTheme.shapes.lg)
+            .defaultMinSize(minHeight = 56.dp)
+            .clip(EarslateTheme.shapes.lg)
+            .background(EarslateTheme.colors.elev1)
+            .clickable(
+                onClick = onClick,
+                onClickLabel = onClickLabel,
+                role = Role.Button,
+            )
+            .semantics { contentDescription = a11yLabel }
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Text(
-            text = role,
+            text = roleLabel,
             style = EarslateTheme.textStyles.meta,
             color = EarslateTheme.colors.textTertiary,
         )
@@ -620,24 +703,56 @@ private fun PrimaryButton(
     val isActive = state.isActive
     val labelRes = if (isActive) R.string.action_stop else R.string.action_start
     val label = stringResource(labelRes)
+    val reducedMotion = rememberReducedMotion()
 
     // Ember block — primary action. onEmber text, brand md radius.
     // STOP variant uses bg-elev-2 + cream so the user gets a strong visual
     // signal that this is a destructive / "leave the active state" action.
-    val container = if (isActive) EarslateTheme.colors.elev2 else EarslateTheme.colors.ember
-    val content = if (isActive) EarslateTheme.colors.cream else EarslateTheme.colors.onEmber
+    // Colors cross-fade between the two states; a light press-scale gives
+    // tactile feedback (both skipped under "remove animations").
+    val container by animateColorAsState(
+        targetValue = if (isActive) EarslateTheme.colors.elev2 else EarslateTheme.colors.ember,
+        animationSpec = tween(MotionBaseMs, easing = PreciseEasing),
+        label = "primary-bg",
+    )
+    val content by animateColorAsState(
+        targetValue = if (isActive) EarslateTheme.colors.cream else EarslateTheme.colors.onEmber,
+        animationSpec = tween(MotionBaseMs, easing = PreciseEasing),
+        label = "primary-fg",
+    )
+
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed && !reducedMotion) 0.97f else 1f,
+        animationSpec = tween(MotionFastMs, easing = PreciseEasing),
+        label = "primary-scale",
+    )
 
     Button(
         onClick = { if (isActive) onStop() else onStart() },
+        interactionSource = interactionSource,
         colors = ButtonDefaults.buttonColors(
             containerColor = container,
             contentColor = content,
         ),
         shape = EarslateTheme.shapes.pill,
+        contentPadding = PaddingValues(horizontal = 22.dp, vertical = 16.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .semantics { contentDescription = label },
+            .defaultMinSize(minHeight = 56.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .semantics {
+                contentDescription = if (isActive) "Stop translating" else "Start listening and translating"
+            },
     ) {
+        if (isActive) {
+            ListeningIndicator(color = content)
+            Spacer(Modifier.size(10.dp))
+        }
         Text(
             text = label.uppercase(),
             style = EarslateTheme.textStyles.meta.copy(fontWeight = FontWeight.SemiBold),
@@ -676,16 +791,38 @@ private fun StatusPill(state: RuntimeState) {
         animationSpec = tween(MotionBaseMs, easing = PreciseEasing),
         label = "status-fg",
     )
+
+    // While a session is live the dot breathes gently; static under the
+    // system "remove animations" setting (and when idle).
+    val reducedMotion = rememberReducedMotion()
+    val dotAlpha: Float = if (active && !reducedMotion) {
+        rememberInfiniteTransition(label = "status-dot").animateFloat(
+            initialValue = 0.35f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 900, easing = PreciseEasing),
+                repeatMode = RepeatMode.Reverse,
+            ),
+            label = "status-dot-alpha",
+        ).value
+    } else {
+        1f
+    }
+
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         modifier = Modifier
             .background(color = bg, shape = EarslateTheme.shapes.pill)
-            .padding(horizontal = 14.dp, vertical = 8.dp),
+            .padding(horizontal = 14.dp, vertical = 8.dp)
+            .semantics(mergeDescendants = true) {
+                contentDescription = "Translator status: $label"
+            },
     ) {
         Box(
             modifier = Modifier
-                .size(6.dp)
+                .size(8.dp)
+                .alpha(dotAlpha)
                 .background(color = fg, shape = CircleShape),
         )
         Text(
@@ -714,7 +851,10 @@ private fun RoutePill(route: AudioRoute) {
                 color = EarslateTheme.colors.surfaceSoft,
                 shape = EarslateTheme.shapes.pill,
             )
-            .padding(horizontal = 14.dp, vertical = 8.dp),
+            .padding(horizontal = 14.dp, vertical = 8.dp)
+            .semantics(mergeDescendants = true) {
+                contentDescription = "Audio output: ${label.lowercase()}"
+            },
     ) {
         Text(
             text = label,
