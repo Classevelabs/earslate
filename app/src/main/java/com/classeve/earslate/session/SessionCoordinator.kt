@@ -8,16 +8,13 @@ import com.classeve.earslate.audio.AudioCaptureEngine
 import com.classeve.earslate.audio.AudioDeviceMonitor
 import com.classeve.earslate.audio.AudioPlaybackEngine
 import com.classeve.earslate.audio.AudioRoute
-import com.classeve.earslate.bootstrap.AuthRequiredException
-import com.classeve.earslate.bootstrap.DailyLimitReachedException
+import com.classeve.earslate.bootstrap.MissingApiKeyException
 import com.classeve.earslate.bootstrap.SessionBootstrapRepository
-import com.classeve.earslate.bootstrap.SubscriptionRequiredException
 import com.classeve.earslate.live.LiveEvent
 import com.classeve.earslate.live.LiveMessageParser
 import com.classeve.earslate.live.LiveSessionConfigFactory
 import com.classeve.earslate.live.LiveSocketClient
 import com.classeve.earslate.live.LiveSocketState
-import com.classeve.earslate.network.TranslateUsageReporter
 import com.classeve.earslate.ui.captions.CaptionsStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -68,7 +65,6 @@ class SessionCoordinator(
     private val stateStore: RuntimeStateStore,
     private val audioManager: AudioManager,
     private val deviceMonitor: AudioDeviceMonitor,
-    private val usageReporter: TranslateUsageReporter? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val reconnectManager = ReconnectManager()
@@ -169,12 +165,8 @@ class SessionCoordinator(
             bootstrapRepository.bootstrap()
         } catch (t: Throwable) {
             Log.e(TAG, "bootstrap failed: ${t.message}")
-            val kind = when {
-                t is AuthRequiredException -> RuntimeError.Kind.AUTH_REQUIRED
-                t is SubscriptionRequiredException -> RuntimeError.Kind.SUBSCRIPTION_REQUIRED
-                t is DailyLimitReachedException -> RuntimeError.Kind.DAILY_LIMIT_REACHED
-                t.message?.contains("GEMINI_API_KEY", ignoreCase = true) == true ->
-                    RuntimeError.Kind.MISSING_API_KEY
+            val kind = when (t) {
+                is MissingApiKeyException -> RuntimeError.Kind.MISSING_API_KEY
                 else -> RuntimeError.Kind.BOOTSTRAP_FAILED
             }
             stateStore.setError(RuntimeError(kind = kind, message = t.message ?: "Bootstrap failed"))
@@ -309,11 +301,6 @@ class SessionCoordinator(
             playbackEngine.start()
             stateStore.set(RuntimeState.READY)
             reconnectManager.reset()
-            val needHeartbeat = usageReporter != null &&
-                bootstrap.source == com.classeve.earslate.bootstrap.BootstrapSource.REMOTE_WORKER
-            if (needHeartbeat) {
-                launch { runHeartbeat(outer) }
-            }
             awaitCancellation()
         } finally {
             playbackGateActive = false
@@ -322,19 +309,6 @@ class SessionCoordinator(
             runCatching { playbackEngine.stop(graceful = true) }
             for (leg in legs) runCatching { leg.socket.close() }
             runCatching { audioManager.abandonAudioFocusRequest(audioFocusRequest) }
-            // Reserve-at-mint reconcile: report this mint's real wall-clock
-            // length so the worker refunds the unused tail of the reserved
-            // budget grant (it debited window*legs up front). Fire-and-forget on
-            // the process scope so it still runs as this session's scope unwinds;
-            // a missed close just leaves the (cost-bounded) reservation in place.
-            val sid = bootstrap.sessionId
-            if (sid != null && usageReporter != null &&
-                bootstrap.source == com.classeve.earslate.bootstrap.BootstrapSource.REMOTE_WORKER
-            ) {
-                val elapsedSec = ((android.os.SystemClock.elapsedRealtime() - sessionStartElapsed) / 1000L)
-                    .coerceAtLeast(0L).toInt()
-                scope.launch { runCatching { usageReporter.close(sid, elapsedSec) } }
-            }
             stateStore.set(RuntimeState.IDLE)
         }
     }
@@ -417,72 +391,6 @@ class SessionCoordinator(
         return deviceMonitor.route.value == AudioRoute.SPEAKER
     }
 
-    private suspend fun runHeartbeat(outer: CoroutineScope) {
-        val reporter = usageReporter ?: return
-        var lastReportElapsed = android.os.SystemClock.elapsedRealtime()
-        var carriedSeconds = 0
-        while (true) {
-            delay(HEARTBEAT_INTERVAL_MS)
-            val now = android.os.SystemClock.elapsedRealtime()
-            val deltaSeconds = ((now - lastReportElapsed) / 1000L).toInt()
-            if (deltaSeconds <= 0 && carriedSeconds == 0) continue
-            val toSend = (deltaSeconds + carriedSeconds).coerceAtLeast(1)
-            // heartbeat() silently clamps to TranslateUsageReporter.MAX_DELTA_SECONDS
-            // before it ever hits the wire (the worker itself caps a single call at
-            // 300s) — after a long outage toSend can exceed that, and the excess
-            // must be carried into the NEXT tick, not discarded. Resetting
-            // carriedSeconds to 0 on every Ok (the old behavior) silently
-            // under-reported usage whenever a backlog exceeded one call's cap.
-            val leftoverAfterClamp = (toSend - TranslateUsageReporter.MAX_DELTA_SECONDS).coerceAtLeast(0)
-
-            when (val res = reporter.heartbeat(toSend)) {
-                is TranslateUsageReporter.Result.Ok -> {
-                    lastReportElapsed = now
-                    carriedSeconds = leftoverAfterClamp
-                    if (res.dailyRemainingSeconds <= 0) {
-                        Log.i(TAG, "heartbeat: budget exhausted (remaining=0)")
-                        stateStore.setError(
-                            RuntimeError(
-                                kind = RuntimeError.Kind.DAILY_LIMIT_REACHED,
-                                message = "Daily translation budget reached. Resets at 00:00 UTC.",
-                            ),
-                        )
-                        wasSocketDeath = false
-                        outer.cancel(CancellationException("daily limit reached"))
-                        return
-                    }
-                }
-                is TranslateUsageReporter.Result.LimitReached -> {
-                    Log.i(TAG, "heartbeat: limit reached")
-                    stateStore.setError(
-                        RuntimeError(
-                            kind = RuntimeError.Kind.DAILY_LIMIT_REACHED,
-                            message = "Daily translation budget reached. Resets at 00:00 UTC.",
-                        ),
-                    )
-                    wasSocketDeath = false
-                    outer.cancel(CancellationException("daily limit reached"))
-                    return
-                }
-                is TranslateUsageReporter.Result.AuthRequired -> {
-                    Log.w(TAG, "heartbeat: auth required — bouncing to sign-in")
-                    stateStore.setError(
-                        RuntimeError(
-                            kind = RuntimeError.Kind.AUTH_REQUIRED,
-                            message = "Sign-in required — please pair this device again.",
-                        ),
-                    )
-                    wasSocketDeath = false
-                    outer.cancel(CancellationException("auth required"))
-                    return
-                }
-                is TranslateUsageReporter.Result.TransientError -> {
-                    Log.w(TAG, "heartbeat: transient error: ${res.message}; will retry the interval next tick")
-                }
-            }
-        }
-    }
-
     private suspend fun waitForSocketOpen(socket: LiveSocketClient): Boolean {
         val result = withTimeoutOrNull(5_000) {
             socket.state.first { it == LiveSocketState.OPEN }
@@ -490,24 +398,14 @@ class SessionCoordinator(
         return result != null
     }
 
+    // Always the direct-to-Gemini path: the user's own key goes on the query
+    // string of the public v1beta bidi endpoint. No worker, no Authorization
+    // header, no ephemeral-token endpoint involved.
     private fun buildWebSocketUrl(bootstrap: com.classeve.earslate.bootstrap.SessionBootstrap): String =
-        when (bootstrap.source) {
-            // Ephemeral tokens (auth_tokens/…) MUST hit the *Constrained* bidi endpoint and
-            // authenticate via the Authorization header (see buildWebSocketHeaders), NOT a
-            // query param — Gemini rejects ?access_token= as an "unregistered caller".
-            com.classeve.earslate.bootstrap.BootstrapSource.REMOTE_WORKER ->
-                GEMINI_LIVE_CONSTRAINED
-            com.classeve.earslate.bootstrap.BootstrapSource.LOCAL_DEV ->
-                "$GEMINI_LIVE_BASE_V1BETA?key=${bootstrap.ephemeralToken}"
-        }
+        "$GEMINI_LIVE_BASE_V1BETA?key=${bootstrap.ephemeralToken}"
 
     private fun buildWebSocketHeaders(bootstrap: com.classeve.earslate.bootstrap.SessionBootstrap): Map<String, String> =
-        when (bootstrap.source) {
-            com.classeve.earslate.bootstrap.BootstrapSource.REMOTE_WORKER ->
-                mapOf("Authorization" to "Token ${bootstrap.ephemeralToken}")
-            com.classeve.earslate.bootstrap.BootstrapSource.LOCAL_DEV ->
-                emptyMap()
-        }
+        emptyMap()
 
     companion object {
         private const val TAG = "SessionCoord"
@@ -516,10 +414,6 @@ class SessionCoordinator(
         /** Output PCM peak below this (model emits zero-PCM silence; peak≈1) is treated as silence. */
         private const val SILENCE_PEAK = 48
 
-        /** ~60 s. The worker caps a single delta at 300 s. */
-        private const val HEARTBEAT_INTERVAL_MS = 60_000L
-        private const val GEMINI_LIVE_CONSTRAINED =
-            "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained"
         private const val GEMINI_LIVE_BASE_V1BETA =
             "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 

@@ -61,20 +61,11 @@ data class RuntimeError(
     val message: String,
 ) {
     enum class Kind {
+        /** No Gemini API key stored yet — UI must route to the key-setup screen. */
         MISSING_API_KEY,
         BOOTSTRAP_FAILED,
         CONNECT_FAILED,
         PERMISSION_DENIED,
-        /**
-         * Worker rejected the access token — user must pair the device
-         * again. UI bounces to the sign-in flow. Stored tokens are kept
-         * (never auto-logout); a successful re-pair overwrites them.
-         */
-        AUTH_REQUIRED,
-        /** 402 from /v1/earslate/bootstrap — show pricing CTA. */
-        SUBSCRIPTION_REQUIRED,
-        /** 429 from /v1/earslate/bootstrap or /heartbeat — show "limit reached". */
-        DAILY_LIMIT_REACHED,
         UNKNOWN,
     }
 }

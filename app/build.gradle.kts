@@ -14,9 +14,11 @@ val localProperties = Properties().apply {
 
 fun String.escapeForBuildConfig(): String = replace("\\", "\\\\").replace("\"", "\\\"")
 
-val geminiApiKey = (localProperties.getProperty("GEMINI_API_KEY") ?: "").escapeForBuildConfig()
+// earslate is bring-your-own-key: the Gemini key itself is entered by the
+// user at runtime and stored on-device (see GeminiKeyStore) — it never comes
+// from BuildConfig or local.properties. Only the (non-secret) model id ships
+// as a build-time default.
 val geminiLiveModel = (localProperties.getProperty("GEMINI_LIVE_MODEL") ?: "gemini-3.5-live-translate-preview").escapeForBuildConfig()
-val workerUrl = (localProperties.getProperty("WORKER_URL") ?: "https://api.classeve.com").escapeForBuildConfig()
 
 // Release keystore — four coordinates come from local.properties so the
 // keystore binary itself stays off-repo. If any coordinate is missing the
@@ -51,9 +53,9 @@ android {
         versionCode = 11
         versionName = "0.1.10"
 
-        // GEMINI_LIVE_MODEL + WORKER_URL are non-secret and ship in every variant.
+        // Non-secret, ships in every variant. The actual Gemini API key is
+        // supplied by the user at runtime (GeminiKeyStore) — never here.
         buildConfigField("String", "GEMINI_LIVE_MODEL", "\"$geminiLiveModel\"")
-        buildConfigField("String", "WORKER_URL", "\"$workerUrl\"")
         vectorDrawables.useSupportLibrary = true
     }
 
@@ -71,11 +73,6 @@ android {
     buildTypes {
         debug {
             isMinifyEnabled = false
-            // Debug-only: devs can set GEMINI_API_KEY in local.properties for
-            // direct-to-Gemini iteration without having to spin up the Worker.
-            // The constant is blank by default so even debug builds fail closed
-            // when the key isn't set.
-            buildConfigField("String", "GEMINI_API_KEY", "\"$geminiApiKey\"")
         }
         release {
             isMinifyEnabled = true
@@ -84,12 +81,6 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            // Release builds must NEVER carry the long-lived Gemini key. The
-            // constant is defined so code that references BuildConfig.GEMINI_API_KEY
-            // still compiles, but the value is always empty — the session flow
-            // routes through RemoteBootstrapRepository → /v1/earslate/bootstrap →
-            // single-use ephemeral token instead.
-            buildConfigField("String", "GEMINI_API_KEY", "\"\"")
             // Wire the production keystore if it's present; otherwise fall back
             // to the debug key so engineers can still produce a runnable
             // release-flavoured APK locally for testing minify/shrink. Play
@@ -150,17 +141,16 @@ dependencies {
 
     implementation(libs.androidx.datastore.preferences)
 
-    // Session storage: EncryptedSharedPreferences-backed AuthStore.
-    // Direct coordinates — adding these to the version catalog collided
-    // with the existing androidx.* group accessors on Gradle 8.5.
+    // On-device encrypted storage for the user's own Gemini API key
+    // (GeminiKeyStore / SecurePrefs). Direct coordinates — adding these to
+    // the version catalog collided with the existing androidx.* group
+    // accessors on Gradle 8.5.
     implementation("androidx.security:security-crypto:1.1.0")
-
-    // Background token refresh via WorkManager (future TokenRefreshWorker).
-    implementation("androidx.work:work-runtime-ktx:2.9.0")
 
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
 
+    // Used by the Gemini Live WebSocket client (OkHttpLiveSocketClient).
     implementation(libs.okhttp)
 
     testImplementation(libs.junit)

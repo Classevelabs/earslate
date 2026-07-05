@@ -22,10 +22,8 @@ import com.classeve.earslate.ui.theme.EarslateTheme
 /**
  * ClassEve runtime-error banner — flat fill, brand-correct treatment by kind:
  *
- *   DAILY_LIMIT_REACHED     → oxblood-soft band, cream text, ember CTA
- *   AUTH_REQUIRED           → ember-soft band, cream text, ember CTA
- *   SUBSCRIPTION_REQUIRED   → ember band, onEmber text (the canvas standard-card)
- *   everything else         → oxblood-soft band, cream text
+ *   MISSING_API_KEY  → ember-soft band, cream text, ember "ADD KEY" CTA
+ *   everything else  → oxblood-soft band, cream text
  *
  * Boxy action buttons. No glow, no gradients, no glass.
  */
@@ -42,19 +40,13 @@ fun ErrorBanner(
         RuntimeError.Kind.BOOTSTRAP_FAILED -> "BOOTSTRAP FAILED"
         RuntimeError.Kind.CONNECT_FAILED -> "CONNECT FAILED"
         RuntimeError.Kind.PERMISSION_DENIED -> "PERMISSION NEEDED"
-        RuntimeError.Kind.AUTH_REQUIRED -> "SIGN-IN REQUIRED"
-        RuntimeError.Kind.SUBSCRIPTION_REQUIRED -> "SUBSCRIPTION REQUIRED"
-        RuntimeError.Kind.DAILY_LIMIT_REACHED -> "DAILY LIMIT REACHED"
         RuntimeError.Kind.UNKNOWN -> "ERROR"
     }
 
     // Brand-correct band treatment by kind.
     val palette = bandPaletteFor(error.kind)
 
-    // SUBSCRIPTION_REQUIRED swaps RETRY for "VIEW PLANS" — retry against a
-    // 402 just gets another 402, but bouncing the user to pricing is
-    // actionable.
-    val showRetry = onRetry != null && error.kind != RuntimeError.Kind.SUBSCRIPTION_REQUIRED
+    val showRetry = onRetry != null
 
     Column(
         modifier = modifier
@@ -102,12 +94,12 @@ fun ErrorBanner(
 }
 
 /**
- * Primary CTA label per error kind — `AUTH_REQUIRED` says "SIGN IN", everything
- * else that has a plans CTA says "UPGRADE PLAN" / "VIEW PLANS".
+ * Primary CTA label per error kind. [onViewPlans] is now repurposed by
+ * callers as the "open key setup" action for MISSING_API_KEY; the label
+ * still reads naturally for that case.
  */
 private fun primaryCtaLabelFor(kind: RuntimeError.Kind): String = when (kind) {
-    RuntimeError.Kind.AUTH_REQUIRED -> "SIGN IN"
-    RuntimeError.Kind.DAILY_LIMIT_REACHED -> "UPGRADE PLAN"
+    RuntimeError.Kind.MISSING_API_KEY -> "ADD API KEY"
     else -> "VIEW PLANS"
 }
 
@@ -121,20 +113,10 @@ private data class BandPalette(
 private fun bandPaletteFor(kind: RuntimeError.Kind): BandPalette {
     val colors = EarslateTheme.colors
     return when (kind) {
-        RuntimeError.Kind.AUTH_REQUIRED -> BandPalette(
+        RuntimeError.Kind.MISSING_API_KEY -> BandPalette(
             background = colors.emberSoft,
             text = colors.cream,
             kicker = colors.ember,
-        )
-        RuntimeError.Kind.SUBSCRIPTION_REQUIRED -> BandPalette(
-            background = colors.ember,
-            text = colors.onEmber,
-            kicker = colors.onEmber,
-        )
-        RuntimeError.Kind.DAILY_LIMIT_REACHED -> BandPalette(
-            background = colors.oxbloodSoft,
-            text = colors.cream,
-            kicker = colors.cream,
         )
         else -> BandPalette(
             background = colors.oxbloodSoft,

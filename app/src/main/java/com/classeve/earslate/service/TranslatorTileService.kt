@@ -134,7 +134,7 @@ class TranslatorTileService : TileService() {
             runCatching {
                 val settings = EarslateRuntime.settingsRepository(this).settings.value
                 tile.subtitle = SupportedLanguages
-                    .firstOrNull { it.bcp47 == settings.targetLanguageBcp47 }
+                    .firstOrNull { it.bcp47 == settings.myLanguageBcp47 }
                     ?.displayName ?: "English"
             }
         }

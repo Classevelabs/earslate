@@ -35,7 +35,12 @@ class EnergyVadGate(
     private val openFrames: Int = 2,
     private val hangoverFrames: Int = 8,    // ~160 ms at 20 ms frames
     private val minUtteranceFrames: Int = 3, // ~60 ms
-    private val energyThreshold: Double = 600.0,
+    // earslate translates *other people's* speech across a table/room — inherently
+    // far-field (~300-800 RMS). A 600 floor gated much of that out. 350 captures
+    // conversational far-field while still rejecting a quiet room; Gemini's own VAD
+    // + the "ignore background noise" prompt handle any residual non-speech, and
+    // billing is by session time (not audio volume) so sending more is free.
+    private val energyThreshold: Double = 350.0,
     private val preRollFrames: Int = 6,      // ~120 ms
 ) : VadGate {
 
