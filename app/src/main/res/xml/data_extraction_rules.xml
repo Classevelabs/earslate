@@ -3,17 +3,17 @@
     <cloud-backup>
         <!-- An empty rule set means DEFAULT-INCLUDE-EVERYTHING, not "nothing".
              allowBackup="false" disables cloud backup outright, but keep the
-             session store excluded explicitly so a future allowBackup flip
-             cannot silently start uploading the (encrypted) token file. -->
-        <exclude domain="sharedpref" path="classeve_earslate_session.xml" />
+             Gemini key store excluded explicitly so a future allowBackup flip
+             cannot silently start uploading the (encrypted) key file. -->
+        <exclude domain="sharedpref" path="classeve_earslate_gemini_key.xml" />
     </cloud-backup>
     <device-transfer>
         <!-- Device-to-device migration runs EVEN WITH allowBackup="false" on
-             Android 12+. The session prefs are EncryptedSharedPreferences
-             whose master key lives in the source device's AndroidKeyStore, so
-             the transferred file is undecryptable ciphertext on the target —
-             excluding it avoids shipping token ciphertext around and avoids
+             Android 12+. The key prefs are EncryptedSharedPreferences whose
+             master key lives in the source device's AndroidKeyStore, so the
+             transferred file is undecryptable ciphertext on the target —
+             excluding it avoids shipping key ciphertext around and avoids
              the target app booting against an unreadable store. -->
-        <exclude domain="sharedpref" path="classeve_earslate_session.xml" />
+        <exclude domain="sharedpref" path="classeve_earslate_gemini_key.xml" />
     </device-transfer>
 </data-extraction-rules>

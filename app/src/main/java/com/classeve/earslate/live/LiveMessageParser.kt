@@ -15,6 +15,9 @@ object LiveMessageParser {
 
     private const val TAG = "LiveParser"
 
+    /** Extracts the sample rate from an inlineData mimeType, e.g. "audio/pcm;rate=24000". */
+    private val RATE_REGEX = Regex("rate=(\\d+)")
+
     private val json = Json {
         ignoreUnknownKeys = true
         coerceInputValues = true
@@ -40,7 +43,11 @@ object LiveMessageParser {
                 part.inlineData?.let { inline ->
                     if (inline.mimeType.startsWith("audio/")) {
                         val pcm = decodeBase64(inline.data)
-                        if (pcm != null) events += LiveEvent.AudioChunk(pcm)
+                        if (pcm != null) {
+                            val rate = RATE_REGEX.find(inline.mimeType)
+                                ?.groupValues?.get(1)?.toIntOrNull() ?: 24000
+                            events += LiveEvent.AudioChunk(pcm, rate)
+                        }
                     }
                 }
                 part.text?.takeIf { it.isNotBlank() }?.let { text ->

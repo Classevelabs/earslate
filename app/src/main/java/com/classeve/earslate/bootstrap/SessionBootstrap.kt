@@ -7,10 +7,10 @@ import com.classeve.earslate.session.TargetLanguage
  * What the SessionCoordinator needs to open a Live session. Produced by a
  * [SessionBootstrapRepository].
  *
- * V1 dev mode populates [ephemeralToken] from local.properties GEMINI_API_KEY.
- * Production pulls it from the ClassEve Worker (see Lven-Infrastructure). The
- * *shape* of this object does not change between dev and prod — the swap
- * happens entirely inside the repository.
+ * earslate is bring-your-own-key: [ephemeralToken] is always the user's own
+ * Gemini API key, read from on-device encrypted storage (see
+ * [com.classeve.earslate.auth.SecurePrefs]). It is never sent anywhere except
+ * Google's Gemini Live endpoint.
  */
 data class SessionBootstrap(
     val ephemeralToken: String,
@@ -19,31 +19,26 @@ data class SessionBootstrap(
     val voiceName: String?,
     val captionsEnabled: Boolean,
     val sessionPolicy: SessionPolicy,
-    val source: BootstrapSource,
+    val source: BootstrapSource = BootstrapSource.USER_KEY,
 )
 
 enum class BootstrapSource {
-    /** local.properties — dev only, never in a shipped APK */
-    LOCAL_DEV,
-
-    /** ClassEve Worker /v1/earslate/bootstrap — production */
-    REMOTE_WORKER,
+    /** The user's own Gemini API key, stored on-device via SecurePrefs. */
+    USER_KEY,
 }
 
 interface SessionBootstrapRepository {
     /**
-     * Fetches a fresh bootstrap. May hit the network (remote) or read from
-     * BuildConfig (local dev). Throws [BootstrapException] on failure.
+     * Fetches a fresh bootstrap using the stored user key. Throws
+     * [BootstrapException] (specifically [MissingApiKeyException]) if no key
+     * is stored yet — the caller must route the user to the key-setup screen
+     * instead of starting a session.
      */
     suspend fun bootstrap(): SessionBootstrap
 }
 
 /**
- * Generic bootstrap failure. Specific failure modes that the UI must branch on
- * (subscription required, daily limit hit, sign-in needed) are surfaced as
- * subclasses below so [SessionCoordinator] can map them to typed
- * [com.classeve.earslate.session.RuntimeError.Kind]s without re-parsing the
- * exception message.
+ * Generic bootstrap failure.
  */
 open class BootstrapException(
     message: String,
@@ -51,33 +46,9 @@ open class BootstrapException(
 ) : RuntimeException(message, cause)
 
 /**
- * Worker returned 402 SUBSCRIPTION_REQUIRED or ENTITLEMENT_MISSING — the user's
- * plan does not include translate. UI must show a "Subscription required"
- * dialog with a "View plans" CTA. The destination URL lives in the UI layer
- * (MainActivity) since the worker has no opinion on which marketing surface
- * a given product should link to.
+ * No Gemini API key is stored on-device yet. UI must route the user to the
+ * key-setup screen instead of starting a session.
  */
-class SubscriptionRequiredException(
-    message: String,
-) : BootstrapException(message)
-
-/**
- * Worker returned 429 DAILY_LIMIT_REACHED. UI must surface "Daily limit
- * reached" and stop the session. Resets at 00:00 UTC; we don't currently
- * receive an explicit reset timestamp, but the message is rendered.
- */
-class DailyLimitReachedException(
-    message: String,
-    val dailyCapSeconds: Int? = null,
-    val dailyUsedSeconds: Int? = null,
-) : BootstrapException(message)
-
-/**
- * Worker returned 401 (or the refresh token was definitively rejected). The
- * UI bounces the user to the sign-in screen. Local tokens are deliberately
- * KEPT — once paired, only manual sign-out or a successful re-pair replaces
- * them, so a spurious server-side 401 can never permanently un-pair a device.
- */
-class AuthRequiredException(
-    message: String = "Sign-in required — please pair this device again.",
+class MissingApiKeyException(
+    message: String = "No Gemini API key is set. Add your API key to start translating.",
 ) : BootstrapException(message)
