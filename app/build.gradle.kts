@@ -50,8 +50,8 @@ android {
         applicationId = "com.classeve.earslate"
         minSdk = 29
         targetSdk = 35
-        versionCode = 11
-        versionName = "0.1.10"
+        versionCode = 12
+        versionName = "0.2.0"
 
         // Non-secret, ships in every variant. The actual Gemini API key is
         // supplied by the user at runtime (GeminiKeyStore) — never here.
