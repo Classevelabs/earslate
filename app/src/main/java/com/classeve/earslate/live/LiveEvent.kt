@@ -13,12 +13,18 @@ sealed interface LiveEvent {
     /** Model has accepted the setup frame. Safe to start sending audio. */
     data object SetupComplete : LiveEvent
 
-    /** Raw 24 kHz PCM16 mono chunk to feed into AudioPlaybackEngine. */
-    data class AudioChunk(val pcm24k: ByteArray) : LiveEvent {
+    /**
+     * Raw PCM16 mono chunk to feed into AudioPlaybackEngine. [sampleRateHz] is
+     * the rate parsed from the inlineData mimeType (e.g. "audio/pcm;rate=24000");
+     * it defaults to 24 kHz when the header omits it.
+     */
+    data class AudioChunk(val pcm24k: ByteArray, val sampleRateHz: Int = 24_000) : LiveEvent {
         override fun equals(other: Any?): Boolean =
-            other is AudioChunk && pcm24k.contentEquals(other.pcm24k)
+            other is AudioChunk &&
+                sampleRateHz == other.sampleRateHz &&
+                pcm24k.contentEquals(other.pcm24k)
 
-        override fun hashCode(): Int = pcm24k.contentHashCode()
+        override fun hashCode(): Int = 31 * pcm24k.contentHashCode() + sampleRateHz
     }
 
     /** Partial/interim caption text for the translated output. */

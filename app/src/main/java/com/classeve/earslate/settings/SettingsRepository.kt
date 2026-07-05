@@ -7,8 +7,6 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
-import com.classeve.earslate.session.OutputStyle
-import com.classeve.earslate.session.RuntimeMode
 import com.classeve.earslate.session.SessionPolicy
 import com.classeve.earslate.session.SupportedLanguages
 import com.classeve.earslate.session.TargetLanguage
@@ -26,12 +24,14 @@ val Context.earslateDataStore: DataStore<Preferences> by preferencesDataStore(
 
 /**
  * All user-facing settings that survive app restarts, backed by Jetpack
- * DataStore Preferences. Replaces the hardcoded values in [AppSettings].
+ * DataStore Preferences. earslate is a bidirectional conversation translator:
+ * the only two settings that shape translation are the two languages.
  */
 data class UserSettings(
-    val targetLanguageBcp47: String = "en-US",
-    val secondaryLanguageBcp47: String? = null,
-    val conversationMode: Boolean = false,
+    /** The device user's language. */
+    val myLanguageBcp47: String = "en-US",
+    /** The other person's language. Defaults to English. */
+    val theirLanguageBcp47: String = "en-US",
     val externalOnly: Boolean = false,
     val captionsEnabled: Boolean = true,
     val preferEarbuds: Boolean = true,
@@ -46,9 +46,10 @@ class SettingsRepository(
 
     // ── preference keys ────────────────────────────────────────────────
     private object Keys {
-        val TARGET_LANGUAGE = stringPreferencesKey("target_language_bcp47")
-        val SECONDARY_LANGUAGE = stringPreferencesKey("secondary_language_bcp47")
-        val CONVERSATION_MODE = booleanPreferencesKey("conversation_mode")
+        // NOTE: key string kept as the historical "target_language_bcp47" so an
+        // existing install's chosen language survives the upgrade.
+        val MY_LANGUAGE = stringPreferencesKey("target_language_bcp47")
+        val THEIR_LANGUAGE = stringPreferencesKey("their_language_bcp47")
         val EXTERNAL_ONLY = booleanPreferencesKey("external_only")
         val CAPTIONS_ENABLED = booleanPreferencesKey("captions_enabled")
         val PREFER_EARBUDS = booleanPreferencesKey("prefer_earbuds")
@@ -62,9 +63,8 @@ class SettingsRepository(
     val settings: StateFlow<UserSettings> = dataStore.data
         .map { prefs ->
             UserSettings(
-                targetLanguageBcp47 = prefs[Keys.TARGET_LANGUAGE] ?: defaults.targetLanguageBcp47,
-                secondaryLanguageBcp47 = prefs[Keys.SECONDARY_LANGUAGE],
-                conversationMode = prefs[Keys.CONVERSATION_MODE] ?: defaults.conversationMode,
+                myLanguageBcp47 = prefs[Keys.MY_LANGUAGE] ?: defaults.myLanguageBcp47,
+                theirLanguageBcp47 = prefs[Keys.THEIR_LANGUAGE] ?: defaults.theirLanguageBcp47,
                 externalOnly = prefs[Keys.EXTERNAL_ONLY] ?: defaults.externalOnly,
                 captionsEnabled = prefs[Keys.CAPTIONS_ENABLED] ?: defaults.captionsEnabled,
                 preferEarbuds = prefs[Keys.PREFER_EARBUDS] ?: defaults.preferEarbuds,
@@ -75,8 +75,12 @@ class SettingsRepository(
         .stateIn(scope, SharingStarted.Eagerly, defaults)
 
     // ── setters ────────────────────────────────────────────────────────
-    suspend fun setTargetLanguage(bcp47: String) {
-        dataStore.edit { prefs -> prefs[Keys.TARGET_LANGUAGE] = bcp47 }
+    suspend fun setMyLanguage(bcp47: String) {
+        dataStore.edit { prefs -> prefs[Keys.MY_LANGUAGE] = bcp47 }
+    }
+
+    suspend fun setTheirLanguage(bcp47: String) {
+        dataStore.edit { prefs -> prefs[Keys.THEIR_LANGUAGE] = bcp47 }
     }
 
     suspend fun setCaptionsEnabled(enabled: Boolean) {
@@ -91,17 +95,6 @@ class SettingsRepository(
         dataStore.edit { prefs -> prefs[Keys.DIAGNOSTICS_ENABLED] = enabled }
     }
 
-    suspend fun setSecondaryLanguage(bcp47: String?) {
-        dataStore.edit { prefs ->
-            if (bcp47 != null) prefs[Keys.SECONDARY_LANGUAGE] = bcp47
-            else prefs.remove(Keys.SECONDARY_LANGUAGE)
-        }
-    }
-
-    suspend fun setConversationMode(enabled: Boolean) {
-        dataStore.edit { prefs -> prefs[Keys.CONVERSATION_MODE] = enabled }
-    }
-
     suspend fun setExternalOnly(enabled: Boolean) {
         dataStore.edit { prefs -> prefs[Keys.EXTERNAL_ONLY] = enabled }
     }
@@ -111,20 +104,17 @@ class SettingsRepository(
     }
 
     /**
-     * On first launch, detect the device locale and set the target language if
-     * the default is still en-US. This way the onboarding picker starts with
-     * a sensible pre-selection for non-English users.
+     * On first launch, detect the device locale and set MY language if the
+     * default is still en-US, so the picker starts on a sensible language for
+     * non-English users. "Their" language stays English by default.
      */
     suspend fun initializeFromLocaleIfNeeded() {
         val current = settings.value
-        if (current.targetLanguageBcp47 == "en-US") {
-            val deviceLocale = java.util.Locale.getDefault()
-            val deviceLang = deviceLocale.language // "hi", "es", "fr", etc.
-            val match = SupportedLanguages.firstOrNull {
-                it.bcp47.startsWith(deviceLang)
-            }
+        if (current.myLanguageBcp47 == "en-US") {
+            val deviceLang = java.util.Locale.getDefault().language // "hi", "es", ...
+            val match = SupportedLanguages.firstOrNull { it.bcp47.startsWith(deviceLang) }
             if (match != null && match.bcp47 != "en-US") {
-                setTargetLanguage(match.bcp47)
+                setMyLanguage(match.bcp47)
             }
         }
     }
@@ -133,22 +123,17 @@ class SettingsRepository(
 // ── policy mapping ─────────────────────────────────────────────────────
 /**
  * Converts persisted [UserSettings] into the [TranslatorPolicy] the runtime
- * consumes. Resolves the BCP-47 string back to a [TargetLanguage] via the
- * [SupportedLanguages] list, falling back to [TargetLanguage.EnglishUS].
+ * consumes. Always bidirectional — no modes.
  */
 fun UserSettings.toTranslatorPolicy(): TranslatorPolicy {
-    val language = SupportedLanguages.firstOrNull { it.bcp47 == targetLanguageBcp47 }
+    val mine = SupportedLanguages.firstOrNull { it.bcp47 == myLanguageBcp47 }
         ?: TargetLanguage.EnglishUS
-    val secondary = secondaryLanguageBcp47?.let { bcp ->
-        SupportedLanguages.firstOrNull { it.bcp47 == bcp }
-    }
+    val theirs = SupportedLanguages.firstOrNull { it.bcp47 == theirLanguageBcp47 }
+        ?: TargetLanguage.EnglishUS
     return TranslatorPolicy(
-        targetLanguage = language,
-        secondaryLanguage = secondary,
-        mode = if (conversationMode) RuntimeMode.CONVERSATION else RuntimeMode.LISTEN,
+        myLanguage = mine,
+        theirLanguage = theirs,
         captionsEnabled = captionsEnabled,
-        voiceName = null,
-        outputStyle = OutputStyle.NEUTRAL,
         externalOnly = externalOnly,
         sessionPolicy = SessionPolicy.Default,
     )

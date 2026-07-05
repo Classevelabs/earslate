@@ -1,7 +1,5 @@
 package com.classeve.earslate.settings
 
-import com.classeve.earslate.session.OutputStyle
-import com.classeve.earslate.session.RuntimeMode
 import com.classeve.earslate.session.SessionPolicy
 import com.classeve.earslate.session.TargetLanguage
 import com.classeve.earslate.session.TranslatorPolicy
@@ -14,11 +12,10 @@ import com.classeve.earslate.session.TranslatorPolicy
 object AppSettings {
 
     val defaultPolicy: TranslatorPolicy = TranslatorPolicy(
-        targetLanguage = TargetLanguage.EnglishUS,
-        mode = RuntimeMode.LISTEN,
+        myLanguage = TargetLanguage.EnglishUS,
+        theirLanguage = TargetLanguage.EnglishUS,
         captionsEnabled = true,
-        voiceName = null,
-        outputStyle = OutputStyle.NEUTRAL,
+        externalOnly = false,
         sessionPolicy = SessionPolicy.Default,
     )
 }
