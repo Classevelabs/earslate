@@ -11,6 +11,7 @@ import com.classeve.earslate.session.SessionPolicy
 import com.classeve.earslate.session.SupportedLanguages
 import com.classeve.earslate.session.TargetLanguage
 import com.classeve.earslate.session.TranslatorPolicy
+import com.classeve.earslate.session.TranslationProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -37,6 +38,7 @@ data class UserSettings(
     val preferEarbuds: Boolean = true,
     val diagnosticsEnabled: Boolean = false,
     val persistentNotification: Boolean = false,
+    val provider: TranslationProvider = TranslationProvider.AUTOMATIC,
 )
 
 class SettingsRepository(
@@ -55,6 +57,7 @@ class SettingsRepository(
         val PREFER_EARBUDS = booleanPreferencesKey("prefer_earbuds")
         val DIAGNOSTICS_ENABLED = booleanPreferencesKey("diagnostics_enabled")
         val PERSISTENT_NOTIFICATION = booleanPreferencesKey("persistent_notification")
+        val PROVIDER = stringPreferencesKey("translation_provider")
     }
 
     private val defaults = UserSettings()
@@ -70,6 +73,7 @@ class SettingsRepository(
                 preferEarbuds = prefs[Keys.PREFER_EARBUDS] ?: defaults.preferEarbuds,
                 diagnosticsEnabled = prefs[Keys.DIAGNOSTICS_ENABLED] ?: defaults.diagnosticsEnabled,
                 persistentNotification = prefs[Keys.PERSISTENT_NOTIFICATION] ?: defaults.persistentNotification,
+                provider = TranslationProvider.fromWireValue(prefs[Keys.PROVIDER]),
             )
         }
         .stateIn(scope, SharingStarted.Eagerly, defaults)
@@ -101,6 +105,10 @@ class SettingsRepository(
 
     suspend fun setPersistentNotification(enabled: Boolean) {
         dataStore.edit { prefs -> prefs[Keys.PERSISTENT_NOTIFICATION] = enabled }
+    }
+
+    suspend fun setProvider(provider: TranslationProvider) {
+        dataStore.edit { prefs -> prefs[Keys.PROVIDER] = provider.wireValue }
     }
 
     /**
@@ -135,6 +143,7 @@ fun UserSettings.toTranslatorPolicy(): TranslatorPolicy {
         theirLanguage = theirs,
         captionsEnabled = captionsEnabled,
         externalOnly = externalOnly,
+        provider = provider,
         sessionPolicy = SessionPolicy.Default,
     )
 }

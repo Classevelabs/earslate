@@ -83,9 +83,7 @@ import androidx.core.content.ContextCompat
 import com.classeve.earslate.EarslateRuntime
 import com.classeve.earslate.R
 import com.classeve.earslate.audio.AudioRoute
-import com.classeve.earslate.auth.GeminiKeyStore
 import com.classeve.earslate.service.TranslatorService
-import com.classeve.earslate.session.RuntimeError
 import com.classeve.earslate.session.RuntimeState
 import com.classeve.earslate.session.SupportedLanguages
 import com.classeve.earslate.session.TargetLanguage
@@ -96,7 +94,6 @@ import com.classeve.earslate.ui.captions.CaptionsView
 import com.classeve.earslate.ui.components.ErrorBanner
 import com.classeve.earslate.ui.diagnostics.DiagnosticsScreen
 import com.classeve.earslate.ui.help.HelpScreen
-import com.classeve.earslate.ui.onboarding.ApiKeySetupScreen
 import com.classeve.earslate.ui.onboarding.OnboardingScreen
 import com.classeve.earslate.ui.settings.LanguagePickerDialog
 import com.classeve.earslate.ui.settings.SettingsScreen
@@ -178,7 +175,7 @@ class MainActivity : ComponentActivity() {
 
     private fun requestStart() {
         // Play Prominent Disclosure & Consent: the user must affirmatively
-        // acknowledge that captured audio is streamed to Google's Gemini
+        // acknowledge that captured audio is streamed to the selected provider
         // service for translation BEFORE the first microphone capture. This
         // is the in-app path (start button, REQUEST_START intent) and it's
         // where the disclosure dialog is actually shown, since only an
@@ -242,7 +239,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { ONBOARDING, API_KEY_SETUP, MAIN, SETTINGS, DIAGNOSTICS, HELP }
+private enum class Screen { ONBOARDING, MAIN, SETTINGS, DIAGNOSTICS, HELP }
 
 @Composable
 private fun EarslateApp(
@@ -257,53 +254,18 @@ private fun EarslateApp(
     val scope = rememberCoroutineScope()
 
     val firstLaunch = remember { !OnboardingPrefs.isCompleted(context) }
-    val initialScreen = remember {
-        when {
-            firstLaunch -> Screen.ONBOARDING
-            // Onboarding done but no Gemini key stored yet → route to the
-            // BYO-key setup screen before the user can reach the start
-            // button. earslate has no account/server — this is purely a
-            // local on-device gate.
-            !GeminiKeyStore.hasKey(context) -> Screen.API_KEY_SETUP
-            else -> Screen.MAIN
-        }
-    }
+    val initialScreen = remember { if (firstLaunch) Screen.ONBOARDING else Screen.MAIN }
     var screen by rememberSaveable { mutableStateOf(initialScreen) }
 
-    // Where the key-setup screen should return to on save/back. MAIN for
-    // first-run / missing-key routing, SETTINGS when opened from Settings.
-    var keySetupReturn by rememberSaveable { mutableStateOf(Screen.MAIN) }
-
-    // Observable mirror of GeminiKeyStore.hasKey — refreshed on every screen
-    // change (the key can only change via the setup screen or Settings, both
-    // of which force a navigation).
-    var hasStoredKey by remember { mutableStateOf(GeminiKeyStore.hasKey(context)) }
-    LaunchedEffect(screen) { hasStoredKey = GeminiKeyStore.hasKey(context) }
-
-    // If the bootstrap layer finds no stored key when a session is started
-    // (e.g. cleared from Settings), it sets a typed RuntimeError. Watch for
-    // it here and bounce back to the key-setup screen.
-    val lastError by EarslateRuntime.stateStore.lastError.collectAsState()
-    LaunchedEffect(lastError) {
-        if (lastError?.kind == RuntimeError.Kind.MISSING_API_KEY && screen != Screen.API_KEY_SETUP) {
-            keySetupReturn = Screen.MAIN
-            screen = Screen.API_KEY_SETUP
-            EarslateRuntime.stateStore.clearError()
-        }
-    }
-
-    // System back mirrors the on-screen BACK affordances. On first-run key
-    // setup (no key yet) the handler is disabled so back exits the app
+    // System back mirrors the on-screen BACK affordances. On MAIN and
+    // first-run onboarding the handler is disabled so back exits the app
     // instead of trapping the user on a screen they can't leave.
     BackHandler(
-        enabled = screen != Screen.MAIN &&
-            screen != Screen.ONBOARDING &&
-            !(screen == Screen.API_KEY_SETUP && !hasStoredKey),
+        enabled = screen != Screen.MAIN && screen != Screen.ONBOARDING,
     ) {
         screen = when (screen) {
             Screen.DIAGNOSTICS -> Screen.SETTINGS
             Screen.HELP -> Screen.SETTINGS
-            Screen.API_KEY_SETUP -> keySetupReturn
             else -> Screen.MAIN
         }
     }
@@ -338,38 +300,15 @@ private fun EarslateApp(
                 },
                 onContinue = {
                     OnboardingPrefs.markCompleted(context)
-                    // Onboarding only marks the rationale-tour seen. The user
-                    // still needs to supply their own Gemini key before a
-                    // session can start. Send them through key setup if they
-                    // don't already have one stored.
-                    screen = if (!GeminiKeyStore.hasKey(context)) {
-                        Screen.API_KEY_SETUP
-                    } else {
-                        Screen.MAIN
-                    }
+                    screen = Screen.MAIN
                     onRequestQsTile()
                 },
-            )
-            Screen.API_KEY_SETUP -> ApiKeySetupScreen(
-                padding = padding,
-                onKeySaved = {
-                    hasStoredKey = true
-                    screen = keySetupReturn
-                },
-                // The setup screen only shows the BACK row when a key is
-                // already stored (re-entry); on first run there is nowhere
-                // to go back to.
-                onBack = { screen = keySetupReturn },
             )
             Screen.MAIN -> MainScreen(
                 padding = padding,
                 onStart = onStart,
                 onStop = onStop,
                 onOpenSettings = { screen = Screen.SETTINGS },
-                onOpenApiKeySetup = {
-                    keySetupReturn = Screen.MAIN
-                    screen = Screen.API_KEY_SETUP
-                },
                 currentLanguage = currentLanguage,
                 currentTheirLanguage = currentTheirs,
                 onMyLanguageChange = { lang ->
@@ -387,16 +326,8 @@ private fun EarslateApp(
                 initialPreferEarbuds = userSettings.preferEarbuds,
                 initialDiagnosticsEnabled = userSettings.diagnosticsEnabled,
                 initialPersistentNotification = userSettings.persistentNotification,
-                onBack = {
-                    // If the key was removed from Settings, land on key setup
-                    // instead of a main screen that can't start a session.
-                    screen = if (GeminiKeyStore.hasKey(context)) {
-                        Screen.MAIN
-                    } else {
-                        keySetupReturn = Screen.MAIN
-                        Screen.API_KEY_SETUP
-                    }
-                },
+                initialProvider = userSettings.provider,
+                onBack = { screen = Screen.MAIN },
                 onMyLanguageChange = { lang ->
                     scope.launch { settingsRepo.setMyLanguage(lang.bcp47) }
                 },
@@ -420,13 +351,12 @@ private fun EarslateApp(
                         NotificationControlService.stop(context)
                     }
                 },
+                onProviderChange = { provider ->
+                    scope.launch { settingsRepo.setProvider(provider) }
+                },
                 onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
                 onOpenOnboarding = { screen = Screen.ONBOARDING },
                 onOpenHelp = { screen = Screen.HELP },
-                onOpenApiKeySetup = {
-                    keySetupReturn = Screen.SETTINGS
-                    screen = Screen.API_KEY_SETUP
-                },
             )
             Screen.DIAGNOSTICS -> DiagnosticsScreen(
                 padding = padding,
@@ -446,7 +376,6 @@ private fun MainScreen(
     onStart: () -> Unit,
     onStop: () -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenApiKeySetup: () -> Unit = {},
     currentLanguage: TargetLanguage = TargetLanguage.EnglishUS,
     currentTheirLanguage: TargetLanguage = TargetLanguage.EnglishUS,
     onMyLanguageChange: (TargetLanguage) -> Unit = {},
@@ -547,18 +476,10 @@ private fun MainScreen(
                 exit = shrinkVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeOut(tween(MotionBaseMs)),
             ) {
                 lastError?.let { err ->
-                    // MISSING_API_KEY has no useful "retry" — the fix is to go
-                    // add a key, not to re-attempt the same failing bootstrap.
-                    val onViewPlans = if (err.kind == RuntimeError.Kind.MISSING_API_KEY) {
-                        { onOpenApiKeySetup() }
-                    } else {
-                        null
-                    }
                     ErrorBanner(
                         error = err,
-                        onRetry = if (err.kind == RuntimeError.Kind.MISSING_API_KEY) null else onStart,
+                        onRetry = onStart,
                         onDismiss = { EarslateRuntime.stateStore.clearError() },
-                        onViewPlans = onViewPlans,
                     )
                 }
             }

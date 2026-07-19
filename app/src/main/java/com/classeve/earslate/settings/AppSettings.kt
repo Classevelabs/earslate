@@ -16,6 +16,7 @@ object AppSettings {
         theirLanguage = TargetLanguage.EnglishUS,
         captionsEnabled = true,
         externalOnly = false,
+        provider = com.classeve.earslate.session.TranslationProvider.AUTOMATIC,
         sessionPolicy = SessionPolicy.Default,
     )
 }

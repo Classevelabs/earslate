@@ -32,8 +32,6 @@ internal data class ClientSetupPayload(
     val systemInstruction: Content? = null,
     val sessionResumption: SessionResumptionHandle? = null,
     val contextWindowCompression: ContextWindowCompression? = null,
-    val outputAudioTranscription: JsonObject? = null,
-    val inputAudioTranscription: JsonObject? = null,
 )
 
 @Serializable
@@ -47,6 +45,8 @@ internal data class GenerationConfig(
     // end-to-end: with translationConfig the model translates; without it (the
     // old prompt-only path) it echoed the source and lagged badly.
     val translationConfig: TranslationConfig? = null,
+    val outputAudioTranscription: JsonObject? = null,
+    val inputAudioTranscription: JsonObject? = null,
 )
 
 @Serializable
@@ -113,10 +113,6 @@ internal data class ClientRealtimeFrame(
 
 @Serializable
 internal data class RealtimeInput(
-    // The translate model only ingests audio sent as `mediaChunks` — the
-    // singular `audio` field is silently dropped by this model (verified: zero
-    // input transcription, zero output). Always use mediaChunks.
-    val mediaChunks: List<AudioBlob>? = null,
     val audio: AudioBlob? = null,
     val video: AudioBlob? = null,
     val text: String? = null,

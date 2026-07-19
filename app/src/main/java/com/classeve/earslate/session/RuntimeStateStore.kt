@@ -61,8 +61,6 @@ data class RuntimeError(
     val message: String,
 ) {
     enum class Kind {
-        /** No Gemini API key stored yet — UI must route to the key-setup screen. */
-        MISSING_API_KEY,
         BOOTSTRAP_FAILED,
         CONNECT_FAILED,
         PERMISSION_DENIED,

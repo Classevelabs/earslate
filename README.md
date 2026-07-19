@@ -1,50 +1,36 @@
 # earslate
 
-Always-available live speech translator for Android. Listens continuously, translates nearby speech into the user's native language, and plays the translated audio through earbuds or speaker.
+Account-free live speech translation for Android and iOS. Earslate captures speech only while a session is active, streams it directly to the selected provider, and plays translated audio with live captions.
 
-A free, standalone, bring-your-own-key ClassEve product — no account, no billing, no ClassEve server in the audio path. Powered by **Google Gemini Live** over a direct device-to-Live WebSocket using the user's own Gemini API key, stored encrypted on-device only.
+The app is free to use and has no sign-in, subscription, or user-supplied API key. A small ClassEve broker returns single-use, short-lived Gemini or OpenAI credentials; audio never traverses the broker.
 
-## Status
+## Android build
 
-- Android: live. APK at [`classeve.com/downloads/Earslate.apk`](https://classeve.com/downloads/Earslate.apk).
-- iOS: source-ready (see [`../earslate-ios/`](../earslate-ios/)); shipping status TBD pending macOS build + App Store review.
-
-## Quick start
-
-Requires JDK 17 and an Android SDK with platform 34 + build-tools 34.0.0.
+Requires JDK 17 and an Android SDK. Copy `local.properties.example` to `local.properties`, set `sdk.dir`, then run:
 
 ```bash
-cp local.properties.example local.properties
-# edit local.properties: set sdk.dir
-./gradlew assembleDebug
+./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
 
-Install the resulting APK on a device running Android 10+ (API 29). On first launch, enter your own Gemini API key (get one free at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)) — it's stored encrypted on-device and used only to talk directly to Google's Gemini Live endpoint.
+The optional `EARSLATE_WORKER_URL` property selects a staging broker. It is a public URL, not a secret. Never place provider API keys in the mobile project.
 
-## Architecture
+## Runtime architecture
 
-Full spec: [`../live_translator_kotlin_blueprint_v2.md`](../live_translator_kotlin_blueprint_v2.md).
+- Native Kotlin/Compose Android client and native SwiftUI iOS client.
+- Automatic, Gemini, or OpenAI provider preference in Settings.
+- `POST /v1/earslate/session` mints a short-lived provider credential without a user account.
+- Device-to-provider WebSockets keep audio out of ClassEve infrastructure.
+- Gemini Live Translate uses constrained `v1alpha` ephemeral tokens, 16 kHz PCM16 input, and 24 kHz PCM16 output.
+- OpenAI Realtime Translate uses translation client secrets and 24 kHz PCM16 WebSocket input/output.
+- Android keeps the foreground microphone service and Quick Settings tile.
+- Credentials are held in memory for one session and never persisted.
 
-- Native Kotlin Android app.
-- Jetpack Compose UI, Material 3 theming, ClassEve design language (see `ui/theme/`).
-- Direct device-to-Gemini-Live WebSocket. No backend in the audio hot path.
-- Foreground microphone service + Quick Settings tile for one-tap start/stop.
-- Listen mode only for v1.
+## Authentication and privacy
 
-## Layout
+There is no user authentication. Each installation generates a random UUID used only for anonymous rate limiting and the provider safety identifier. It is not an account and carries no entitlement. The broker stores no audio or transcript data.
 
-```
-app/src/main/java/com/classeve/earslate/
-  audio/       AudioCaptureEngine, AudioPlaybackEngine, VadGate, jitter buffer, route monitor
-  bootstrap/   SessionBootstrapRepository + UserKeyBootstrapRepository (bring-your-own-key)
-  live/        LiveSocketClient, LiveSessionConfigFactory, LiveMessageParser, LiveEvent
-  session/     SessionCoordinator, ReconnectManager, RuntimeState, state machine
-  service/     TranslatorService (foreground), TranslatorTileService (Quick Settings), NotificationFactory
-  settings/    AppSettings + preferences
-  metrics/     Local metrics store (debug diagnostics only)
-  ui/          MainActivity, Compose screens, design-token theme
-```
+Production deployment requires `GEMINI_API_KEY` and/or `OPENAI_API_KEY` as Cloudflare Worker secrets. Rotate any key ever pasted into chat or another plaintext channel before deployment.
 
-## Auth
+## License
 
-There is none. earslate has no account, no sign-in, and no ClassEve server in the path at all. The user supplies their own Google Gemini API key on first launch (`ApiKeySetupScreen`); it is stored only in `EncryptedSharedPreferences` via `GeminiKeyStore`/`SecurePrefs` and used solely to open a direct WebSocket to Google's Gemini Live endpoint. ClassEve never receives or stores the key, and there is no usage metering, billing, or daily cap — the user pays Google directly for their own API usage.
+The Earslate Android and iOS source is licensed under Apache-2.0; see [`../LICENSE`](../LICENSE).

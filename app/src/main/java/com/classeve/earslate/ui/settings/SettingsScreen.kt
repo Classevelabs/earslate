@@ -33,11 +33,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import com.classeve.earslate.auth.GeminiKeyStore
 import com.classeve.earslate.session.TargetLanguage
+import com.classeve.earslate.session.TranslationProvider
 import com.classeve.earslate.ui.components.BackRow
 import com.classeve.earslate.ui.components.FramedPanel
 import com.classeve.earslate.ui.components.SectionHeader
@@ -56,6 +57,7 @@ fun SettingsScreen(
     initialPreferEarbuds: Boolean = true,
     initialDiagnosticsEnabled: Boolean = false,
     initialPersistentNotification: Boolean = false,
+    initialProvider: TranslationProvider = TranslationProvider.AUTOMATIC,
     onBack: () -> Unit,
     onMyLanguageChange: (TargetLanguage) -> Unit = {},
     onTheirLanguageChange: (TargetLanguage) -> Unit = {},
@@ -63,55 +65,57 @@ fun SettingsScreen(
     onPreferEarbudsChange: (Boolean) -> Unit = {},
     onDiagnosticsEnabledChange: (Boolean) -> Unit = {},
     onPersistentNotificationChange: (Boolean) -> Unit = {},
+    onProviderChange: (TranslationProvider) -> Unit = {},
     onOpenDiagnostics: () -> Unit = {},
     onOpenOnboarding: () -> Unit = {},
     onOpenHelp: () -> Unit = {},
-    onOpenApiKeySetup: () -> Unit = {},
     padding: PaddingValues = PaddingValues(0.dp),
 ) {
-    val context = LocalContext.current
     var myLanguage by remember { mutableStateOf(initialMyLanguage) }
     var theirLanguage by remember { mutableStateOf(initialTheirLanguage) }
     var captionsEnabled by remember { mutableStateOf(initialCaptionsEnabled) }
     var preferEarbuds by remember { mutableStateOf(initialPreferEarbuds) }
     var diagnosticsEnabled by remember { mutableStateOf(initialDiagnosticsEnabled) }
     var persistentNotification by remember { mutableStateOf(initialPersistentNotification) }
+    var provider by remember { mutableStateOf(initialProvider) }
     var showMyPicker by remember { mutableStateOf(false) }
     var showTheirPicker by remember { mutableStateOf(false) }
 
-    // BYO-key state: read once per composition of this screen, refreshed
-    // locally after a remove. The key itself never renders — only a suffix.
-    var storedKeySuffix by remember { mutableStateOf(GeminiKeyStore.load(context)?.takeLast(4)) }
-    var showRemoveKeyDialog by remember { mutableStateOf(false) }
+    var showProviderDialog by remember { mutableStateOf(false) }
 
-    if (showRemoveKeyDialog) {
+    if (showProviderDialog) {
         AlertDialog(
-            onDismissRequest = { showRemoveKeyDialog = false },
+            onDismissRequest = { showProviderDialog = false },
             containerColor = EarslateTheme.colors.elev2,
             titleContentColor = EarslateTheme.colors.textPrimary,
             textContentColor = EarslateTheme.colors.textSecondary,
-            title = { Text("Remove your API key?") },
+            title = { Text("Translation provider") },
             text = {
-                Text(
-                    "earslate can't translate without a key. You can paste the same " +
-                        "key again later — removing it here doesn't delete it from " +
-                        "your Google account.",
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    GeminiKeyStore.clear(context)
-                    storedKeySuffix = null
-                    showRemoveKeyDialog = false
-                }) {
-                    Text("Remove", color = EarslateTheme.colors.ember)
+                Column {
+                    TranslationProvider.entries.forEach { option ->
+                        TextButton(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .semantics { selected = provider == option },
+                            onClick = {
+                                provider = option
+                                onProviderChange(option)
+                                showProviderDialog = false
+                            },
+                        ) {
+                            Text(
+                                text = option.displayName,
+                                color = if (provider == option) {
+                                    EarslateTheme.colors.ember
+                                } else {
+                                    EarslateTheme.colors.textPrimary
+                                },
+                            )
+                        }
+                    }
                 }
             },
-            dismissButton = {
-                TextButton(onClick = { showRemoveKeyDialog = false }) {
-                    Text("Keep it", color = EarslateTheme.colors.textSecondary)
-                }
-            },
+            confirmButton = {},
         )
     }
 
@@ -214,28 +218,18 @@ fun SettingsScreen(
             }
 
             SectionHeader(
-                kicker = "API key",
-                headline = "Your Gemini key.",
-                support = "earslate runs on your own free Google Gemini key. It's stored " +
-                    "encrypted on this device and is only ever sent to Google.",
+                kicker = "Service",
+                headline = "Translation provider.",
+                support = "Automatic chooses the available provider. Gemini supports both directions; OpenAI translates nearby speech into your language.",
             )
 
             FramedPanel {
                 SettingsRow(
-                    label = "Gemini API key",
-                    value = storedKeySuffix?.let { "Saved ····$it" } ?: "Not set",
-                    onClick = onOpenApiKeySetup,
-                    onClickLabel = "Manage your Gemini API key",
+                    label = "Provider",
+                    value = provider.displayName,
+                    onClick = { showProviderDialog = true },
+                    onClickLabel = "Choose translation provider",
                 )
-                if (storedKeySuffix != null) {
-                    Divider()
-                    SettingsRow(
-                        label = "Remove key",
-                        value = "Clear",
-                        onClick = { showRemoveKeyDialog = true },
-                        onClickLabel = "Remove the saved Gemini API key from this device",
-                    )
-                }
             }
 
             SectionHeader(
