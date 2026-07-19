@@ -5,7 +5,7 @@ Package `com.classeve.earslate` · first Play submission · billing is **externa
 ## Upload files (all in `D:\Claude\earslate-play-upload\`)
 | Asset | Spec | File |
 |---|---|---|
-| App bundle | AAB, release-signed (CN=Earslate) | `earslate-0.1.3-vc4-release.aab` (vc4 / 0.1.3) |
+| App bundle | AAB, release-signed (CN=Earslate) | `earslate-0.3.0-vc13-release.aab` (vc13 / 0.3.0) |
 | App icon | 512×512 PNG | `earslate-play-icon-512.png` (real adaptive launcher icon: cream brackets on ember `#C2410C`) |
 | Feature graphic | 1024×500 PNG | `earslate-feature-graphic-1024x500.png` |
 | Phone screenshots | 5 × 1080×1920 | `earslate-screenshot-01..05.png` |
@@ -57,7 +57,7 @@ By ClassEve.
 - **Pricing:** Free. No Google Play in-app products (subscriptions are external via Paddle — mirror `com.lven.cloud`).
 
 ## Release
-- Track: **Internal testing** first (new app). Release name `0.1.3 (4)`.
+- Track: **Internal testing** first (new app). Release name `0.3.0 (13)`.
 - Release notes:
 ```
 First earslate test build. Live speech translation across 150+ language pairs, with on-screen text and earbud audio output. Microphone active only during a session.

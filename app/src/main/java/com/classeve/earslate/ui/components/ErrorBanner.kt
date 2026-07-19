@@ -20,23 +20,18 @@ import com.classeve.earslate.session.RuntimeError
 import com.classeve.earslate.ui.theme.EarslateTheme
 
 /**
- * ClassEve runtime-error banner — flat fill, brand-correct treatment by kind:
- *
- *   MISSING_API_KEY  → ember-soft band, cream text, ember "ADD KEY" CTA
- *   everything else  → oxblood-soft band, cream text
+ * ClassEve runtime-error banner — flat oxblood-soft fill with cream text.
  *
  * Boxy action buttons. No glow, no gradients, no glass.
  */
 @Composable
 fun ErrorBanner(
     error: RuntimeError,
+    modifier: Modifier = Modifier,
     onRetry: (() -> Unit)? = null,
     onDismiss: (() -> Unit)? = null,
-    onViewPlans: (() -> Unit)? = null,
-    modifier: Modifier = Modifier,
 ) {
     val kickerLabel = when (error.kind) {
-        RuntimeError.Kind.MISSING_API_KEY -> "SETUP REQUIRED"
         RuntimeError.Kind.BOOTSTRAP_FAILED -> "BOOTSTRAP FAILED"
         RuntimeError.Kind.CONNECT_FAILED -> "CONNECT FAILED"
         RuntimeError.Kind.PERMISSION_DENIED -> "PERMISSION NEEDED"
@@ -68,19 +63,16 @@ fun ErrorBanner(
             style = EarslateTheme.textStyles.body,
             color = palette.text,
         )
-        if (showRetry || onDismiss != null || onViewPlans != null) {
+        if (showRetry || onDismiss != null) {
             Row(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                onViewPlans?.let {
-                    BannerAction(label = primaryCtaLabelFor(error.kind), primary = true, onClick = it)
-                }
                 if (showRetry) {
                     onRetry?.let {
                         BannerAction(
                             label = "RETRY",
-                            primary = onViewPlans == null,
+                            primary = true,
                             onClick = it,
                         )
                     }
@@ -93,16 +85,6 @@ fun ErrorBanner(
     }
 }
 
-/**
- * Primary CTA label per error kind. [onViewPlans] is now repurposed by
- * callers as the "open key setup" action for MISSING_API_KEY; the label
- * still reads naturally for that case.
- */
-private fun primaryCtaLabelFor(kind: RuntimeError.Kind): String = when (kind) {
-    RuntimeError.Kind.MISSING_API_KEY -> "ADD API KEY"
-    else -> "VIEW PLANS"
-}
-
 private data class BandPalette(
     val background: Color,
     val text: Color,
@@ -110,20 +92,13 @@ private data class BandPalette(
 )
 
 @Composable
-private fun bandPaletteFor(kind: RuntimeError.Kind): BandPalette {
+private fun bandPaletteFor(@Suppress("UNUSED_PARAMETER") kind: RuntimeError.Kind): BandPalette {
     val colors = EarslateTheme.colors
-    return when (kind) {
-        RuntimeError.Kind.MISSING_API_KEY -> BandPalette(
-            background = colors.emberSoft,
-            text = colors.cream,
-            kicker = colors.ember,
-        )
-        else -> BandPalette(
-            background = colors.oxbloodSoft,
-            text = colors.cream,
-            kicker = colors.creamSoft,
-        )
-    }
+    return BandPalette(
+        background = colors.oxbloodSoft,
+        text = colors.cream,
+        kicker = colors.creamSoft,
+    )
 }
 
 @Composable
