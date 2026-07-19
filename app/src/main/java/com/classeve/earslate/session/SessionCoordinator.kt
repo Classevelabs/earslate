@@ -8,19 +8,22 @@ import com.classeve.earslate.audio.AudioCaptureEngine
 import com.classeve.earslate.audio.AudioDeviceMonitor
 import com.classeve.earslate.audio.AudioPlaybackEngine
 import com.classeve.earslate.audio.AudioRoute
-import com.classeve.earslate.bootstrap.MissingApiKeyException
+import com.classeve.earslate.bootstrap.SessionBootstrap
 import com.classeve.earslate.bootstrap.SessionBootstrapRepository
 import com.classeve.earslate.live.LiveEvent
-import com.classeve.earslate.live.LiveMessageParser
 import com.classeve.earslate.live.LiveSessionConfigFactory
 import com.classeve.earslate.live.LiveSocketClient
 import com.classeve.earslate.live.LiveSocketState
+import com.classeve.earslate.live.TranslationLiveProtocol
+import com.classeve.earslate.live.TranslationLiveProtocols
 import com.classeve.earslate.ui.captions.CaptionsStore
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
@@ -31,20 +34,22 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withContext
 
 /**
  * Orchestrates the live conversation translator end-to-end:
  *
  *   bootstrap → connect leg(s) → setup → (capture audio ↔ play audio)* → close
  *
- * earslate is ALWAYS a bidirectional conversation translator. The
- * `gemini-3.5-live-translate-preview` model is single-target per session, so we
- * run one translate "leg" per direction:
+ * Gemini supports safe bidirectional operation through one translate "leg"
+ * per direction:
  *   - a leg targeting the user's language    (the other person → me)
  *   - a leg targeting the other person's lang (me → the other person)
  * Both legs share the one mic; each leg's `echoTargetLanguage=false` makes it
  * stay SILENT when the input is already its target, so only one leg ever speaks
  * for a given utterance. When both languages match it collapses to a single leg.
+ * OpenAI's dedicated translation endpoint has one output language and no
+ * echo-suppression control, so it uses the primary listen-to-my-language leg.
  *
  * The model emits filler/anti-repeat silence as zero PCM; [isSilent] drops those
  * frames so the two legs' streams never interleave in the shared playback buffer.
@@ -83,7 +88,13 @@ class SessionCoordinator(
     @Volatile private var gateCooldownJob: Job? = null
     @Volatile private var currentPolicy: TranslatorPolicy? = null
 
-    private data class Leg(val targetCode: String, val socket: LiveSocketClient)
+    private data class Leg(
+        val targetCode: String,
+        val bootstrap: SessionBootstrap,
+        val protocol: TranslationLiveProtocol,
+        val socket: LiveSocketClient,
+        val setupReady: CompletableDeferred<Unit> = CompletableDeferred(),
+    )
 
     fun start(policy: TranslatorPolicy) {
         synchronized(this) {
@@ -160,38 +171,54 @@ class SessionCoordinator(
     private suspend fun runSession(policy: TranslatorPolicy): Unit = coroutineScope {
         val outer: CoroutineScope = this
 
+        // Build the translate legs. One per distinct language direction.
+        val myCode = LiveSessionConfigFactory.translateCodeFor(policy.myLanguage.bcp47)
+        val theirCode = LiveSessionConfigFactory.translateCodeFor(policy.theirLanguage.bcp47)
         stateStore.set(RuntimeState.BOOTSTRAPPING)
-        val bootstrap = try {
-            bootstrapRepository.bootstrap()
-        } catch (t: Throwable) {
-            Log.e(TAG, "bootstrap failed: ${t.message}")
-            val kind = when (t) {
-                is MissingApiKeyException -> RuntimeError.Kind.MISSING_API_KEY
-                else -> RuntimeError.Kind.BOOTSTRAP_FAILED
+        val legs = try {
+            val primary = bootstrapRepository.bootstrap(policy.provider, myCode)
+            val specs = mutableListOf(myCode to primary)
+            // Gemini's echoTargetLanguage=false supports two simultaneous
+            // directions safely. OpenAI's dedicated translation session has
+            // one output language and no echo-suppression control, so opening
+            // two sockets would produce overlapping audio. Keep its core
+            // listening path single-target instead of shipping broken output.
+            if (
+                primary.provider == TranslationProvider.GEMINI &&
+                !theirCode.equals(myCode, ignoreCase = true)
+            ) {
+                specs += theirCode to bootstrapRepository.bootstrap(primary.provider, theirCode)
             }
-            stateStore.setError(RuntimeError(kind = kind, message = t.message ?: "Bootstrap failed"))
+            specs.map { (targetCode, bootstrap) ->
+                Leg(targetCode, bootstrap, TranslationLiveProtocols.forProvider(bootstrap.provider), socketFactory())
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "bootstrap failed: ${t.javaClass.simpleName}")
+            stateStore.setError(
+                RuntimeError(
+                    kind = RuntimeError.Kind.BOOTSTRAP_FAILED,
+                    message = t.message ?: "Could not start the translation service.",
+                ),
+            )
             wasSocketDeath = false
             stateStore.set(RuntimeState.IDLE)
             return@coroutineScope
         }
-
-        // Build the translate legs. One per distinct language direction.
-        val myCode = LiveSessionConfigFactory.translateCodeFor(policy.myLanguage.bcp47)
-        val theirCode = LiveSessionConfigFactory.translateCodeFor(policy.theirLanguage.bcp47)
-        val targetCodes = if (theirCode.equals(myCode, ignoreCase = true)) {
-            listOf(myCode)
-        } else {
-            listOf(myCode, theirCode)
-        }
-        val legs = targetCodes.map { Leg(targetCode = it, socket = socketFactory()) }
-        Log.i(TAG, "session legs: ${targetCodes.joinToString()} model=${bootstrap.model}")
+        Log.i(
+            TAG,
+            "session legs: ${legs.joinToString { "${it.targetCode}:${it.bootstrap.provider.wireValue}" }}",
+        )
 
         stateStore.set(RuntimeState.CONNECTING)
-        val url = buildWebSocketUrl(bootstrap)
-        val headers = buildWebSocketHeaders(bootstrap)
+        // Start frame collectors before connecting. OpenAI can emit its first
+        // session event immediately after the upgrade; SharedFlow has no replay.
+        for (leg in legs) launch { pumpFrames(leg) }
         for (leg in legs) {
             try {
-                leg.socket.connect(url, headers)
+                leg.socket.connect(
+                    leg.bootstrap.webSocketUrl,
+                    leg.protocol.headers(leg.bootstrap),
+                )
             } catch (t: Throwable) {
                 Log.e(TAG, "socket connect failed: ${t.message}")
                 // This early return sits BEFORE the try/finally below that owns
@@ -202,7 +229,7 @@ class SessionCoordinator(
                 stateStore.setError(
                     RuntimeError(
                         kind = RuntimeError.Kind.CONNECT_FAILED,
-                        message = t.message ?: "Could not reach Gemini Live",
+                        message = "Could not reach the selected translation provider.",
                     ),
                 )
                 stateStore.set(RuntimeState.IDLE)
@@ -210,9 +237,8 @@ class SessionCoordinator(
             }
         }
 
-        // Per-leg frame pump + socket-death watcher.
+        // Per-leg socket-death watcher.
         for (leg in legs) {
-            launch { pumpFrames(leg.socket) }
             launch {
                 val death = leg.socket.state.first {
                     it == LiveSocketState.CLOSED || it == LiveSocketState.FAILED
@@ -239,14 +265,35 @@ class SessionCoordinator(
 
         // Send each leg its own translate setup (its target language).
         for (leg in legs) {
-            val setupFrame = LiveSessionConfigFactory.buildSetup(
-                model = bootstrap.model,
+            val setupFrame = leg.protocol.setupFrame(
+                bootstrap = leg.bootstrap,
                 targetLanguageCode = leg.targetCode,
-                echoTargetLanguage = false,
                 captionsEnabled = policy.captionsEnabled,
             )
             val sent = leg.socket.sendText(setupFrame)
             Log.i(TAG, "setup sent=$sent target=${leg.targetCode}")
+            if (!sent) {
+                for (item in legs) runCatching { item.socket.close() }
+                stateStore.setError(
+                    RuntimeError(RuntimeError.Kind.CONNECT_FAILED, "Could not configure the translation session."),
+                )
+                stateStore.set(RuntimeState.IDLE)
+                return@coroutineScope
+            }
+        }
+
+        // Do not open the microphone until every provider has acknowledged the
+        // session configuration. This prevents silently dropping the first words.
+        for (leg in legs) {
+            val ready = withTimeoutOrNull(7_000) { leg.setupReady.await(); true } ?: false
+            if (!ready) {
+                for (item in legs) runCatching { item.socket.close() }
+                stateStore.setError(
+                    RuntimeError(RuntimeError.Kind.CONNECT_FAILED, "The translation provider did not become ready."),
+                )
+                stateStore.set(RuntimeState.IDLE)
+                return@coroutineScope
+            }
         }
 
         // Clean, recognition-grade audio path: stay in MODE_NORMAL (NOT call
@@ -270,8 +317,9 @@ class SessionCoordinator(
                     runCatching {
                         if (!playbackGateActive) {
                             // Same audio to every leg; encode once.
-                            val json = LiveSessionConfigFactory.buildAudioChunk(frame)
-                            for (leg in legs) leg.socket.sendText(json)
+                            for (leg in legs) {
+                                leg.socket.sendText(leg.protocol.audioFrame(frame))
+                            }
                         }
                     }
                 },
@@ -307,19 +355,29 @@ class SessionCoordinator(
             gateCooldownJob?.cancel()
             runCatching { captureEngine.stop() }
             runCatching { playbackEngine.stop(graceful = true) }
-            for (leg in legs) runCatching { leg.socket.close() }
+            withContext(NonCancellable) {
+                for (leg in legs) {
+                    leg.protocol.gracefulCloseFrame()?.let { leg.socket.sendText(it) }
+                }
+                if (legs.any { it.protocol.gracefulCloseFrame() != null }) delay(250)
+                for (leg in legs) runCatching { leg.socket.close() }
+            }
             runCatching { audioManager.abandonAudioFocusRequest(audioFocusRequest) }
             stateStore.set(RuntimeState.IDLE)
         }
     }
 
-    private suspend fun pumpFrames(socket: LiveSocketClient) {
-        socket.frames.collect { raw ->
-            val parsed = LiveMessageParser.parse(raw)
+    private suspend fun pumpFrames(leg: Leg) {
+        leg.socket.frames.collect { raw ->
+            val parsed = leg.protocol.parse(raw)
             parsed.forEach { event ->
+                if (event is LiveEvent.SetupComplete) leg.setupReady.complete(Unit)
                 runCatching { dispatch(event) }
                     .onFailure { Log.e(TAG, "dispatch failed for ${event.javaClass.simpleName}: ${it.message}", it) }
                 _events.tryEmit(event)
+                if (event is LiveEvent.Error) {
+                    leg.socket.close(1011, "provider_error")
+                }
             }
         }
     }
@@ -398,24 +456,12 @@ class SessionCoordinator(
         return result != null
     }
 
-    // Always the direct-to-Gemini path: the user's own key goes on the query
-    // string of the public v1beta bidi endpoint. No worker, no Authorization
-    // header, no ephemeral-token endpoint involved.
-    private fun buildWebSocketUrl(bootstrap: com.classeve.earslate.bootstrap.SessionBootstrap): String =
-        "$GEMINI_LIVE_BASE_V1BETA?key=${bootstrap.ephemeralToken}"
-
-    private fun buildWebSocketHeaders(bootstrap: com.classeve.earslate.bootstrap.SessionBootstrap): Map<String, String> =
-        emptyMap()
-
     companion object {
         private const val TAG = "SessionCoord"
         private const val MAX_RECONNECT_ATTEMPTS = 4
 
         /** Output PCM peak below this (model emits zero-PCM silence; peak≈1) is treated as silence. */
         private const val SILENCE_PEAK = 48
-
-        private const val GEMINI_LIVE_BASE_V1BETA =
-            "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 
         /** True when the 16-bit PCM frame is (near-)silent — peak amplitude under [SILENCE_PEAK]. */
         private fun isSilent(pcm: ByteArray): Boolean {

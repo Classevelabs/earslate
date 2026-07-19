@@ -1,8 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
-    <!-- Android 11 and lower (fullBackupContent). An empty rule set means
-         DEFAULT-INCLUDE-EVERYTHING, not "nothing" — exclude the Gemini
-         API key store explicitly. allowBackup="false" already disables
-         backup; this is belt-and-braces against a future allowBackup flip. -->
-    <exclude domain="sharedpref" path="classeve_earslate_gemini_key.xml" />
+    <!-- The anonymous installation UUID is local abuse-control state, not a
+         portable identity. Never restore it onto a different device. -->
+    <exclude domain="sharedpref" path="earslate_installation.xml" />
 </full-backup-content>

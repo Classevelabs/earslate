@@ -55,8 +55,8 @@ import com.classeve.earslate.ui.theme.rememberReducedMotion
  *
  * Short, welcoming, and honest: what earslate does (live translated speech in
  * your ear + captions on screen), that it's free and private (no account, no
- * ClassEve servers, bring-your-own Google key), then the practical bits (mic,
- * notification, audio disclosure). Flows straight into the API-key setup
+ * no account), then the practical bits (mic, provider processing,
+ * notification, audio disclosure). Flows straight into the main translator
  * screen via [onContinue] — there is no sign-in anywhere.
  *
  * Sections stagger in with a gentle reveal; the reveal is skipped entirely
@@ -104,15 +104,14 @@ fun OnboardingScreen(
                 FramedPanel {
                     ValueProp(
                         title = "Free",
-                        body = "No price, no subscription, no account. earslate uses a free " +
-                            "Google Gemini key that you create yourself — you'll add it in " +
-                            "the next step, it takes about two minutes.",
+                        body = "No price, no subscription, no account, and no API key setup. " +
+                            "Choose Automatic, Gemini, or OpenAI and start listening.",
                     )
                     ValueProp(
                         title = "Private",
-                        body = "There are no earslate servers. Audio goes straight from your " +
-                            "phone to Google using your own key, and your key never leaves " +
-                            "this device.",
+                        body = "Audio goes straight from your phone to the selected translation " +
+                            "provider. ClassEve issues a short-lived session credential but " +
+                            "never receives or stores your audio.",
                     )
                     ValueProp(
                         title = "Live",
@@ -203,16 +202,15 @@ fun OnboardingScreen(
                 FramedPanel {
                     OnboardingStep(
                         index = "01",
-                        title = "Your own free key",
-                        body = "Right after this screen you'll create a free Google Gemini " +
-                            "key (we'll walk you through it, step by step) and paste it in. " +
-                            "That's the only setup earslate has.",
+                        title = "Choose your languages",
+                        body = "Set your language and the other person's language. Automatic " +
+                            "provider selection is ready by default and can be changed later.",
                     )
                     OnboardingStep(
                         index = "02",
                         title = "Microphone access",
                         body = "earslate listens through your microphone and streams that " +
-                            "audio to Google's Gemini service to translate it in real time. " +
+                            "audio to Gemini or OpenAI to translate it in real time. " +
                             "Android asks for mic access once, and you'll confirm the audio " +
                             "handling before the first session.",
                     )
@@ -238,11 +236,10 @@ fun OnboardingScreen(
                 FramedPanel {
                     SectionHeader(
                         kicker = "Your audio",
-                        headline = "Sent to Google to translate.",
-                        support = "earslate streams the audio it captures to Google's Gemini " +
-                            "service over an encrypted connection to translate it in real " +
-                            "time. Google processes that audio and may retain it under " +
-                            "Google's terms. earslate stores no audio of its own.",
+                        headline = "Sent to your provider to translate.",
+                        support = "earslate streams captured audio over an encrypted connection " +
+                            "directly to Gemini or OpenAI. The selected provider processes it " +
+                            "under its terms. ClassEve never receives or stores the audio.",
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
@@ -277,7 +274,7 @@ fun OnboardingScreen(
                         onClick = onContinue,
                     )
                     Text(
-                        text = "Next: add your free Gemini key.",
+                        text = "Next: choose your languages and start listening.",
                         style = EarslateTheme.textStyles.bodySmall,
                         color = EarslateTheme.colors.textTertiary,
                         modifier = Modifier.fillMaxWidth(),

@@ -25,8 +25,20 @@ data class TranslatorPolicy(
      * stop the translated audio from being re-ingested.
      */
     val externalOnly: Boolean = false,
+    val provider: TranslationProvider = TranslationProvider.AUTOMATIC,
     val sessionPolicy: SessionPolicy = SessionPolicy.Default,
 )
+
+enum class TranslationProvider(val wireValue: String, val displayName: String) {
+    AUTOMATIC("auto", "Automatic"),
+    GEMINI("gemini", "Gemini"),
+    OPENAI("openai", "OpenAI");
+
+    companion object {
+        fun fromWireValue(value: String?): TranslationProvider =
+            entries.firstOrNull { it.wireValue == value } ?: AUTOMATIC
+    }
+}
 
 data class TargetLanguage(
     val displayName: String,

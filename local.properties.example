@@ -2,15 +2,10 @@
 sdk.dir=/path/to/android-sdk
 
 # ──────────────────────────────────────────────────────────────────────
-# earslate is bring-your-own-key: there is no server, account, or
-# ClassEve-minted credential involved. The Gemini API key is entered by the
-# user at runtime (see GeminiKeyStore) and stored only in encrypted
-# on-device storage — never in local.properties or BuildConfig.
-#
-# GEMINI_LIVE_MODEL is the only build-time setting left: a non-secret model
-# id override for local development.
+# Optional public session-broker origin. Provider keys are Worker secrets and
+# must never be placed in local.properties or BuildConfig.
 # ──────────────────────────────────────────────────────────────────────
-GEMINI_LIVE_MODEL=gemini-3.5-live-translate-preview
+EARSLATE_WORKER_URL=https://api.classeve.com
 
 # ──────────────────────────────────────────────────────────────────────
 # Release signing.
