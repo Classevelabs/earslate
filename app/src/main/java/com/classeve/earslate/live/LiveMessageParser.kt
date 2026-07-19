@@ -1,6 +1,6 @@
 package com.classeve.earslate.live
 
-import android.util.Base64
+import java.util.Base64
 import android.util.Log
 import kotlinx.serialization.json.Json
 
@@ -76,7 +76,7 @@ object LiveMessageParser {
     }
 
     private fun decodeBase64(data: String): ByteArray? = try {
-        Base64.decode(data, Base64.DEFAULT)
+        Base64.getDecoder().decode(data)
     } catch (t: Throwable) {
         Log.w(TAG, "audio base64 decode failed: ${t.message}")
         null

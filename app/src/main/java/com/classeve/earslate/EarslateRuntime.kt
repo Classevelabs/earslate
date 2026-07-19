@@ -11,7 +11,7 @@ import com.classeve.earslate.audio.AudioCaptureEngine
 import com.classeve.earslate.audio.AudioDeviceMonitor
 import com.classeve.earslate.audio.AudioPlaybackEngine
 import com.classeve.earslate.bootstrap.SessionBootstrapRepository
-import com.classeve.earslate.bootstrap.UserKeyBootstrapRepository
+import com.classeve.earslate.bootstrap.AnonymousSessionBootstrapRepository
 import com.classeve.earslate.live.LiveSocketClient
 import com.classeve.earslate.live.OkHttpLiveSocketClient
 import com.classeve.earslate.session.RuntimeStateStore
@@ -49,15 +49,10 @@ object EarslateRuntime {
 
     @Volatile private var bootstrapRepo: SessionBootstrapRepository? = null
 
-    /**
-     * earslate is bring-your-own-key: always resolves to
-     * [UserKeyBootstrapRepository], which reads the user's own Gemini API key
-     * from on-device encrypted storage. There is no server, account, or
-     * build-variant switch involved.
-     */
+    /** Account-free broker client that returns only short-lived credentials. */
     fun bootstrapRepository(context: Context): SessionBootstrapRepository {
         return bootstrapRepo ?: synchronized(this) {
-            bootstrapRepo ?: UserKeyBootstrapRepository(context.applicationContext)
+            bootstrapRepo ?: AnonymousSessionBootstrapRepository(context.applicationContext)
                 .also { bootstrapRepo = it }
         }
     }
