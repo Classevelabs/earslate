@@ -18,11 +18,12 @@ import kotlinx.coroutines.launch
  *
  *   - 24 kHz mono PCM16 stream (Gemini Live native audio output rate)
  *   - AudioTrack STREAM mode
- *   - USAGE_VOICE_COMMUNICATION so this output becomes part of the HAL's
- *     AEC reference mix — paired with the capture engine's VOICE_COMMUNICATION
- *     source, the platform can subtract this signal from the mic stream.
- *   - Optional session-id coupling with the capture AudioRecord so hardware
- *     AEC on OEM HALs can correlate reference and error signals.
+ *   - USAGE_MEDIA playback; no hardware-AEC coupling — the capture engine
+ *     deliberately disables AEC/NS (raw ambient capture is the product), so
+ *     echo control relies on the earbuds-recommended listening setup, not
+ *     the platform reference mix.
+ *   - Accepts an optional audio-session id, but callers pass GENERATE by
+ *     default; there is no cross-engine session correlation in practice.
  *   - JitterBuffer with ~120 ms startup target
  *   - Graceful drain on stop so the last played word is not cut
  */
