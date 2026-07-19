@@ -40,7 +40,7 @@
 
     <!-- Audio-egress prominent disclosure (Google Play User Data policy) -->
     <string name="audio_disclosure_title">How your audio is used</string>
-    <string name="audio_disclosure_body">To translate, earslate sends the audio it captures to Google\'s Gemini service over an encrypted connection. Google processes that audio to produce the translation in real time and may retain it under Google\'s terms. earslate stores no audio of its own. Tap I agree to allow this, or open our privacy policy to learn more.</string>
+    <string name="audio_disclosure_body">To translate, earslate sends captured audio over an encrypted connection directly to your selected provider, Gemini or OpenAI. That provider processes the audio in real time under its terms. ClassEve never receives or stores the audio. Tap I agree to allow this, or open our privacy policy to learn more.</string>
     <string name="audio_disclosure_agree">I agree</string>
     <string name="audio_disclosure_decline">Not now</string>
     <string name="audio_disclosure_privacy">Privacy policy</string>
@@ -70,20 +70,6 @@
 
     <!-- Language picker -->
     <string name="language_picker_title">Target language</string>
-
-    <!-- Onboarding -->
-    <string name="onboarding_kicker">EARSLATE</string>
-    <string name="onboarding_welcome">Welcome</string>
-    <string name="onboarding_headline">A translator that just\nlistens.</string>
-    <string name="onboarding_support">Tap start. Hear nearby speech come back in your language. That\'s the whole product.</string>
-    <string name="onboarding_step1_title">Microphone access</string>
-    <string name="onboarding_step1_body">earslate only translates what it can hear. Android will ask once; grant it and you never see the prompt again.</string>
-    <string name="onboarding_step2_title">Notifications</string>
-    <string name="onboarding_step2_body">A persistent notification keeps the translator alive while the screen is off — Android requires this for microphone use in the background.</string>
-    <string name="onboarding_step3_title">Quick Settings tile</string>
-    <string name="onboarding_step3_body">Swipe down twice from the top of your screen, tap the pencil/edit icon, then drag \'earslate\' into your active tiles. One tap to start or stop from anywhere.</string>
-    <string name="onboarding_step4_title">Earbuds recommended</string>
-    <string name="onboarding_step4_body">Bluetooth or wired earbuds dramatically reduce echo. Speaker mode works but is less reliable in noisy spaces.</string>
 
     <!-- Diagnostics -->
     <string name="diagnostics_kicker">Diagnostics</string>

@@ -19,8 +19,8 @@ import com.classeve.earslate.ui.theme.EarslateTheme
 fun SectionHeader(
     kicker: String,
     headline: String,
-    support: String? = null,
     modifier: Modifier = Modifier,
+    support: String? = null,
 ) {
     Column(
         modifier = modifier,

@@ -15,13 +15,13 @@ import kotlinx.coroutines.flow.asStateFlow
  * wired, speaker). Blueprint §27 — Bluetooth / wired earbuds are preferred
  * because they dramatically reduce self-capture echo in a single-mic device.
  */
-class AudioDeviceMonitor(private val context: Context) {
+class AudioDeviceMonitor(context: Context) {
 
     private val _route = MutableStateFlow(AudioRoute.UNKNOWN)
     val route: StateFlow<AudioRoute> = _route.asStateFlow()
 
     private val audioManager =
-        context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
     private val callback = object : AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
@@ -57,6 +57,7 @@ class AudioDeviceMonitor(private val context: Context) {
                 AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
                 AudioDeviceInfo.TYPE_USB_HEADSET -> hasWired = true
                 AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> hasSpeaker = true
+                else -> Unit
             }
         }
         return when {
