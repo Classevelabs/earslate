@@ -4,22 +4,32 @@ import android.content.Context
 import com.classeve.earslate.session.TranslationProvider
 
 /**
- * Which providers the user has supplied a key for, and the rules for deciding
- * whether a pasted string is plausibly a key before we spend a network round
- * trip on it.
+ * Which providers the user has supplied a key for, and a deliberately shallow
+ * check on what they pasted.
  *
- * Format checks exist to give an instant, specific answer to the most common
- * paste mistakes — the console URL instead of the key, the key with a "Bearer "
- * prefix still attached, a truncated copy. They are not a substitute for
- * verification: only [ProviderKeyVerifier] can tell you a key actually works,
- * and every key is verified against the provider before it is stored.
+ * **We do not validate key formats, and must not start.** An earlier version of
+ * this screen refused anything that did not begin with `AIza` for Gemini or
+ * `sk-` for OpenAI. Google then changed what its keys look like, and the app
+ * rejected perfectly good keys with a confident, wrong error message — the user
+ * could not get past setup at all. A provider can change its key format
+ * whenever it likes, and a hardcoded allowlist turns that into an app that is
+ * broken until it ships an update.
+ *
+ * So the only things rejected here are mistakes that are *definitely* mistakes
+ * regardless of format: nothing pasted, a URL, a leftover "Bearer " prefix,
+ * embedded whitespace. Everything else goes to the provider, because the
+ * provider is the only thing that actually knows. [ProviderKeyVerifier] mints a
+ * real session before any key is saved, so a bad key still fails at setup —
+ * just with the provider's verdict instead of our guess.
+ *
+ * [prefix] survives only as a *hint*: it seeds the placeholder text and lets
+ * [detect] guess which provider a pasted key belongs to. It never blocks.
  */
 enum class KeyProvider(
     val provider: TranslationProvider,
     val displayName: String,
+    /** Historical prefix. A display and detection hint only — never a gate. */
     val prefix: String,
-    /** Shortest credible length, used only to catch truncated pastes. */
-    private val minLength: Int,
     val consoleName: String,
     val consoleUrl: String,
 ) {
@@ -27,7 +37,6 @@ enum class KeyProvider(
         provider = TranslationProvider.GEMINI,
         displayName = "Google Gemini",
         prefix = "AIza",
-        minLength = 35,
         consoleName = "Google AI Studio",
         consoleUrl = "https://aistudio.google.com/apikey",
     ),
@@ -35,7 +44,6 @@ enum class KeyProvider(
         provider = TranslationProvider.OPENAI,
         displayName = "OpenAI",
         prefix = "sk-",
-        minLength = 20,
         consoleName = "the OpenAI dashboard",
         consoleUrl = "https://platform.openai.com/api-keys",
     );
@@ -43,13 +51,15 @@ enum class KeyProvider(
     /** Storage name. Stable — changing it strands the user's saved key. */
     val vaultEntry: String get() = "api_key_${provider.wireValue}"
 
-    val placeholder: String get() = "$prefix…"
+    val placeholder: String get() = "Paste your $displayName key"
 
     /**
-     * Returns null when [candidate] looks like a key of this kind, or a
-     * sentence naming the specific problem when it does not. Written to be
-     * read by someone who has just failed at this, so each message says what
-     * to do next rather than restating the rule.
+     * Returns null when [candidate] is worth sending to the provider, or a
+     * sentence naming a definite mistake when it is not.
+     *
+     * Only unambiguous problems are rejected. Anything that could conceivably
+     * be a key — whatever it starts with, whatever length — is passed through
+     * to live verification, because the provider decides, not us.
      */
     fun rejectionReason(candidate: String): String? {
         val key = candidate.trim()
@@ -57,7 +67,8 @@ enum class KeyProvider(
             key.isEmpty() ->
                 "Paste your $displayName key first — it's the value $consoleName showed you."
 
-            key.startsWith("http://") || key.startsWith("https://") ->
+            key.startsWith("http://", ignoreCase = true) ||
+                key.startsWith("https://", ignoreCase = true) ->
                 "That's a web address, not a key. Open it, then copy the key itself."
 
             key.startsWith("Bearer ", ignoreCase = true) ->
@@ -66,25 +77,26 @@ enum class KeyProvider(
             key.any { it.isWhitespace() } ->
                 "That key has a space or line break in it. Copy it again without the surrounding text."
 
-            !key.startsWith(prefix) -> {
-                val other = entries.firstOrNull { it != this && key.startsWith(it.prefix) }
-                if (other != null) {
-                    "That looks like ${other.displayName} key, not $displayName. " +
-                        "Switch the provider above, or paste your $displayName key."
-                } else {
-                    "That doesn't look like a $displayName key. They start with “$prefix” — " +
-                        "make sure you copied the key itself, not the page address."
-                }
-            }
-
-            key.length < minLength ->
-                "That key looks cut off. Copy the whole value from $consoleName."
+            // Nothing real is this short. Anything longer goes to the provider.
+            key.length < 8 ->
+                "That looks too short to be a key. Copy the whole value from $consoleName."
 
             else -> null
         }
     }
 
     fun isPlausible(candidate: String): Boolean = rejectionReason(candidate) == null
+
+    /**
+     * A non-blocking observation for the UI: true when the key looks like it
+     * might belong to the *other* provider. The user is shown a note and can
+     * ignore it — a hint, never a refusal.
+     */
+    fun looksLikeAnotherProvider(candidate: String): KeyProvider? {
+        val key = candidate.trim()
+        if (key.isEmpty() || key.startsWith(prefix)) return null
+        return entries.firstOrNull { it != this && key.startsWith(it.prefix) }
+    }
 
     companion object {
         fun forProvider(provider: TranslationProvider): KeyProvider? =

@@ -15,21 +15,57 @@ import org.junit.Test
  */
 class KeyProviderTest {
 
+    /**
+     * The regression this file exists for.
+     *
+     * An earlier version refused any Gemini key that did not start with "AIza".
+     * Google changed its key format, and the app then rejected valid keys with a
+     * confident, wrong message — setup became impossible. Format allowlists turn
+     * a provider's routine change into a broken app, so there is no longer a
+     * prefix gate anywhere. These cases lock that in.
+     */
     @Test
-    fun `a well-formed gemini key is accepted`() {
-        assertTrue(KeyProvider.GEMINI.isPlausible("AIza" + "b".repeat(35)))
+    fun `an unfamiliar key format is accepted rather than guessed at`() {
+        // Whatever Google or OpenAI issue next must pass straight through.
+        assertTrue(KeyProvider.GEMINI.isPlausible("gk_live_" + "x".repeat(40)))
+        assertTrue(KeyProvider.GEMINI.isPlausible("AQ.Ab8RN6" + "y".repeat(50)))
+        assertTrue(KeyProvider.OPENAI.isPlausible("oai_" + "z".repeat(40)))
+        assertTrue(KeyProvider.GEMINI.isPlausible("totally-new-scheme-2027"))
     }
 
     @Test
-    fun `a well-formed openai key is accepted`() {
+    fun `historical prefixes still pass`() {
+        assertTrue(KeyProvider.GEMINI.isPlausible("AIza" + "b".repeat(35)))
         assertTrue(KeyProvider.OPENAI.isPlausible("sk-" + "c".repeat(40)))
+    }
+
+    @Test
+    fun `a key of unusual length is not rejected on length alone`() {
+        assertTrue("short but credible", KeyProvider.GEMINI.isPlausible("abcd1234"))
+        assertTrue("very long", KeyProvider.OPENAI.isPlausible("k".repeat(400)))
+    }
+
+    @Test
+    fun `pasting the wrong provider's key is a hint, not a rejection`() {
+        val openAiKey = "sk-" + "f".repeat(40)
+        assertNull("must not block", KeyProvider.GEMINI.rejectionReason(openAiKey))
+        assertEquals(
+            KeyProvider.OPENAI,
+            KeyProvider.GEMINI.looksLikeAnotherProvider(openAiKey),
+        )
+    }
+
+    @Test
+    fun `no hint when the key matches the selected provider`() {
+        assertNull(KeyProvider.GEMINI.looksLikeAnotherProvider("AIza" + "g".repeat(35)))
+        assertNull(KeyProvider.GEMINI.looksLikeAnotherProvider("some-unrecognised-key"))
     }
 
     @Test
     fun `pasting the console URL is named as such`() {
         val reason = KeyProvider.GEMINI.rejectionReason("https://aistudio.google.com/apikey")
         assertNotNull(reason)
-        assertTrue("should say it is a web address", reason!!.contains("web address"))
+        assertTrue(reason!!.contains("web address"))
     }
 
     @Test
@@ -44,20 +80,6 @@ class KeyProviderTest {
         val reason = KeyProvider.GEMINI.rejectionReason("AIza abc${"e".repeat(35)}")
         assertNotNull(reason)
         assertTrue(reason!!.contains("space"))
-    }
-
-    @Test
-    fun `pasting the wrong provider's key says which provider it belongs to`() {
-        val reason = KeyProvider.GEMINI.rejectionReason("sk-${"f".repeat(40)}")
-        assertNotNull(reason)
-        assertTrue("should name OpenAI", reason!!.contains("OpenAI"))
-    }
-
-    @Test
-    fun `a truncated key is reported as cut off rather than malformed`() {
-        val reason = KeyProvider.GEMINI.rejectionReason("AIzaShort")
-        assertNotNull(reason)
-        assertTrue(reason!!.contains("cut off"))
     }
 
     @Test
@@ -90,7 +112,7 @@ class KeyProviderTest {
 
     @Test
     fun `surrounding whitespace alone does not reject a key`() {
-        assertFalse(KeyProvider.GEMINI.isPlausible("AIzaShort"))
         assertTrue(KeyProvider.GEMINI.isPlausible("  AIza${"i".repeat(35)}  "))
+        assertFalse("empty is still rejected", KeyProvider.GEMINI.isPlausible("     "))
     }
 }
