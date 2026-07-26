@@ -95,14 +95,18 @@ fun ApiKeySetupScreen(
     var revealed by remember { mutableStateOf(false) }
     var checking by remember { mutableStateOf(false) }
     var problem by remember { mutableStateOf<String?>(null) }
+    var hint by remember { mutableStateOf<String?>(null) }
     var saved by remember { mutableStateOf(keys.configured()) }
 
-    // Re-detect the provider when someone pastes the other one's key. Cheaper
-    // than making them notice the mismatch themselves.
+    // If a pasted key clearly belongs to the other provider, switch to it — but
+    // only when we recognise it. An unrecognised key is not an error: provider
+    // key formats change, and the provider itself is the only real judge.
     LaunchedEffect(keyText) {
         val detected = KeyProvider.detect(keyText)
         if (detected != null && detected != provider) provider = detected
         problem = null
+        hint = KeyProvider.forProvider(provider.provider)?.looksLikeAnotherProvider(keyText)
+            ?.let { "This looks like a ${it.displayName} key. If that's right, pick ${it.displayName} above — otherwise carry on, we'll check it with ${provider.displayName}." }
     }
 
     fun submit() {
@@ -276,6 +280,18 @@ fun ApiKeySetupScreen(
                         )
                     }
 
+                    // A hint, not a refusal — the button stays enabled.
+                    if (problem == null) {
+                        hint?.let { message ->
+                            Text(
+                                text = message,
+                                style = EarslateTheme.textStyles.bodySmall,
+                                color = EarslateTheme.colors.textTertiary,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+
                     EmberButton(
                         label = if (checking) "Checking…" else "Verify and save",
                         onClick = { if (!checking) submit() },
@@ -297,11 +313,14 @@ fun ApiKeySetupScreen(
 }
 
 private fun instructionsFor(provider: KeyProvider): List<String> = when (provider) {
+    // Deliberately no claim about what a key looks like. Google has changed
+    // that before, and telling someone their valid key is wrong is worse than
+    // telling them nothing.
     KeyProvider.GEMINI -> listOf(
         "Open Google AI Studio and sign in with a Google account.",
         "Select “Get API key”, then “Create API key”.",
         "Pick a Google Cloud project, or let it make one for you.",
-        "Copy the key it shows you. It starts with “AIza”.",
+        "Copy the whole key it shows you and paste it below.",
     )
 
     KeyProvider.OPENAI -> listOf(
