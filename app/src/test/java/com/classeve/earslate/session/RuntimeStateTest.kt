@@ -48,8 +48,6 @@ class RuntimeStateTest {
         val store = RuntimeStateStore()
         val s = store.metrics.value
         assertEquals(0, s.reconnectCount)
-        assertEquals(0, s.resumeSuccessCount)
-        assertEquals(0, s.playbackUnderrunCount)
         assertEquals(null, s.timeToFirstAudioMs)
     }
 

@@ -6,13 +6,13 @@ build
 captures
 .externalNativeBuild
 .cxx
+.kotlin/
 local.properties
 *.keystore
 *.jks
 
 
 # Assistant context files — local-only, never on origin.
-AGENTS.md
 AGENTS.md
 .claude/
 .cursor/

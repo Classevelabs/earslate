@@ -1,12 +1,13 @@
 package com.classeve.earslate.session
 
 /**
- * Languages the user can pick as their output target. Not a gate — Gemini Live
- * will translate into whichever language the model understands. This list is
- * the curated shortlist we present in the UI.
+ * Languages offered in the pickers. Not a gate — the translate models handle
+ * more than this; the list is the curated shortlist shown in the UI, ordered by
+ * rough global demand.
  *
- * Ordered by rough global population / demand. Matches BCP-47 tags Gemini
- * expects in the system instruction.
+ * Entries are app-level BCP-47 tags. They are normalised to the provider's
+ * `targetLanguageCode` form by `LiveSessionConfigFactory.translateCodeFor`
+ * before they go on the wire — do not send these tags to a provider directly.
  */
 val SupportedLanguages: List<TargetLanguage> = listOf(
     TargetLanguage("English", "en-US"),
@@ -46,9 +47,3 @@ val SupportedLanguages: List<TargetLanguage> = listOf(
     TargetLanguage("Română", "ro-RO"),
     TargetLanguage("Magyar", "hu-HU"),
 )
-
-fun nextLanguage(current: TargetLanguage): TargetLanguage {
-    val idx = SupportedLanguages.indexOfFirst { it.bcp47 == current.bcp47 }
-    val nextIdx = if (idx < 0) 0 else (idx + 1) % SupportedLanguages.size
-    return SupportedLanguages[nextIdx]
-}

@@ -7,7 +7,6 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
-import com.classeve.earslate.session.SessionPolicy
 import com.classeve.earslate.session.SupportedLanguages
 import com.classeve.earslate.session.TargetLanguage
 import com.classeve.earslate.session.TranslatorPolicy
@@ -144,6 +143,5 @@ fun UserSettings.toTranslatorPolicy(): TranslatorPolicy {
         captionsEnabled = captionsEnabled,
         externalOnly = externalOnly,
         provider = provider,
-        sessionPolicy = SessionPolicy.Default,
     )
 }

@@ -26,7 +26,6 @@ data class TranslatorPolicy(
      */
     val externalOnly: Boolean = false,
     val provider: TranslationProvider = TranslationProvider.AUTOMATIC,
-    val sessionPolicy: SessionPolicy = SessionPolicy.Default,
 )
 
 enum class TranslationProvider(val wireValue: String, val displayName: String) {
@@ -46,19 +45,5 @@ data class TargetLanguage(
 ) {
     companion object {
         val EnglishUS = TargetLanguage(displayName = "English", bcp47 = "en-US")
-    }
-}
-
-/**
- * Numeric knobs the backend can tune per-user / per-deployment without requiring
- * an app update.
- */
-data class SessionPolicy(
-    val playbackJitterStartupMs: Int = 60,
-    val playbackJitterSteadyMs: Int = 40,
-    val sendBatchMs: Int = 100,
-) {
-    companion object {
-        val Default = SessionPolicy()
     }
 }

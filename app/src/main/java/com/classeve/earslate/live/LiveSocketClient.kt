@@ -42,9 +42,6 @@ interface LiveSocketClient {
     /** Send a text frame. Returns false if the socket is not open. */
     fun sendText(json: String): Boolean
 
-    /** Send binary bytes (unused by current Gemini Live API, reserved for future). */
-    fun sendBytes(data: ByteArray): Boolean
-
     /** Close the socket gracefully. OkHttp's close is synchronous, so this is non-suspending. */
     fun close(code: Int = 1000, reason: String = "client_close")
 }
@@ -95,15 +92,6 @@ class OkHttpLiveSocketClient(
         val s = socket ?: return false
         return try {
             s.send(json)
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    override fun sendBytes(data: ByteArray): Boolean {
-        val s = socket ?: return false
-        return try {
-            s.send(ByteString.of(*data))
         } catch (e: Exception) {
             false
         }

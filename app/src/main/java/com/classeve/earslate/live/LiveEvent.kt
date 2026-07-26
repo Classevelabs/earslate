@@ -5,8 +5,6 @@ package com.classeve.earslate.live
  * Gemini Live envelopes (setup, generation_complete, tool_call, etc.) are
  * translated into this sealed hierarchy by LiveMessageParser so the rest of the
  * app never parses JSON.
- *
- * Blueprint §11 / §23.
  */
 sealed interface LiveEvent {
 

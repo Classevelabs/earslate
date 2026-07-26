@@ -4,7 +4,7 @@ import kotlin.math.min
 import kotlin.random.Random
 
 /**
- * Bounded exponential backoff with jitter. Blueprint §15.1.
+ * Bounded exponential backoff with jitter.
  *
  *   attempt 1: immediate (0 ms)
  *   attempt 2: 500 ms  ± jitter

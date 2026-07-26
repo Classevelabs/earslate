@@ -24,7 +24,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 /**
- * Quick Settings tile — one tap start/stop. Blueprint §16.
+ * Quick Settings tile — one tap start/stop.
  *
  * Every public callback is wrapped in runCatching because TileService callbacks
  * run in unpredictable lifecycle states. A crash here kills the SystemUI
