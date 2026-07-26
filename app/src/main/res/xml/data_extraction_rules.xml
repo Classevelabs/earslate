@@ -1,9 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <data-extraction-rules>
     <cloud-backup>
+        <!-- Provider API keys never go to the cloud. -->
+        <exclude domain="sharedpref" path="earslate_vault.xml" />
         <exclude domain="sharedpref" path="earslate_installation.xml" />
     </cloud-backup>
     <device-transfer>
+        <!-- Nor to a new phone: the sealing key cannot follow, so the transfer
+             would move an unopenable blob and leave the user confused about why
+             their key stopped working. They re-enter it instead. -->
+        <exclude domain="sharedpref" path="earslate_vault.xml" />
         <exclude domain="sharedpref" path="earslate_installation.xml" />
     </device-transfer>
 </data-extraction-rules>
