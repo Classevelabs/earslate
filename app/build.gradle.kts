@@ -44,8 +44,8 @@ android {
         applicationId = "com.classeve.earslate"
         minSdk = 29
         targetSdk = 36
-        versionCode = 16
-        versionName = "0.4.1"
+        versionCode = 17
+        versionName = "0.4.2"
 
         vectorDrawables.useSupportLibrary = true
     }
@@ -158,4 +158,8 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    // Android stubs org.json in the unit-test android.jar, so every call throws
+    // "not mocked". The real implementation lets us assert the exact JSON we
+    // send to a provider without needing a device.
+    testImplementation("org.json:json:20240303")
 }
