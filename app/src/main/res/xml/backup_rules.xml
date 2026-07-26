@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
+    <!-- The user's provider API keys. The stored ciphertext would be useless on
+         another device — the AES key that seals it never leaves this device's
+         keystore — but backing up a secret store at all is a habit worth not
+         having. -->
+    <exclude domain="sharedpref" path="earslate_vault.xml" />
+
     <!-- The anonymous installation UUID is local abuse-control state, not a
          portable identity. Never restore it onto a different device. -->
     <exclude domain="sharedpref" path="earslate_installation.xml" />
