@@ -69,6 +69,8 @@ fun SettingsScreen(
     onOpenDiagnostics: () -> Unit = {},
     onOpenOnboarding: () -> Unit = {},
     onOpenHelp: () -> Unit = {},
+    onOpenKeySetup: () -> Unit = {},
+    configuredKeySummary: String = "Not set up",
     padding: PaddingValues = PaddingValues(0.dp),
 ) {
     var myLanguage by remember { mutableStateOf(initialMyLanguage) }
@@ -220,7 +222,9 @@ fun SettingsScreen(
             SectionHeader(
                 kicker = "Service",
                 headline = "Translation provider.",
-                support = "Automatic chooses the available provider. Gemini supports both directions; OpenAI translates nearby speech into your language.",
+                support = "earslate runs on your own API key, billed to your own account. " +
+                    "Automatic uses whichever provider you have a key for. Gemini translates " +
+                    "both directions at once; OpenAI translates into one language at a time.",
             )
 
             FramedPanel {
@@ -229,6 +233,13 @@ fun SettingsScreen(
                     value = provider.displayName,
                     onClick = { showProviderDialog = true },
                     onClickLabel = "Choose translation provider",
+                )
+                Divider()
+                SettingsRow(
+                    label = "API keys",
+                    value = configuredKeySummary,
+                    onClick = onOpenKeySetup,
+                    onClickLabel = "Manage API keys",
                 )
             }
 

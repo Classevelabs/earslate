@@ -12,11 +12,9 @@ val localProperties = Properties().apply {
     if (f.exists()) f.inputStream().use(::load)
 }
 
-fun String.escapeForBuildConfig(): String = replace("\\", "\\\\").replace("\"", "\\\"")
-
-// Only the public broker origin ships in the app. Provider API keys remain
-// server-side Worker secrets and never enter BuildConfig/local.properties.
-val workerUrl = (localProperties.getProperty("EARSLATE_WORKER_URL") ?: "https://api.classeve.com").escapeForBuildConfig()
+// earslate has no backend. There is no service URL to configure, no broker to
+// point at, and no API key of ours anywhere in the build — the user supplies
+// their own at runtime and it is sealed by the device keystore.
 
 // Release keystore — four coordinates come from local.properties so the
 // keystore binary itself stays off-repo. Debug builds remain available without
@@ -46,11 +44,9 @@ android {
         applicationId = "com.classeve.earslate"
         minSdk = 29
         targetSdk = 36
-        versionCode = 14
-        versionName = "0.3.1"
+        versionCode = 15
+        versionName = "0.4.0"
 
-        // Non-secret public broker origin.
-        buildConfigField("String", "EARSLATE_WORKER_URL", "\"$workerUrl\"")
         vectorDrawables.useSupportLibrary = true
     }
 
