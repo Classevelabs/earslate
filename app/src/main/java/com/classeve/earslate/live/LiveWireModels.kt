@@ -52,8 +52,11 @@ internal data class GenerationConfig(
 @Serializable
 internal data class TranslationConfig(
     // BCP-47 primary subtag the model translates INTO (e.g. "es", "hi", "fr").
-    // Chinese keeps its region ("zh-CN"/"zh-TW"); region forms like "es-ES" are
-    // rejected by the model — see LiveSessionConfigFactory.translateCodeFor.
+    // Region forms like "es-ES" are rejected by the model. The two exceptions
+    // are Chinese, which takes a SCRIPT subtag ("zh-Hans"/"zh-Hant"), and
+    // Portuguese, which keeps its region ("pt-BR"/"pt-PT"). Always produce this
+    // value via LiveSessionConfigFactory.translateCodeFor — never pass an app
+    // BCP-47 tag straight through.
     val targetLanguageCode: String,
     // false → stay SILENT when the input is already in the target language
     // (verified: emits pure-zero PCM, peak=1). This is what makes the two-leg

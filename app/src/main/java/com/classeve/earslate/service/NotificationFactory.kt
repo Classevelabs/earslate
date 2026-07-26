@@ -13,7 +13,7 @@ import com.classeve.earslate.ui.MainActivity
 
 /**
  * Builds the persistent foreground notification shown while the translator is
- * active. Blueprint §16 — notification shows runtime state and exposes Stop as
+ * active. The notification shows runtime state and exposes Stop as
  * a quick action so the user never has to hunt for the app to pause it.
  */
 object NotificationFactory {
