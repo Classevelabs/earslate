@@ -10,9 +10,13 @@ import com.classeve.earslate.audio.AndroidAudioPlaybackEngine
 import com.classeve.earslate.audio.AudioCaptureEngine
 import com.classeve.earslate.audio.AudioDeviceMonitor
 import com.classeve.earslate.audio.AudioPlaybackEngine
+import com.classeve.earslate.bootstrap.InstallationId
+import com.classeve.earslate.bootstrap.LocalKeyBootstrapRepository
+import com.classeve.earslate.bootstrap.ProviderKeyVerifier
+import com.classeve.earslate.bootstrap.ProviderSessionMinter
 import com.classeve.earslate.bootstrap.SessionBootstrapRepository
-import com.classeve.earslate.bootstrap.AnonymousSessionBootstrapRepository
 import com.classeve.earslate.live.LiveSocketClient
+import com.classeve.earslate.security.ProviderKeyStore
 import com.classeve.earslate.live.OkHttpLiveSocketClient
 import com.classeve.earslate.session.RuntimeStateStore
 import com.classeve.earslate.session.SessionCoordinator
@@ -47,13 +51,40 @@ object EarslateRuntime {
         }
     }
 
+    @Volatile private var keyStore: ProviderKeyStore? = null
+
+    /** The user's own provider API keys, sealed by the platform keystore. */
+    fun providerKeys(context: Context): ProviderKeyStore {
+        return keyStore ?: synchronized(this) {
+            keyStore ?: ProviderKeyStore(context.applicationContext).also { keyStore = it }
+        }
+    }
+
+    @Volatile private var sessionMinter: ProviderSessionMinter? = null
+
+    private fun minter(context: Context): ProviderSessionMinter {
+        return sessionMinter ?: synchronized(this) {
+            sessionMinter ?: ProviderSessionMinter(
+                installId = InstallationId.loadOrCreate(context.applicationContext),
+            ).also { sessionMinter = it }
+        }
+    }
+
+    /** Proves a pasted key works before it is saved. */
+    fun keyVerifier(context: Context): ProviderKeyVerifier = ProviderKeyVerifier(minter(context))
+
     @Volatile private var bootstrapRepo: SessionBootstrapRepository? = null
 
-    /** Account-free broker client that returns only short-lived credentials. */
+    /**
+     * Mints session credentials on-device from the user's own API key. There is
+     * no ClassEve server in this path, or in any other.
+     */
     fun bootstrapRepository(context: Context): SessionBootstrapRepository {
         return bootstrapRepo ?: synchronized(this) {
-            bootstrapRepo ?: AnonymousSessionBootstrapRepository(context.applicationContext)
-                .also { bootstrapRepo = it }
+            bootstrapRepo ?: LocalKeyBootstrapRepository(
+                keys = providerKeys(context),
+                minter = minter(context),
+            ).also { bootstrapRepo = it }
         }
     }
 

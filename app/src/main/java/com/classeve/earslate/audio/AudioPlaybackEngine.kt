@@ -12,52 +12,78 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Owns the translated-audio playback path.
  *
- *   - 24 kHz mono PCM16 stream (Gemini Live native audio output rate)
- *   - AudioTrack STREAM mode
- *   - USAGE_MEDIA playback; no hardware-AEC coupling — the capture engine
- *     deliberately disables AEC/NS (raw ambient capture is the product), so
- *     echo control relies on the earbuds-recommended listening setup, not
- *     the platform reference mix.
- *   - Accepts an optional audio-session id, but callers pass GENERATE by
- *     default; there is no cross-engine session correlation in practice.
- *   - JitterBuffer with a 60 ms startup target ([startupLatencyMs])
- *   - Graceful drain on stop so the last played word is not cut
+ *   - Mono PCM16, at whatever rate the provider is actually sending (24 kHz for
+ *     both Gemini Live and OpenAI Realtime today; the track rebuilds itself if
+ *     that changes mid-stream).
+ *   - AudioTrack in STREAM mode, USAGE_MEDIA so audio routes to earbuds at full
+ *     clarity. No hardware AEC coupling: capture deliberately takes raw ambient
+ *     audio, and echo is handled by the half-duplex mic gate in the session
+ *     coordinator rather than by the platform reference mix.
+ *   - An adaptive [JitterBuffer] that starts at 40 ms and only buys more
+ *     latency when the network makes it necessary.
+ *   - A genuinely graceful stop that lets the last word finish.
  */
 interface AudioPlaybackEngine {
     fun start(audioSessionId: Int = AudioManager.AUDIO_SESSION_ID_GENERATE)
-    fun enqueue(pcm24k: ByteArray, sampleRateHz: Int = 24_000)
+    fun enqueue(pcm: ByteArray, sampleRateHz: Int = 24_000)
     fun stop(graceful: Boolean = true)
+
+    /** Live buffer health for the diagnostics screen. */
+    fun snapshot(): PlaybackSnapshot
 }
+
+/** What the playback path is actually doing right now. All measured, never assumed. */
+data class PlaybackSnapshot(
+    val running: Boolean,
+    val sampleRateHz: Int,
+    val bufferedMs: Int,
+    val targetLatencyMs: Int,
+    val underruns: Int,
+    val droppedChunks: Int,
+)
 
 class AndroidAudioPlaybackEngine(
     private val defaultSampleRateHz: Int = 24_000,
-    private val startupLatencyMs: Int = 60,
+    /**
+     * Floor for the adaptive buffer. 40 ms is about two provider frames — low
+     * enough that a reply feels immediate, high enough to absorb ordinary
+     * scheduling noise. The buffer raises this itself when the network needs it.
+     */
+    private val startupLatencyMs: Int = 40,
 ) : AudioPlaybackEngine {
 
     private val bytesPerSample = 2
 
-    private val buffer = JitterBuffer(startupBytesFor(defaultSampleRateHz))
+    private val buffer = JitterBuffer(
+        startupBytes = startupBytesFor(defaultSampleRateHz),
+        maxTargetBytes = bytesFor(defaultSampleRateHz, MAX_LATENCY_MS),
+        growthStepBytes = bytesFor(defaultSampleRateHz, GROWTH_STEP_MS),
+        maxBufferedBytes = bytesFor(defaultSampleRateHz, MAX_BACKLOG_MS),
+    )
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Volatile private var track: AudioTrack? = null
     @Volatile private var loopJob: Job? = null
-    /** Rate the live AudioTrack is currently running at. 0 until [start]. */
     @Volatile private var activeRateHz: Int = 0
-    /** Session id captured at [start] so a runtime rate change can rebuild with the same AEC coupling. */
     @Volatile private var sessionId: Int = AudioManager.AUDIO_SESSION_ID_GENERATE
 
-    private fun startupBytesFor(rate: Int): Int =
-        (rate * startupLatencyMs / 1000) * bytesPerSample
-
     /**
-     * Builds + starts an AudioTrack at [rate] and publishes it to [track]. The
-     * drain loop reads the [track] field each iteration so swapping it here is
-     * picked up without restarting the loop. Returns true on success.
+     * Held across a mid-stream rate rebuild. The drain loop parks on this
+     * instead of spinning, and no audio is pulled from the buffer while it is
+     * set — the previous implementation dequeued chunks during a rebuild and
+     * dropped them on the floor.
      */
+    @Volatile private var rebuilding = false
+
+    private fun bytesFor(rate: Int, ms: Int): Int = (rate * ms / 1000) * bytesPerSample
+
+    private fun startupBytesFor(rate: Int): Int = bytesFor(rate, startupLatencyMs)
+
     private fun buildAndPlay(rate: Int, audioSessionId: Int): Boolean {
         val minBuffer = AudioTrack.getMinBufferSize(
             rate,
@@ -68,17 +94,11 @@ class AndroidAudioPlaybackEngine(
             Log.w(TAG, "AudioTrack.getMinBufferSize failed: $minBuffer (rate=$rate)")
             return false
         }
-        val startupBytes = startupBytesFor(rate)
-        val bufferBytes = maxOf(minBuffer * 2, startupBytes * 2)
+        val bufferBytes = maxOf(minBuffer * 2, startupBytesFor(rate) * 2)
 
         val t = try {
-            val builder = AudioTrack.Builder()
+            AudioTrack.Builder()
                 .setAudioAttributes(
-                    // USAGE_MEDIA: route translated audio through the normal media
-                    // path (earbuds via A2DP, or the speaker) at full clarity. We
-                    // are NOT in call mode and run no AEC, so the old
-                    // USAGE_VOICE_COMMUNICATION (earpiece/telephony) routing would
-                    // only make playback quiet and oddly-routed.
                     AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
@@ -93,10 +113,8 @@ class AndroidAudioPlaybackEngine(
                 )
                 .setBufferSizeInBytes(bufferBytes)
                 .setTransferMode(AudioTrack.MODE_STREAM)
-            if (audioSessionId > 0) {
-                builder.setSessionId(audioSessionId)
-            }
-            builder.build()
+                .apply { if (audioSessionId > 0) setSessionId(audioSessionId) }
+                .build()
         } catch (ex: Throwable) {
             Log.e(TAG, "AudioTrack build failed: ${ex.message}")
             return false
@@ -120,17 +138,28 @@ class AndroidAudioPlaybackEngine(
             return
         }
         sessionId = audioSessionId
+        buffer.reset(startupBytesFor(defaultSampleRateHz))
         if (!buildAndPlay(defaultSampleRateHz, audioSessionId)) return
 
         loopJob = scope.launch {
             while (isActive) {
-                val chunk = buffer.drain()
-                if (chunk == null) {
-                    delay(10)
+                // Park during a rate rebuild rather than spinning on `continue`,
+                // and crucially without touching the buffer — audio pulled here
+                // would have nowhere to go.
+                if (rebuilding) {
+                    delay(REBUILD_PARK_MS)
                     continue
                 }
-                // Read the field each tick so a mid-stream rate rebuild is picked up.
-                val active = track ?: continue
+                val active = track
+                if (active == null) {
+                    delay(IDLE_POLL_MS)
+                    continue
+                }
+                val chunk = buffer.drain()
+                if (chunk == null) {
+                    delay(IDLE_POLL_MS)
+                    continue
+                }
                 val written = active.write(chunk, 0, chunk.size, AudioTrack.WRITE_BLOCKING)
                 if (written < 0) {
                     Log.w(TAG, "AudioTrack.write error: $written")
@@ -139,53 +168,127 @@ class AndroidAudioPlaybackEngine(
         }
     }
 
-    override fun enqueue(pcm24k: ByteArray, sampleRateHz: Int) {
-        // Robust to the real Gemini output rate: rebuild the AudioTrack if the
-        // header advertises a different (valid) rate than we're playing at. A
-        // 0/invalid rate is ignored — we keep the current track rather than crash.
-        if (sampleRateHz > 0 && track != null && sampleRateHz != activeRateHz) {
+    override fun enqueue(pcm: ByteArray, sampleRateHz: Int) {
+        if (sampleRateHz > 0 && track != null && sampleRateHz != activeRateHz && !rebuilding) {
             maybeRebuildForRate(sampleRateHz)
         }
-        buffer.enqueue(pcm24k)
+        buffer.enqueue(pcm)
     }
 
     @Synchronized
     private fun maybeRebuildForRate(rate: Int) {
-        // Re-check under lock: another enqueue may have already rebuilt.
         if (track == null || rate <= 0 || rate == activeRateHz) return
         Log.i(TAG, "playback rate $activeRateHz → $rate; rebuilding AudioTrack")
-        val old = track
-        track = null // pause the drain loop's writes while we swap
-        runCatching {
-            if (old != null) {
-                old.pause()
-                old.flush()
-                old.release()
+        rebuilding = true
+        try {
+            val old = track
+            track = null
+            runCatching {
+                old?.pause()
+                old?.flush()
+                old?.release()
             }
-        }
-        if (!buildAndPlay(rate, sessionId)) {
-            // Fall back to the previous rate so playback isn't lost permanently.
-            Log.w(TAG, "rebuild at $rate failed; restoring $activeRateHz")
-            buildAndPlay(if (activeRateHz > 0) activeRateHz else defaultSampleRateHz, sessionId)
+            val rebuilt = buildAndPlay(rate, sessionId)
+            if (!rebuilt) {
+                Log.w(TAG, "rebuild at $rate failed; restoring $activeRateHz")
+                buildAndPlay(if (activeRateHz > 0) activeRateHz else defaultSampleRateHz, sessionId)
+            }
+            // Re-express the buffer's thresholds in the new rate's bytes. Without
+            // this every threshold silently means a different duration and the
+            // adaptation logic drifts.
+            val newRate = activeRateHz.takeIf { it > 0 } ?: defaultSampleRateHz
+            buffer.retarget(
+                startupBytes = startupBytesFor(newRate),
+                maxBytes = bytesFor(newRate, MAX_LATENCY_MS),
+                stepBytes = bytesFor(newRate, GROWTH_STEP_MS),
+                capBytes = bytesFor(newRate, MAX_BACKLOG_MS),
+            )
+        } finally {
+            rebuilding = false
         }
     }
 
+    /**
+     * Stops playback. When [graceful] the buffered tail is played out first, so
+     * the last translated word is never clipped.
+     *
+     * The previous implementation called `AudioTrack.stop()` and then `flush()`
+     * immediately — and `flush()` discards exactly the audio `stop()` was
+     * letting drain, so the "graceful" path cut the tail every time. Here we
+     * drain the jitter buffer into the track, call `stop()` (which plays out
+     * what the track already holds), and only then release.
+     */
     override fun stop(graceful: Boolean) {
         loopJob?.cancel()
         loopJob = null
-        track?.let {
-            runCatching {
-                if (graceful) it.stop() else it.pause()
-                it.flush()
-                it.release()
-            }
-        }
+        val active = track
         track = null
         activeRateHz = 0
-        buffer.clear()
+        rebuilding = false
+
+        if (active == null) {
+            buffer.clear()
+            return
+        }
+
+        if (!graceful) {
+            runCatching {
+                active.pause()
+                active.flush()
+                active.release()
+            }
+            buffer.clear()
+            return
+        }
+
+        // Play the tail out on the IO scope so the caller — usually the main
+        // thread stopping a session — is never blocked waiting for audio.
+        scope.launch {
+            withTimeoutOrNull(DRAIN_TIMEOUT_MS) {
+                while (buffer.pendingBytes > 0) {
+                    val chunk = buffer.drain() ?: break
+                    active.write(chunk, 0, chunk.size, AudioTrack.WRITE_BLOCKING)
+                }
+            }
+            runCatching {
+                // stop() lets the track's own buffer finish. Deliberately no
+                // flush(): flushing discards exactly the audio stop() is
+                // draining, which is what used to clip the final word.
+                active.stop()
+                active.release()
+            }
+            buffer.clear()
+        }
+    }
+
+    override fun snapshot(): PlaybackSnapshot {
+        val rate = activeRateHz.takeIf { it > 0 } ?: defaultSampleRateHz
+        val bytesPerMs = (rate * bytesPerSample) / 1000
+        fun toMs(bytes: Int) = if (bytesPerMs > 0) bytes / bytesPerMs else 0
+        return PlaybackSnapshot(
+            running = track != null,
+            sampleRateHz = rate,
+            bufferedMs = toMs(buffer.pendingBytes),
+            targetLatencyMs = toMs(buffer.targetLatencyBytes),
+            underruns = buffer.underrunCount,
+            droppedChunks = buffer.droppedChunks,
+        )
     }
 
     companion object {
         private const val TAG = "AudioPlayback"
+
+        /** Ceiling for the adaptive buffer. Past this, latency hurts more than gaps. */
+        private const val MAX_LATENCY_MS = 240
+
+        /** How much cushion one underrun buys. */
+        private const val GROWTH_STEP_MS = 20
+
+        /** Backlog cap. Beyond this the speaker has moved on and old audio is noise. */
+        private const val MAX_BACKLOG_MS = 1_200
+
+        private const val IDLE_POLL_MS = 5L
+        private const val REBUILD_PARK_MS = 2L
+        private const val DRAIN_TIMEOUT_MS = 1_500L
     }
 }
