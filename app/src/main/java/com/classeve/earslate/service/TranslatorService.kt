@@ -35,9 +35,10 @@ import kotlinx.coroutines.launch
  *   - demote + stopSelf when the coordinator transitions back to IDLE
  *
  * The service holds no business logic — it is a thin controller over
- * [EarslateRuntime.sessionCoordinator]. If the process is killed, Android
- * re-creates the service with START_STICKY and the runtime rebuilds from
- * scratch (no in-memory-only state assumed — blueprint §25 rule).
+ * [EarslateRuntime.sessionCoordinator]. It is deliberately NOT sticky: a
+ * session only ever begins from an explicit user action, and the provider
+ * credential is single-use and short-lived, so there is nothing meaningful to
+ * resume after a process kill. See [onStartCommand].
  */
 class TranslatorService : Service() {
 
@@ -133,7 +134,7 @@ class TranslatorService : Service() {
                     }
                     stopForegroundSmart()
                     stopSelf()
-                    return START_STICKY
+                    return START_NOT_STICKY
                 }
                 val policy = EarslateRuntime.settingsRepository(this)
                     .settings.value
@@ -150,7 +151,16 @@ class TranslatorService : Service() {
                 }
             }
         }
-        return START_STICKY
+        // NOT sticky. A session is always started by an explicit user action
+        // (button, QS tile, notification), so there is nothing to resume
+        // automatically. Under START_STICKY the system re-created this service
+        // after a process kill with a null intent: no branch above ran, but
+        // onCreate had already posted the microphone-typed foreground
+        // notification, leaving a permanent "mic in use" notification attached
+        // to a service that would never translate anything and never stop
+        // itself (the IDLE watchdog in onCreate only fires once a session has
+        // actually been seen active).
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
@@ -193,8 +203,6 @@ class TranslatorService : Service() {
 
         const val ACTION_START = "com.classeve.earslate.action.START"
         const val ACTION_STOP = "com.classeve.earslate.action.STOP"
-        const val ACTION_MUTE = "com.classeve.earslate.action.MUTE"
-        const val ACTION_UNMUTE = "com.classeve.earslate.action.UNMUTE"
 
         fun start(context: Context) {
             val intent = Intent(context, TranslatorService::class.java).setAction(ACTION_START)

@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Watches the active audio output device and surfaces the route (Bluetooth,
- * wired, speaker). Blueprint §27 — Bluetooth / wired earbuds are preferred
+ * wired, speaker). Bluetooth / wired earbuds are preferred
  * because they dramatically reduce self-capture echo in a single-mic device.
  */
 class AudioDeviceMonitor(context: Context) {

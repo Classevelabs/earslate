@@ -8,7 +8,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 
 // ClassEve motion tokens — 140ms / 220ms / 320ms with a restrained precise curve.
-// Blueprint §motion.
 
 const val MotionFastMs = 140
 const val MotionBaseMs = 220

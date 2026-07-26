@@ -41,13 +41,14 @@ class RuntimeStateStore {
 /**
  * Lightweight per-session snapshot exposed to the diagnostics screen. Never
  * serialized, never sent to a server.
+ *
+ * Only fields the coordinator actually writes belong here — a diagnostics row
+ * wired to a counter nothing increments reads as "0 problems" when the truth is
+ * "not measured".
  */
 data class RuntimeSnapshot(
     val reconnectCount: Int = 0,
-    val resumeSuccessCount: Int = 0,
-    val playbackUnderrunCount: Int = 0,
     val timeToFirstAudioMs: Long? = null,
-    val lastSendBatchMs: Long? = null,
 )
 
 /**

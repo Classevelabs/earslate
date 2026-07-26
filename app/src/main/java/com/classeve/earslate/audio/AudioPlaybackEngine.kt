@@ -24,7 +24,7 @@ import kotlinx.coroutines.launch
  *     the platform reference mix.
  *   - Accepts an optional audio-session id, but callers pass GENERATE by
  *     default; there is no cross-engine session correlation in practice.
- *   - JitterBuffer with ~120 ms startup target
+ *   - JitterBuffer with a 60 ms startup target ([startupLatencyMs])
  *   - Graceful drain on stop so the last played word is not cut
  */
 interface AudioPlaybackEngine {

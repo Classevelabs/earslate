@@ -5,7 +5,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * Rolling window of translated captions. Blueprint §19:
+ * Rolling window of translated captions:
  *   - captions are optional
  *   - incremental but stable
  *   - never an unbounded chat log — we keep the last [maxLines] lines only

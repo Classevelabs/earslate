@@ -1,10 +1,12 @@
 package com.classeve.earslate.audio
 
 /**
- * Preferred playback route order per Blueprint §27:
- * 1. Bluetooth earbuds / headset
- * 2. Wired headset
- * 3. Speaker (only if the user accepts it — VAD gets more conservative here)
+ * Active playback route, in preference order: Bluetooth earbuds, wired headset,
+ * then the built-in speaker.
+ *
+ * The route is not cosmetic — on [SPEAKER] the coordinator always half-duplex-
+ * gates the microphone during playback, because translated speech coming out of
+ * the speaker would otherwise be re-captured and re-translated in a loop.
  */
 enum class AudioRoute {
     BLUETOOTH,
@@ -12,6 +14,3 @@ enum class AudioRoute {
     SPEAKER,
     UNKNOWN,
 }
-
-val AudioRoute.isEarbudLike: Boolean
-    get() = this == AudioRoute.BLUETOOTH || this == AudioRoute.WIRED
