@@ -94,6 +94,9 @@ import com.classeve.earslate.ui.captions.CaptionsView
 import com.classeve.earslate.ui.components.ErrorBanner
 import com.classeve.earslate.ui.diagnostics.DiagnosticsScreen
 import com.classeve.earslate.ui.help.HelpScreen
+import com.classeve.earslate.security.KeyProvider
+import com.classeve.earslate.security.ProviderKeyStore
+import com.classeve.earslate.ui.onboarding.ApiKeySetupScreen
 import com.classeve.earslate.ui.onboarding.OnboardingScreen
 import com.classeve.earslate.ui.settings.LanguagePickerDialog
 import com.classeve.earslate.ui.settings.SettingsScreen
@@ -264,7 +267,17 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { ONBOARDING, MAIN, SETTINGS, DIAGNOSTICS, HELP }
+private enum class Screen { ONBOARDING, KEY_SETUP, MAIN, SETTINGS, DIAGNOSTICS, HELP }
+
+/** Short description of which keys are saved, for the Settings row. */
+private fun keySummary(keys: ProviderKeyStore): String {
+    val configured = keys.configured()
+    return when {
+        configured.isEmpty() -> "Not set up"
+        configured.size == 1 -> configured.first().displayName
+        else -> "${configured.size} providers"
+    }
+}
 
 @Composable
 private fun EarslateApp(
@@ -278,19 +291,37 @@ private fun EarslateApp(
     val userSettings by settingsRepo.settings.collectAsState()
     val scope = rememberCoroutineScope()
 
+    val providerKeys = remember(context) { EarslateRuntime.providerKeys(context) }
+    // Recomputed on every navigation so adding or removing a key in Settings is
+    // reflected immediately, without a restart.
+    var hasKey by remember { mutableStateOf(providerKeys.hasAnyKey()) }
+
     val firstLaunch = remember { !OnboardingPrefs.isCompleted(context) }
-    val initialScreen = remember { if (firstLaunch) Screen.ONBOARDING else Screen.MAIN }
+    val initialScreen = remember {
+        when {
+            firstLaunch -> Screen.ONBOARDING
+            // Without a key there is nothing the main screen can do, so send
+            // the user straight where they can fix that.
+            !hasKey -> Screen.KEY_SETUP
+            else -> Screen.MAIN
+        }
+    }
     var screen by rememberSaveable { mutableStateOf(initialScreen) }
 
     // System back mirrors the on-screen BACK affordances. On MAIN and
     // first-run onboarding the handler is disabled so back exits the app
-    // instead of trapping the user on a screen they can't leave.
+    // instead of trapping the user on a screen they can't leave. Key setup
+    // reached with no key saved is the same case: there is nowhere to go back
+    // to that would work.
     BackHandler(
-        enabled = screen != Screen.MAIN && screen != Screen.ONBOARDING,
+        enabled = screen != Screen.MAIN &&
+            screen != Screen.ONBOARDING &&
+            !(screen == Screen.KEY_SETUP && !hasKey),
     ) {
         screen = when (screen) {
             Screen.DIAGNOSTICS -> Screen.SETTINGS
             Screen.HELP -> Screen.SETTINGS
+            Screen.KEY_SETUP -> Screen.SETTINGS
             else -> Screen.MAIN
         }
     }
@@ -325,8 +356,26 @@ private fun EarslateApp(
                 },
                 onContinue = {
                     OnboardingPrefs.markCompleted(context)
-                    screen = Screen.MAIN
+                    hasKey = providerKeys.hasAnyKey()
+                    // A first run always needs a key before the main screen is
+                    // of any use.
+                    screen = if (hasKey) Screen.MAIN else Screen.KEY_SETUP
                     onRequestQsTile()
+                },
+            )
+            Screen.KEY_SETUP -> ApiKeySetupScreen(
+                padding = padding,
+                targetLanguageCode = currentLanguage.bcp47,
+                initialProvider = KeyProvider.forProvider(userSettings.provider)
+                    ?: KeyProvider.GEMINI,
+                onBack = if (hasKey) {
+                    { screen = Screen.SETTINGS }
+                } else {
+                    null
+                },
+                onDone = {
+                    hasKey = providerKeys.hasAnyKey()
+                    screen = Screen.MAIN
                 },
             )
             Screen.MAIN -> MainScreen(
@@ -382,6 +431,8 @@ private fun EarslateApp(
                 onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
                 onOpenOnboarding = { screen = Screen.ONBOARDING },
                 onOpenHelp = { screen = Screen.HELP },
+                onOpenKeySetup = { screen = Screen.KEY_SETUP },
+                configuredKeySummary = keySummary(providerKeys),
             )
             Screen.DIAGNOSTICS -> DiagnosticsScreen(
                 padding = padding,
