@@ -62,14 +62,22 @@ class ProviderSessionMinter(
         val expiresAt = iso8601(now + 30 * 60_000L)
         val newSessionExpiresAt = iso8601(now + 60_000L)
 
+        // Request shape verified against the live v1alpha endpoint on
+        // 2026-07-26. Two things here are easy to get wrong, and both produced
+        // a flat 400 that looked like a bad key rather than a bad request:
+        //
+        //  1. There is NO "authToken" wrapper. The AuthToken fields sit at the
+        //     top level of the body. Sending the wrapper returns
+        //     'Unknown name "authToken" at auth_token: Cannot find field'.
+        //  2. inputAudioTranscription / outputAudioTranscription belong to
+        //     bidiGenerateContentSetup, NOT to generationConfig. translationConfig
+        //     is the opposite — it lives inside generationConfig.
         val setup = JSONObject()
             .put("model", "models/$GEMINI_MODEL")
             .put(
                 "generationConfig",
                 JSONObject()
                     .put("responseModalities", org.json.JSONArray().put("AUDIO"))
-                    .put("inputAudioTranscription", JSONObject())
-                    .put("outputAudioTranscription", JSONObject())
                     .put(
                         "translationConfig",
                         JSONObject()
@@ -80,14 +88,14 @@ class ProviderSessionMinter(
                             .put("echoTargetLanguage", false),
                     ),
             )
-        val body = JSONObject().put(
-            "authToken",
-            JSONObject()
-                .put("uses", 1)
-                .put("expireTime", expiresAt)
-                .put("newSessionExpireTime", newSessionExpiresAt)
-                .put("bidiGenerateContentSetup", setup),
-        )
+            .put("inputAudioTranscription", JSONObject())
+            .put("outputAudioTranscription", JSONObject())
+
+        val body = JSONObject()
+            .put("uses", 1)
+            .put("expireTime", expiresAt)
+            .put("newSessionExpireTime", newSessionExpiresAt)
+            .put("bidiGenerateContentSetup", setup)
 
         val request = Request.Builder()
             // The key goes in the query string because that is the only form
