@@ -67,12 +67,7 @@ object EarslateRuntime {
         val appContext = context.applicationContext
         return captureEngine ?: synchronized(this) {
             captureEngine ?: AndroidAudioCaptureEngine(
-                // Send EVERYTHING (no local VAD gate). The translate model has its
-                // own VAD and auto-detects speech; local gating risked clipping
-                // quiet/far-field speech (the exact "it didn't hear me" failure),
-                // and billing is by session time so over-sending costs nothing.
                 framesPerBatch = 5, // 100 ms batches — the model's recommended chunk
-                vadGate = null,
                 hasRecordAudioPermission = {
                     ContextCompat.checkSelfPermission(
                         appContext,

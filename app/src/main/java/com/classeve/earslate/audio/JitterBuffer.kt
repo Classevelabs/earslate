@@ -1,7 +1,8 @@
 package com.classeve.earslate.audio
 
 /**
- * Fixed-threshold startup jitter buffer. Blueprint §8.7 (startup target ~120 ms).
+ * Fixed-threshold startup jitter buffer. The startup threshold is supplied by
+ * the caller (AndroidAudioPlaybackEngine uses 60 ms of audio at the active rate).
  *
  * Simpler than an adaptive jitter buffer: accumulate [startupBytes] worth of audio
  * before playback begins, then feed chunks in order. On underrun the buffer

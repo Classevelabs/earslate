@@ -27,9 +27,8 @@ import com.classeve.earslate.ui.components.SectionHeader
 import com.classeve.earslate.ui.theme.EarslateTheme
 
 /**
- * Local, debug-only diagnostics screen. Blueprint §31. No network — every value
- * is derived from the in-memory [RuntimeStateStore] snapshot and never leaves
- * the device.
+ * Local diagnostics screen. No network — every value is derived from the
+ * in-memory `RuntimeStateStore` snapshot and never leaves the device.
  */
 @Composable
 fun DiagnosticsScreen(
@@ -68,12 +67,6 @@ fun DiagnosticsScreen(
                     snapshot.timeToFirstAudioMs?.let { "$it ms" } ?: "—",
                 )
                 StatRow("Reconnects", snapshot.reconnectCount.toString())
-                StatRow("Resume successes", snapshot.resumeSuccessCount.toString())
-                StatRow("Playback underruns", snapshot.playbackUnderrunCount.toString())
-                StatRow(
-                    "Last send batch",
-                    snapshot.lastSendBatchMs?.let { "$it ms" } ?: "—",
-                )
             }
         }
     }

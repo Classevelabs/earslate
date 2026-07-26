@@ -25,8 +25,10 @@ import kotlinx.coroutines.launch
  *   - 20 ms internal frames, ~100 ms send batches
  *   - Dedicated high-priority IO coroutine
  *
- * VAD gating is optional — pass a [VadGate] to enable it, pass null to send
- * every captured batch (default now: the translate model has its own VAD).
+ * Every captured batch is sent. There is deliberately no local VAD gate: the
+ * translate model runs its own voice-activity detection, and gating locally
+ * clipped quiet/far-field speech (the "it didn't hear me" failure). Billing is
+ * by session wall-clock, not audio volume, so over-sending costs nothing.
  */
 interface AudioCaptureEngine {
     /**
@@ -47,7 +49,6 @@ class AndroidAudioCaptureEngine(
     private val sampleRateHz: Int = 16_000,
     private val frameMs: Int = 20,
     private val framesPerBatch: Int = 2,
-    private val vadGate: VadGate? = null,
     private val hasRecordAudioPermission: () -> Boolean = { true },
 ) : AudioCaptureEngine {
 
@@ -114,7 +115,6 @@ class AndroidAudioCaptureEngine(
         }
 
         record = rec
-        vadGate?.reset()
 
         loopJob = scope.launch {
             val frame = ByteArray(bytesPerFrame)
@@ -153,21 +153,7 @@ class AndroidAudioCaptureEngine(
                         continue
                     }
 
-                    val effective = if (read == bytesPerFrame) frame else frame.copyOf(read)
-
-                    if (vadGate == null) {
-                        append(effective)
-                    } else {
-                        when (val result = vadGate.process(effective)) {
-                            is VadResult.Silence -> Unit
-                            is VadResult.Opening -> {
-                                result.preRoll.forEach(::append)
-                                append(result.current)
-                            }
-                            is VadResult.Speaking -> append(result.frame)
-                            is VadResult.Closing -> flushBatch()
-                        }
-                    }
+                    append(if (read == bytesPerFrame) frame else frame.copyOf(read))
                 }
             } finally {
                 flushBatch()

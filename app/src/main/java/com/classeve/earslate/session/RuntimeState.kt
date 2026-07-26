@@ -7,8 +7,6 @@ package com.classeve.earslate.session
  * BOOTSTRAPPING → CONNECTING → READY → LISTENING, with PLAYING interleaved while
  * translated audio is draining. Failure branches go through RECONNECTING /
  * RESUMING / DEGRADED without tearing down the service.
- *
- * Blueprint §14.
  */
 enum class RuntimeState {
     IDLE,

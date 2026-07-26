@@ -128,9 +128,7 @@ class MainActivity : ComponentActivity() {
         EarslateRuntime.deviceMonitor(this)
 
         // Handle REQUEST_START from TranslatorTileService when permission is missing.
-        if (intent?.action == ACTION_REQUEST_START) {
-            requestStart()
-        }
+        handleRequestStartIntent(intent)
 
         // Start the persistent notification control service if the user has opted in.
         if (EarslateRuntime.settingsRepository(this).settings.value.persistentNotification) {
@@ -151,6 +149,28 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+        }
+    }
+
+    /**
+     * The activity is `singleTop`, so when it is already the top of its task the
+     * system delivers a re-launch here instead of calling [onCreate] again.
+     * Both entry points that bounce the user back for consent or the mic grant
+     * (TranslatorService's ACTION_START gate and TranslatorTileService) send the
+     * same REQUEST_START intent — without this override those bounces were
+     * silently dropped whenever the activity already existed, so tapping the QS
+     * tile or the notification's Start action appeared to do nothing.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // Keep getIntent() consistent with what we are about to act on.
+        setIntent(intent)
+        handleRequestStartIntent(intent)
+    }
+
+    private fun handleRequestStartIntent(intent: Intent?) {
+        if (intent?.action == ACTION_REQUEST_START) {
+            requestStart()
         }
     }
 
@@ -213,9 +233,14 @@ class MainActivity : ComponentActivity() {
 
     /**
      * Prominent in-app disclosure (Google Play User Data policy): names the
-     * third party (Google Gemini), the data (microphone audio), the purpose
-     * (live translation), and retention, gated behind an explicit "I agree".
-     * Shown before the FIRST capture on any entry point; the choice persists.
+     * third parties that can receive audio (Gemini or OpenAI — the broker picks
+     * one per session), the data (microphone audio), the purpose (live
+     * translation), and retention, gated behind an explicit "I agree". Shown
+     * before the FIRST capture on any entry point; the choice persists.
+     *
+     * The wording lives in `R.string.audio_disclosure_body`. If the set of
+     * providers the broker can mint for ever changes, that string and the Play
+     * Data safety declaration must change with it.
      */
     private fun showAudioEgressDisclosure() {
         AlertDialog.Builder(this)
