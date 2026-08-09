@@ -44,8 +44,8 @@ android {
         applicationId = "com.classeve.earslate"
         minSdk = 29
         targetSdk = 36
-        versionCode = 17
-        versionName = "0.4.2"
+        versionCode = 18
+        versionName = "0.4.3"
 
         vectorDrawables.useSupportLibrary = true
     }
@@ -97,6 +97,17 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+
+    testOptions {
+        unitTests {
+            // android.util.Log throws "not mocked" by default, so any unit test
+            // that walks a code path containing a log line fails for a reason
+            // that has nothing to do with the behaviour under test. That made the
+            // parser's error branches — precisely the ones that must never throw
+            // — untestable off-device. Stubs return defaults instead.
+            isReturnDefaultValues = true
         }
     }
 

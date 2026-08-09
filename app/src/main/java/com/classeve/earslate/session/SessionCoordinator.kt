@@ -88,6 +88,37 @@ class SessionCoordinator(
     @Volatile private var gateCooldownJob: Job? = null
     @Volatile private var currentPolicy: TranslatorPolicy? = null
 
+    /**
+     * Set by [stop] so the reconnect loop can tell a user-requested teardown
+     * from a socket death. Without it, a stop during BOOTSTRAPPING/CONNECTING
+     * fell through the loop's `catch (CancellationException)` and left the state
+     * store on a live-looking state with no job behind it — the UI then rendered
+     * STOP forever against a dead session and the button was a permanent no-op.
+     */
+    @Volatile private var stopRequested: Boolean = false
+
+    /**
+     * Which leg currently owns playback and the caption line.
+     *
+     * Both legs share one [AudioPlaybackEngine] and one [CaptionsStore], and both
+     * receive the SAME mic audio, so without an owner their chunks interleave in
+     * the shared jitter buffer and their transcripts interleave in the shared
+     * caption builder — two voices and two languages spliced together, which is
+     * what made the output sound garbled. `echoTargetLanguage=false` is what
+     * usually keeps one leg quiet, but it is a model behaviour, not a guarantee,
+     * so the timeline needs an explicit owner too.
+     */
+    private val legLock = Any()
+    private var speakingLeg: String? = null
+    private var lastLegOutputElapsed: Long = 0L
+
+    // Arrival-jitter measurement — see recordArrival. Guarded by legLock.
+    private val lastArrivalPerLeg = HashMap<String, Long>()
+    private var arrivalCount: Long = 0L
+    private var arrivalSumMs: Long = 0L
+    private var arrivalMaxGapMs: Long = 0L
+    private var arrivalBytes: Long = 0L
+
     private data class Leg(
         val targetCode: String,
         val bootstrap: SessionBootstrap,
@@ -108,6 +139,8 @@ class SessionCoordinator(
             currentPolicy = policy
             playbackGateActive = false
             gateCooldownJob?.cancel()
+            stopRequested = false
+            releaseLeg()
 
             lifecycleJob = scope.launch {
                 try {
@@ -122,16 +155,38 @@ class SessionCoordinator(
                             message = t.message ?: "Session crashed",
                         ),
                     )
-                    stateStore.set(RuntimeState.IDLE)
                 } finally {
-                    lifecycleJob = null
+                    synchronized(this@SessionCoordinator) { lifecycleJob = null }
+                    // THE INVARIANT: when the lifecycle job ends, the runtime is
+                    // idle. Several early-return paths in runSession sit above the
+                    // try/finally that owns teardown, and a cancellation during
+                    // CONNECTING unwinds through none of them — so this is the one
+                    // place that can guarantee the UI never shows an active session
+                    // with nothing running behind it.
+                    if (stateStore.state.value != RuntimeState.IDLE) {
+                        stateStore.set(RuntimeState.IDLE)
+                    }
+                    releaseLeg()
                 }
             }
         }
     }
 
     fun stop() {
-        lifecycleJob?.cancel()
+        stopRequested = true
+        val job = synchronized(this) { lifecycleJob }
+        if (job == null) {
+            // Nothing is running. If the store still reports an active state it is
+            // a leftover from an earlier teardown, and leaving it there is exactly
+            // what made STOP a dead button — resolve it so the UI can recover
+            // without a force-stop.
+            if (stateStore.state.value != RuntimeState.IDLE) {
+                Log.w(TAG, "stop with no live job; clearing stale ${stateStore.state.value}")
+                stateStore.set(RuntimeState.IDLE)
+            }
+            return
+        }
+        job.cancel()
     }
 
     private suspend fun reconnectLoop(policy: TranslatorPolicy) {
@@ -146,6 +201,10 @@ class SessionCoordinator(
                 // either user stop or socket-death trip — both catch here
             }
 
+            // A user stop must never be mistaken for a socket death and retried.
+            if (stopRequested) {
+                return
+            }
             if (!wasSocketDeath) {
                 return
             }
@@ -372,7 +431,7 @@ class SessionCoordinator(
             val parsed = leg.protocol.parse(raw)
             parsed.forEach { event ->
                 if (event is LiveEvent.SetupComplete) leg.setupReady.complete(Unit)
-                runCatching { dispatch(event) }
+                runCatching { dispatch(leg.targetCode, event) }
                     .onFailure { Log.e(TAG, "dispatch failed for ${event.javaClass.simpleName}: ${it.message}", it) }
                 _events.tryEmit(event)
                 if (event is LiveEvent.Error) {
@@ -382,18 +441,26 @@ class SessionCoordinator(
         }
     }
 
-    private fun dispatch(event: LiveEvent) {
+    private fun dispatch(legCode: String, event: LiveEvent) {
         when (event) {
             is LiveEvent.SetupComplete -> {
                 Log.i(TAG, "setupComplete — entering LISTENING")
                 stateStore.set(RuntimeState.LISTENING)
             }
             is LiveEvent.AudioChunk -> {
+                // Measured on every arriving frame, before any filtering — this is
+                // a statement about what the network delivered, not about what we
+                // chose to play.
+                recordArrival(legCode, event.pcm24k.size)
                 // The translate model streams filler/anti-repeat silence as zero
-                // PCM. Drop it so (a) the two legs' audio never interleaves in the
-                // shared buffer and (b) we don't gate the mic or flip to PLAYING
-                // for inaudible frames.
+                // PCM. Drop it so we don't gate the mic or flip to PLAYING for
+                // inaudible frames. (Keeping the two legs from interleaving is
+                // now claimLeg's job, not this threshold's.)
                 if (isSilent(event.pcm24k)) return
+                // Only the leg that owns this utterance may reach the shared
+                // jitter buffer. Without this, both legs' chunks interleave into
+                // one stream and play as two spliced voices.
+                if (!claimLeg(legCode)) return
                 if (!firstAudioSeen) {
                     firstAudioSeen = true
                     val elapsed = android.os.SystemClock.elapsedRealtime() - sessionStartElapsed
@@ -419,9 +486,18 @@ class SessionCoordinator(
                 }
             }
             is LiveEvent.CaptionDelta -> {
+                // Same ownership rule as audio. Both legs transcribe the same mic
+                // audio into different languages, and CaptionsStore is a single
+                // shared StringBuilder — unowned deltas interleave two languages
+                // into one caption line.
+                if (!claimLeg(legCode)) return
                 captionsStore.appendDelta(event.text)
             }
             is LiveEvent.TurnComplete -> {
+                releaseLeg(legCode)
+                // Tell the buffer this quiet is expected, so it does not pay for
+                // latency it does not need.
+                playbackEngine.notifyTurnEnd()
                 captionsStore.commitLine()
                 if (stateStore.state.value == RuntimeState.PLAYING) {
                     stateStore.set(RuntimeState.LISTENING)
@@ -438,6 +514,71 @@ class SessionCoordinator(
                 stateStore.set(RuntimeState.DEGRADED)
             }
         }
+    }
+
+    /**
+     * Try to take ownership of playback + captions for [legCode].
+     *
+     * Granted when nothing owns the stream, when this leg already owns it, or
+     * when the current owner has produced nothing for [LEG_HANDOVER_IDLE_MS] —
+     * that last case matters because a leg is not guaranteed to send
+     * `turnComplete`, and without an idle handover a silent owner would hold the
+     * stream for the rest of the session.
+     */
+    private fun claimLeg(legCode: String): Boolean = synchronized(legLock) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val owner = speakingLeg
+        val mayTake = owner == null ||
+            owner == legCode ||
+            now - lastLegOutputElapsed > LEG_HANDOVER_IDLE_MS
+        if (!mayTake) return false
+        if (owner != legCode) Log.i(TAG, "playback owner → $legCode")
+        speakingLeg = legCode
+        lastLegOutputElapsed = now
+        true
+    }
+
+    /** Release the stream. [legCode] null releases unconditionally (session teardown). */
+    private fun releaseLeg(legCode: String? = null) = synchronized(legLock) {
+        if (legCode == null || speakingLeg == legCode) {
+            speakingLeg = null
+            lastLegOutputElapsed = 0L
+        }
+        if (legCode == null) lastArrivalPerLeg.clear()
+    }
+
+    /**
+     * Measures how evenly the provider's audio actually arrives, and what the
+     * buffer had to do about it. This is the number that decides whether playback
+     * sounds smooth, so it is measured rather than assumed — a mean gap well
+     * under the buffer's target latency with a small max is smooth; a max gap
+     * above the target is an audible stutter.
+     */
+    private fun recordArrival(legCode: String, bytes: Int) {
+        val log = synchronized(legLock) {
+            val now = android.os.SystemClock.elapsedRealtime()
+            // Gaps are per-leg: two legs streaming into one counter would report
+            // roughly half the true inter-arrival time and flatter it entirely.
+            val previous = lastArrivalPerLeg.put(legCode, now)
+            if (previous == null) return
+            arrivalCount++
+            arrivalBytes += bytes
+            val gap = now - previous
+            arrivalSumMs += gap
+            if (gap > arrivalMaxGapMs) arrivalMaxGapMs = gap
+            if (arrivalCount % ARRIVAL_LOG_EVERY != 0L) return
+            val line = "n=$arrivalCount meanGap=${arrivalSumMs / arrivalCount}ms " +
+                "maxGap=${arrivalMaxGapMs}ms avgChunk=${arrivalBytes / arrivalCount}B"
+            arrivalMaxGapMs = 0L
+            line
+        }
+        val snapshot = playbackEngine.snapshot()
+        Log.i(
+            TAG,
+            "audio arrival: $log | buffered=${snapshot.bufferedMs}ms " +
+                "target=${snapshot.targetLatencyMs}ms underruns=${snapshot.underruns} " +
+                "dropped=${snapshot.droppedChunks}",
+        )
     }
 
     // Half-duplex gate: mute the mic while the translator is speaking. Always on
@@ -459,6 +600,16 @@ class SessionCoordinator(
     companion object {
         private const val TAG = "SessionCoord"
         private const val MAX_RECONNECT_ATTEMPTS = 4
+
+        /**
+         * How long an owning leg may go quiet before the other leg may take the
+         * stream. Longer than any within-utterance pause the model produces, short
+         * enough that a reply in the other direction is never left waiting.
+         */
+        private const val LEG_HANDOVER_IDLE_MS = 700L
+
+        /** Chunks between arrival-jitter log lines. ~5 s at a 100 ms cadence. */
+        private const val ARRIVAL_LOG_EVERY = 50L
 
         /** Output PCM peak below this (model emits zero-PCM silence; peak≈1) is treated as silence. */
         private const val SILENCE_PEAK = 48

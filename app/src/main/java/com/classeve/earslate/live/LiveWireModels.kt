@@ -29,6 +29,17 @@ internal data class ClientSetupFrame(
 internal data class ClientSetupPayload(
     val model: String,
     val generationConfig: GenerationConfig? = null,
+    // These two belong HERE, on BidiGenerateContentSetup — NOT inside
+    // generationConfig. Google's proto rejects them there and kills the socket
+    // with 1007 "Invalid JSON payload received. Unknown name
+    // "outputAudioTranscription" at 'setup.generation_config': Cannot find
+    // field." Because they are only emitted when captions are on, and captions
+    // default to ON, that single misplacement made every default install unable
+    // to open a session at all. translationConfig is the opposite — it must stay
+    // inside generationConfig. Identical shape to the mint body in
+    // ProviderSessionMinter; both are pinned by GeminiAuthTokenShapeTest.
+    val inputAudioTranscription: JsonObject? = null,
+    val outputAudioTranscription: JsonObject? = null,
     val systemInstruction: Content? = null,
     val sessionResumption: SessionResumptionHandle? = null,
     val contextWindowCompression: ContextWindowCompression? = null,
@@ -45,8 +56,9 @@ internal data class GenerationConfig(
     // end-to-end: with translationConfig the model translates; without it (the
     // old prompt-only path) it echoed the source and lagged badly.
     val translationConfig: TranslationConfig? = null,
-    val outputAudioTranscription: JsonObject? = null,
-    val inputAudioTranscription: JsonObject? = null,
+    // NOTE: inputAudioTranscription / outputAudioTranscription deliberately do
+    // NOT live here. See ClientSetupPayload — putting them in generationConfig
+    // is rejected by the server.
 )
 
 @Serializable
@@ -83,7 +95,11 @@ internal data class PrebuiltVoiceConfig(
 
 @Serializable
 internal data class Content(
-    val parts: List<Part>,
+    // Defaulted, not required. A required field here means a `modelTurn` that
+    // arrives without `parts` throws, and a throw in the parser discards the
+    // WHOLE frame — including any audio and any turnComplete riding along with
+    // it. See Transcription for the measured consequence of getting this wrong.
+    val parts: List<Part> = emptyList(),
     val role: String? = null,
 )
 
@@ -95,8 +111,10 @@ internal data class Part(
 
 @Serializable
 internal data class InlineData(
-    val mimeType: String,
-    val data: String,
+    // Both defaulted for the same reason as Content.parts — a missing key must
+    // cost us one field, never the entire frame.
+    val mimeType: String = "",
+    val data: String = "",
 )
 
 @Serializable
@@ -157,7 +175,19 @@ internal data class ServerContent(
 
 @Serializable
 internal data class Transcription(
-    val text: String,
+    /**
+     * MUST have a default. Google routinely sends `inputTranscription` /
+     * `outputTranscription` objects carrying only a marker (e.g. `finished`) with
+     * no `text` at all. As a required field that threw inside the parser, and the
+     * parser's catch-all discards the entire frame — so every one of those markers
+     * silently destroyed whatever else the frame contained, audio included.
+     *
+     * Measured on-device 2026-07-27 with captions finally working: 2-4 frames a
+     * second were being thrown away this way. It was invisible before then only
+     * because the misplaced transcription config (see ClientSetupPayload) meant
+     * captions could never be switched on in the first place.
+     */
+    val text: String = "",
     val finished: Boolean? = null,
 )
 
