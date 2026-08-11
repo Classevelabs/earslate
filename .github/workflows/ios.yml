@@ -1,0 +1,83 @@
+# earslate for iOS — build and wire-format tests.
+#
+# The iOS client lived only inside a personal backup repository: it was in no
+# product repo, had no CI, and had no tests. Nine hundred lines of working
+# app — live Gemini client, audio capture and playback — one disk failure from
+# gone, and unverifiable by anyone but the person holding that disk.
+#
+# The first cross-platform comparison found a bug that made Gemini translation
+# impossible: the setup frame put transcription inside generationConfig, which
+# the server rejects by closing the socket with 1007. Android had shipped the
+# same mistake, measured it on-device, fixed it and pinned it. iOS never
+# learned. This is what makes that comparison automatic.
+#
+# Unsigned and simulator-only on purpose. Shipping to the App Store needs an
+# Apple Developer Program membership that does not exist yet; building and
+# testing needs neither, so neither waits for it.
+
+name: iOS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios.yml"
+  pull_request:
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    # xcodegen emits a project format that Xcode 15 on macos-14 refuses with a
+    # bare "Unable to read project"; macos-15 carries Xcode 16.
+    runs-on: macos-15
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ios
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      # Tests before the build: they are pure JSON shaping, so a wire-format
+      # regression fails in seconds rather than after a full app compile.
+      - name: Wire-format tests
+        run: |
+          set -o pipefail
+          DEST=$(xcrun simctl list devices available -j \
+            | python3 -c "import json,sys,itertools; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for x in itertools.chain(*d.values()) if x.get('isAvailable')))")
+          echo "simulator: $DEST"
+          xcodebuild test \
+            -project EarslateiOS.xcodeproj \
+            -scheme EarslateTests \
+            -destination "id=$DEST" \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Build the app (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project EarslateiOS.xcodeproj \
+            -scheme Earslate \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO

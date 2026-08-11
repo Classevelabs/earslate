@@ -1,0 +1,63 @@
+name: EarslateiOS
+options:
+  bundleIdPrefix: com.classeve
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "0.3.0"
+    CURRENT_PROJECT_VERSION: "1"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+targets:
+  Earslate:
+    type: application
+    platform: iOS
+    sources:
+      - path: Earslate
+    resources:
+      - path: Earslate/Assets.xcassets
+      - path: Earslate/PrivacyInfo.xcprivacy
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.classeve.earslate
+        PRODUCT_NAME: Earslate
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        INFOPLIST_KEY_CFBundleDisplayName: Earslate
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: false
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: Earslate captures speech only while live translation is running. Audio is sent directly to your selected provider, Gemini or OpenAI, and is not retained by the app.
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: true
+        INFOPLIST_KEY_UIBackgroundModes:
+          - audio
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone:
+          - UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+
+  # The iOS client had no tests, and comparing it against the Android client
+  # found a wire-format bug that made Gemini translation impossible. This
+  # target exists so that comparison is enforced rather than repeated by hand.
+  #
+  # It uses @testable import rather than recompiling sources, because the
+  # frame builder is a static on the client actor. No signing, no simulator
+  # capabilities beyond the default: it is pure JSON shaping.
+  EarslateTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: EarslateTests
+    dependencies:
+      - target: Earslate
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.classeve.earslate.tests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGNING_ALLOWED: NO

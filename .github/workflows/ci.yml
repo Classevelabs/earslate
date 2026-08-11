@@ -36,6 +36,30 @@ jobs:
       - name: Build, test and lint
         run: ./gradlew testDebugUnitTest lintDebug assembleDebug --no-daemon --stacktrace
 
+      # Gradle skips a task it considers up to date, so a green run that
+      # executed nothing looks exactly like a green run that executed
+      # everything. Assert the suites actually ran and that the count has not
+      # quietly collapsed.
+      - name: Verify the tests actually executed
+        run: |
+          results=app/build/test-results/testDebugUnitTest
+          if [ ! -d "$results" ]; then
+            echo "::error::no test results directory — the test task did not run"
+            exit 1
+          fi
+          total=0
+          for f in "$results"/TEST-*.xml; do
+            [ -e "$f" ] || { echo "::error::no TEST-*.xml results were produced"; exit 1; }
+            n=$(sed -n 's/.*tests="\([0-9]*\)".*/\1/p' "$f" | head -1)
+            echo "  $(basename "$f"): $n tests"
+            total=$((total + n))
+          done
+          echo "total tests executed: $total"
+          if [ "$total" -lt 20 ]; then
+            echo "::error::only $total tests ran; expected at least 20. Suites have been lost or skipped."
+            exit 1
+          fi
+
       - name: Upload lint report
         if: always()
         uses: actions/upload-artifact@v4
