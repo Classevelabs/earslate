@@ -25,6 +25,12 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.classeve.earslate
         PRODUCT_NAME: Earslate
+        # xcodegen leaves this unset while writing INFOPLIST_KEY_* entries, and
+        # Xcode 16 then looks for an Info.plist file that nothing generates:
+        # "Build input file cannot be found: .../Earslate.app/Info.plist".
+        # The same omission bit the Lven Instant macOS project, where it is
+        # documented in its project.yml for the same reason.
+        GENERATE_INFOPLIST_FILE: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         INFOPLIST_KEY_CFBundleDisplayName: Earslate
