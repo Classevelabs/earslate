@@ -33,6 +33,13 @@ interface AudioPlaybackEngine {
     fun enqueue(pcm: ByteArray, sampleRateHz: Int = 24_000)
     fun stop(graceful: Boolean = true)
 
+    /**
+     * The provider has finished speaking. Tells the jitter buffer that running dry
+     * next is expected, so end-of-turn silence is not mistaken for a network
+     * stutter and charged as extra latency.
+     */
+    fun notifyTurnEnd()
+
     /** Live buffer health for the diagnostics screen. */
     fun snapshot(): PlaybackSnapshot
 }
@@ -50,11 +57,22 @@ data class PlaybackSnapshot(
 class AndroidAudioPlaybackEngine(
     private val defaultSampleRateHz: Int = 24_000,
     /**
-     * Floor for the adaptive buffer. 40 ms is about two provider frames — low
-     * enough that a reply feels immediate, high enough to absorb ordinary
-     * scheduling noise. The buffer raises this itself when the network needs it.
+     * Floor for the adaptive buffer.
+     *
+     * This was 40 ms, and that single number was the reason playback sounded like
+     * a bad phone call. The provider streams audio in chunks of ~100 ms, over
+     * mobile data, so 40 ms of cushion is less than half of one chunk: any chunk
+     * that arrives even slightly late finds the buffer already empty. The result
+     * was an underrun on virtually every utterance, and because each underrun
+     * disarms the buffer until the target refills, every one of them was an
+     * audible gap.
+     *
+     * 180 ms is a little under two chunk periods — enough that a single late or
+     * bursty chunk is absorbed silently. It costs nothing perceptible: the model
+     * itself takes on the order of a second to produce a translation, so 180 ms
+     * is well inside the noise of that. Smooth beats theoretically-snappy.
      */
-    private val startupLatencyMs: Int = 40,
+    private val startupLatencyMs: Int = 180,
 ) : AudioPlaybackEngine {
 
     private val bytesPerSample = 2
@@ -64,7 +82,17 @@ class AndroidAudioPlaybackEngine(
         maxTargetBytes = bytesFor(defaultSampleRateHz, MAX_LATENCY_MS),
         growthStepBytes = bytesFor(defaultSampleRateHz, GROWTH_STEP_MS),
         maxBufferedBytes = bytesFor(defaultSampleRateHz, MAX_BACKLOG_MS),
+        recoveryBytes = bytesFor(defaultSampleRateHz, RECOVERY_QUIET_MS),
     )
+
+    /**
+     * One frame of digital silence, written to keep the track's clock running
+     * through a buffer gap. See the drain loop.
+     */
+    @Volatile private var silenceFrame: ByteArray = ByteArray(0)
+
+    /** Consecutive silence frames written during the current gap. */
+    private var silenceRun = 0
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Volatile private var track: AudioTrack? = null
@@ -129,6 +157,9 @@ class AndroidAudioPlaybackEngine(
         t.play()
         track = t
         activeRateHz = rate
+        // Rate-dependent, so it is rebuilt with the track.
+        silenceFrame = ByteArray(bytesFor(rate, SILENCE_FRAME_MS))
+        silenceRun = 0
         return true
     }
 
@@ -157,15 +188,36 @@ class AndroidAudioPlaybackEngine(
                 }
                 val chunk = buffer.drain()
                 if (chunk == null) {
-                    delay(IDLE_POLL_MS)
+                    // Nothing ready. If we were mid-utterance, keep the track fed
+                    // with silence instead of letting it starve: a starved
+                    // AudioTrack underruns in hardware, which is heard as a click
+                    // or a rasp at the seam and is exactly what made a gap sound
+                    // like a dropped phone call. Writing comfort silence turns the
+                    // same gap into an inaudible pause and keeps the timeline
+                    // continuous.
+                    //
+                    // Bounded by MAX_SILENCE_RUN so a genuine end-of-turn does not
+                    // sit here forever adding latency — after that we fall back to
+                    // idle polling and let the buffer re-arm properly.
+                    if (silenceRun < MAX_SILENCE_RUN && silenceFrame.isNotEmpty()) {
+                        silenceRun++
+                        active.write(silenceFrame, 0, silenceFrame.size, AudioTrack.WRITE_BLOCKING)
+                    } else {
+                        delay(IDLE_POLL_MS)
+                    }
                     continue
                 }
+                silenceRun = 0
                 val written = active.write(chunk, 0, chunk.size, AudioTrack.WRITE_BLOCKING)
                 if (written < 0) {
                     Log.w(TAG, "AudioTrack.write error: $written")
                 }
             }
         }
+    }
+
+    override fun notifyTurnEnd() {
+        buffer.markTurnEnd()
     }
 
     override fun enqueue(pcm: ByteArray, sampleRateHz: Int) {
@@ -202,6 +254,7 @@ class AndroidAudioPlaybackEngine(
                 maxBytes = bytesFor(newRate, MAX_LATENCY_MS),
                 stepBytes = bytesFor(newRate, GROWTH_STEP_MS),
                 capBytes = bytesFor(newRate, MAX_BACKLOG_MS),
+                recoveryTargetBytes = bytesFor(newRate, RECOVERY_QUIET_MS),
             )
         } finally {
             rebuilding = false
@@ -278,14 +331,47 @@ class AndroidAudioPlaybackEngine(
     companion object {
         private const val TAG = "AudioPlayback"
 
-        /** Ceiling for the adaptive buffer. Past this, latency hurts more than gaps. */
-        private const val MAX_LATENCY_MS = 240
+        /**
+         * Ceiling for the adaptive buffer. 240 ms was not enough headroom for a
+         * congested mobile link — the buffer would peg at the ceiling and keep
+         * underrunning with nowhere left to grow. 600 ms is still comfortably
+         * below the point where a listener notices added delay in a translated
+         * conversation.
+         */
+        private const val MAX_LATENCY_MS = 600
 
-        /** How much cushion one underrun buys. */
-        private const val GROWTH_STEP_MS = 20
+        /**
+         * How much cushion one underrun buys. Deliberately coarse: at 20 ms it
+         * took ten separate audible gaps to climb from the floor to the ceiling.
+         * At 60 ms a bad link is absorbed within one or two.
+         */
+        private const val GROWTH_STEP_MS = 60
 
         /** Backlog cap. Beyond this the speaker has moved on and old audio is noise. */
         private const val MAX_BACKLOG_MS = 1_200
+
+        /**
+         * Clean audio required before the buffer gives back one [GROWTH_STEP_MS].
+         * Long on purpose — latency earned by a real stutter should not be
+         * surrendered after a couple of seconds of calm, because that is what
+         * makes the target oscillate and the stream stutter all over again.
+         */
+        private const val RECOVERY_QUIET_MS = 12_000
+
+        /** Duration of one comfort-silence frame written during a buffer gap. */
+        private const val SILENCE_FRAME_MS = 20
+
+        /**
+         * Cap on consecutive comfort-silence frames — 5 × 20 ms = 100 ms.
+         *
+         * Sized from measurement, not taste: arrival gaps on-device were 248 ms
+         * mean against a 291 ms worst case, so ~43 ms of lateness is what actually
+         * needs covering. 100 ms is a bit over double that. Keeping the cap tight
+         * matters because silence written here sits *ahead* of the next real
+         * utterance in the track — a generous cap would trade a click for
+         * permanent added delay, which is a worse bargain.
+         */
+        private const val MAX_SILENCE_RUN = 5
 
         private const val IDLE_POLL_MS = 5L
         private const val REBUILD_PARK_MS = 2L

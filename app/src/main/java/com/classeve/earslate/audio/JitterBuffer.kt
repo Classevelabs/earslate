@@ -13,14 +13,23 @@ package com.classeve.earslate.audio
  * This version keeps the target latency as low as the network will actually
  * allow, and moves it rather than resetting it:
  *
- *  - **Start low.** [minTargetBytes] (40 ms) is the floor, because a live
- *    conversation is unusable if you add a fixed cushion to every sentence.
- *  - **Grow on pain.** Each underrun raises the target by [growthStepBytes]
- *    (20 ms), up to [maxTargetBytes] (240 ms). A network that stutters twice
- *    gets a bigger cushion instead of the same one, so the stutter stops.
- *  - **Shrink on calm.** After [recoveryRuns] consecutive clean drains the
- *    target eases back down one step. Latency is given back as soon as it is
- *    safe to, rather than being permanently lost to one bad moment.
+ *  - **Start above one provider chunk.** [minTargetBytes] is the floor. It must
+ *    exceed the provider's chunk period, or a *single* late chunk empties the
+ *    buffer — the 40 ms floor this replaces was under half a chunk, so on mobile
+ *    data it underran on virtually every utterance and the stream never got a
+ *    chance to settle. Speech translation already carries ~1 s of model latency;
+ *    a cushion in the low hundreds of ms is inaudible next to that, and it is the
+ *    difference between smooth and choppy.
+ *  - **Grow on pain, fast.** Each underrun raises the target by
+ *    [growthStepBytes], up to [maxTargetBytes]. The step has to be a meaningful
+ *    fraction of the ceiling: climbing in 20 ms hops from 40 ms to 240 ms takes
+ *    ten underruns, and every one of those is a gap the user hears.
+ *  - **Shrink on calm, slowly.** After [recoveryBytes] of *clean drained audio*
+ *    the target eases down one step. Measured in bytes, not drain calls, because
+ *    a drain call is one provider chunk of unknown duration — counting calls made
+ *    recovery arrive many times sooner than intended at large chunk sizes, which
+ *    walked the cushion straight back down into the underrun zone and turned the
+ *    whole thing into the oscillation it was meant to prevent.
  *  - **Never fully stall.** An underrun no longer flips playback off. The
  *    buffer stays in draining state and simply has nothing to give this tick,
  *    so the moment a packet lands it plays — instead of waiting for a fresh
@@ -38,10 +47,11 @@ package com.classeve.earslate.audio
 class JitterBuffer(
     startupBytes: Int,
     private var minTargetBytes: Int = startupBytes,
-    private var maxTargetBytes: Int = startupBytes * 6,
-    private var growthStepBytes: Int = startupBytes / 2,
-    private var maxBufferedBytes: Int = startupBytes * 30,
-    private val recoveryRuns: Int = 50,
+    private var maxTargetBytes: Int = startupBytes * 4,
+    private var growthStepBytes: Int = startupBytes / 3,
+    private var maxBufferedBytes: Int = startupBytes * 8,
+    /** Bytes of clean drained audio that buy back one [growthStepBytes] of latency. */
+    private var recoveryBytes: Int = startupBytes * 60,
 ) {
     private val queue = ArrayDeque<ByteArray>()
     private val lock = Any()
@@ -49,10 +59,23 @@ class JitterBuffer(
     private var accumulated = 0
     private var draining = false
     private var targetBytes = startupBytes
-    private var cleanRuns = 0
+    private var cleanBytes = 0
+
+    /**
+     * Largest chunk the provider has actually sent. Discovered, never assumed —
+     * see [armThresholdBytes].
+     */
+    private var largestChunkBytes = 0
 
     private var underruns = 0
     private var dropped = 0
+
+    /**
+     * Set by [markTurnEnd] when the provider has said it has finished speaking, so
+     * the buffer emptying next is expected rather than a fault. Cleared by the next
+     * [enqueue].
+     */
+    private var turnEnded = false
 
     /** Underruns since the last [reset]. Surfaced in diagnostics as buffer health. */
     val underrunCount: Int get() = synchronized(lock) { underruns }
@@ -60,11 +83,38 @@ class JitterBuffer(
     /** Chunks discarded because the backlog grew past [maxBufferedBytes]. */
     val droppedChunks: Int get() = synchronized(lock) { dropped }
 
+    /**
+     * How much audio must be in hand before playback starts (or restarts).
+     *
+     * This is the adapted [targetBytes], but never less than one and a quarter of
+     * the largest chunk the provider has actually sent. That floor is the whole
+     * point: a cushion smaller than one chunk cannot keep any audio in reserve —
+     * it plays the chunk it just received, finds the queue empty, and starves
+     * until the next one lands, once per chunk, forever.
+     *
+     * Measured on-device 2026-07-27: Gemini sends 12000-byte chunks, which at
+     * 24 kHz mono PCM16 is **250 ms of audio each**, every ~248 ms. The old
+     * configuration had a 40 ms floor and a 240 ms ceiling — so even fully
+     * adapted, at its ceiling, the buffer still held less than one chunk and
+     * underran on every single one. That is what the choppiness was.
+     *
+     * Learning the size instead of hard-coding 250 ms matters because the number
+     * is the provider's to change: hard-coding it would mean pointless latency if
+     * chunks get smaller, and a return of the stutter if they get bigger.
+     */
+    private fun armThresholdBytes(): Int {
+        if (largestChunkBytes == 0) return targetBytes
+        val oneChunkAndABit = largestChunkBytes + largestChunkBytes / 4
+        return maxOf(targetBytes, minOf(oneChunkAndABit, maxTargetBytes))
+    }
+
     fun enqueue(chunk: ByteArray) {
         if (chunk.isEmpty()) return
         synchronized(lock) {
             queue.addLast(chunk)
             accumulated += chunk.size
+            turnEnded = false
+            if (chunk.size > largestChunkBytes) largestChunkBytes = chunk.size
             // Drop the oldest audio, not the newest: the newest is what the
             // listener is waiting to hear.
             while (accumulated > maxBufferedBytes && queue.size > 1) {
@@ -72,9 +122,9 @@ class JitterBuffer(
                 accumulated -= stale.size
                 dropped++
             }
-            if (!draining && accumulated >= targetBytes) {
+            if (!draining && accumulated >= armThresholdBytes()) {
                 draining = true
-                cleanRuns = 0
+                cleanBytes = 0
             }
         }
     }
@@ -92,27 +142,48 @@ class JitterBuffer(
             return null
         }
         accumulated -= next.size
-        onCleanDrain()
+        onCleanDrain(next.size)
         next
     }
 
+    /**
+     * The provider has finished a turn, so the buffer running dry next is the
+     * expected end of speech and not a network fault.
+     *
+     * Without this the adaptive target ratchets upward across a normal
+     * conversation: every utterance ends, the buffer legitimately empties, and
+     * each of those was charged as an underrun that bought another
+     * [growthStepBytes] of latency. Measured on-device 2026-07-27 — the target
+     * climbed to its 600 ms ceiling within a couple of minutes of idle
+     * conversation, none of it earned by an actual stutter. Recovery could not
+     * undo it either, because giving latency back needs sustained clean audio and
+     * a quiet conversation never supplies any.
+     */
+    fun markTurnEnd() = synchronized(lock) { turnEnded = true }
+
     private fun onUnderrun() {
+        cleanBytes = 0
+        if (turnEnded) {
+            // Expected quiet. Re-arm for the next utterance, but buy nothing:
+            // this is not evidence the network is struggling.
+            draining = false
+            return
+        }
         underruns++
-        cleanRuns = 0
         // Widen the cushion so the next gap is absorbed instead of heard.
         if (targetBytes < maxTargetBytes) {
             targetBytes = minOf(maxTargetBytes, targetBytes + growthStepBytes)
         }
-        // Re-arm: wait for the (now larger) target before resuming, but only
+        // Re-arm: wait for the (now larger) cushion before resuming, but only
         // if nothing is queued. If audio is already waiting we keep playing.
-        if (accumulated < targetBytes) draining = false
+        if (accumulated < armThresholdBytes()) draining = false
     }
 
-    private fun onCleanDrain() {
+    private fun onCleanDrain(bytes: Int) {
         if (targetBytes <= minTargetBytes) return
-        cleanRuns++
-        if (cleanRuns >= recoveryRuns) {
-            cleanRuns = 0
+        cleanBytes += bytes
+        if (cleanBytes >= recoveryBytes) {
+            cleanBytes = 0
             targetBytes = maxOf(minTargetBytes, targetBytes - growthStepBytes)
         }
     }
@@ -127,9 +198,10 @@ class JitterBuffer(
     fun retarget(
         startupBytes: Int,
         minBytes: Int = startupBytes,
-        maxBytes: Int = startupBytes * 6,
-        stepBytes: Int = startupBytes / 2,
-        capBytes: Int = startupBytes * 30,
+        maxBytes: Int = startupBytes * 4,
+        stepBytes: Int = startupBytes / 3,
+        capBytes: Int = startupBytes * 8,
+        recoveryTargetBytes: Int = startupBytes * 60,
     ) = synchronized(lock) {
         val adaptationRatio = if (minTargetBytes > 0) {
             targetBytes.toDouble() / minTargetBytes.toDouble()
@@ -140,15 +212,19 @@ class JitterBuffer(
         maxTargetBytes = maxBytes
         growthStepBytes = stepBytes
         maxBufferedBytes = capBytes
+        recoveryBytes = recoveryTargetBytes
         targetBytes = (minBytes * adaptationRatio).toInt().coerceIn(minBytes, maxBytes)
-        cleanRuns = 0
+        cleanBytes = 0
+        // A chunk's byte size is rate-dependent, so what we learned at the old
+        // rate would misstate one chunk's worth at the new one. Re-learn it.
+        largestChunkBytes = 0
     }
 
     fun clear() = synchronized(lock) {
         queue.clear()
         accumulated = 0
         draining = false
-        cleanRuns = 0
+        cleanBytes = 0
     }
 
     /** Resets adaptation as well as contents. Used when a session ends. */
@@ -156,14 +232,27 @@ class JitterBuffer(
         queue.clear()
         accumulated = 0
         draining = false
-        cleanRuns = 0
+        cleanBytes = 0
         targetBytes = startupBytes
+        largestChunkBytes = 0
+        turnEnded = false
         underruns = 0
         dropped = 0
     }
 
     val pendingBytes: Int get() = synchronized(lock) { accumulated }
 
-    /** Current adaptive target, for diagnostics. */
-    val targetLatencyBytes: Int get() = synchronized(lock) { targetBytes }
+    /**
+     * The cushion actually in force, for diagnostics — the adapted target after
+     * the one-chunk floor is applied, which is what the listener really
+     * experiences. Reporting the raw target would have understated it.
+     */
+    val targetLatencyBytes: Int get() = synchronized(lock) { armThresholdBytes() }
+
+    /**
+     * The raw adapted target, before the one-chunk floor. This is the value the
+     * underrun/recovery logic actually moves; [targetLatencyBytes] is what it
+     * amounts to in practice once the floor applies.
+     */
+    val adaptedTargetBytes: Int get() = synchronized(lock) { targetBytes }
 }

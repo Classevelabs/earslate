@@ -44,9 +44,12 @@ object LiveSessionConfigFactory {
                     targetLanguageCode = targetLanguageCode,
                     echoTargetLanguage = echoTargetLanguage,
                 ),
-                inputAudioTranscription = if (captionsEnabled) JsonObject(emptyMap()) else null,
-                outputAudioTranscription = if (captionsEnabled) JsonObject(emptyMap()) else null,
             ),
+            // Transcription config sits on the setup, one level ABOVE
+            // generationConfig. See ClientSetupPayload for the 1007 close this
+            // caused when it was nested.
+            inputAudioTranscription = if (captionsEnabled) JsonObject(emptyMap()) else null,
+            outputAudioTranscription = if (captionsEnabled) JsonObject(emptyMap()) else null,
         )
         return json.encodeToString(ClientSetupFrame(setup = setup))
     }
