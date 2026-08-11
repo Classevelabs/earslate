@@ -133,7 +133,7 @@ actor LiveTranslationClient {
                 @unknown default: text = nil
                 }
                 if let text {
-                    parse(text: text, onCaption: onCaption, onAudio: onAudio)
+                    parse(text: text, onCaption: onCaption, onAudio: onAudio, onDisconnect: onDisconnect)
                 }
             } catch {
                 if !Task.isCancelled { onDisconnect("The live translation connection was interrupted.") }
@@ -142,10 +142,15 @@ actor LiveTranslationClient {
         }
     }
 
+    /// `onDisconnect` is threaded in because the provider can report a fatal
+    /// error inside an otherwise ordinary message — an OpenAI `error` frame
+    /// ends the session, and the caller has to be told. It was referenced here
+    /// without being a parameter, so this file never compiled.
     private func parse(
         text: String,
         onCaption: @escaping @Sendable (String) -> Void,
-        onAudio: @escaping @Sendable (Data) -> Void
+        onAudio: @escaping @Sendable (Data) -> Void,
+        onDisconnect: @escaping @Sendable (String) -> Void
     ) {
         guard let data = text.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
