@@ -14,7 +14,6 @@ local.properties
 
 # Assistant context files — local-only, never on origin.
 AGENTS.md
-.claude/
 .cursor/
 .cursorrules
 .aider*

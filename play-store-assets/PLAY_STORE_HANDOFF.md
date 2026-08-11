@@ -14,11 +14,11 @@ Package `com.classeve.earslate` · **free, no billing, no accounts** · minSdk 2
 |---|---|
 | Version | **0.3.1 (versionCode 14)** |
 | Status | uploaded to Play **alpha + internal** (2026-07-24, target-API-36 pass) |
-| Artifact | `D:\Claude\release-builds-2026-07-24\earslate-release-vc14-0.3.1-api36.aab` |
+| Artifact | `<workspace>\release-builds-2026-07-24\earslate-release-vc14-0.3.1-api36.aab` |
 | Signing | release keystore, coordinates in `local.properties` (never on repo); `preReleaseBuild` fails closed without them |
 
 Store assets live beside this file in `play-store-assets/`, and duplicates are
-in `D:\Claude\earslate-play-upload\` (icon 512, feature graphic 1024×500,
+in the Play upload asset folder (icon 512, feature graphic 1024×500,
 5 phone screenshots 1080×1920).
 
 ## How the app actually works (this drives every declaration below)
