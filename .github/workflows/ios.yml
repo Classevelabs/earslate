@@ -18,14 +18,19 @@
 name: iOS
 
 on:
+  # macOS runners bill at a 10x minute multiplier. On 2026-08-11 the account's
+  # monthly Actions allowance ran out; prose changes under ios/ no longer buy
+  # a full simulator build.
   push:
     branches: [main]
     paths:
       - "ios/**"
+      - "!ios/**/*.md"
       - ".github/workflows/ios.yml"
   pull_request:
     paths:
       - "ios/**"
+      - "!ios/**/*.md"
       - ".github/workflows/ios.yml"
   workflow_dispatch:
 
