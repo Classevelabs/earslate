@@ -40,6 +40,29 @@ final class TranslationViewModel: ObservableObject {
     private var speakingResetTask: Task<Void, Never>?
     private var manualStop = false
 
+    /// One captured batch of microphone audio, on its way to the socket.
+    private struct AudioBatch: Sendable {
+        let pcm: Data
+        let sampleRate: Int
+    }
+
+    /// The single consumer that puts captured audio on the socket, and the
+    /// handle the audio thread feeds.
+    ///
+    /// Capture used to spawn a detached `Task` per 100 ms batch, all awaiting the
+    /// same actor. Swift makes no FIFO guarantee for independent tasks contending
+    /// on an actor — priority escalation and reentrancy may run them out of
+    /// order — and reordered PCM into a speech translator is garbled output that
+    /// looks like a model fault rather than a client bug. It also allocated a
+    /// task on the audio render thread, where allocation is exactly what you are
+    /// not supposed to do.
+    ///
+    /// One stream and one consumer restores the ordering the wire needs, and
+    /// makes the render-thread side a bounded `yield`. This is the shape Android
+    /// has always had (`pumpFrames` draining per leg); iOS was the odd one out.
+    private var audioPumpTask: Task<Void, Never>?
+    private var audioFeed: AsyncStream<AudioBatch>.Continuation?
+
     init() {
         let savedLanguage = UserDefaults.standard.string(forKey: Self.targetLanguageKey)
         targetLanguage = savedLanguage?.isEmpty == false ? savedLanguage! : "English"
@@ -121,11 +144,50 @@ final class TranslationViewModel: ObservableObject {
                 Task { @MainActor in self?.recoverFromDisconnect(message) }
             }
         )
-        let liveClient = liveClient
-        try capture.start { data, rate in
-            Task { await liveClient.sendAudio(data, sampleRate: rate) }
-        }
+        try startAudioPump()
         state = .listening
+    }
+
+    /// Opens the capture → socket path: one ordered stream, one consumer.
+    private func startAudioPump() throws {
+        stopAudioPump()
+
+        var handle: AsyncStream<AudioBatch>.Continuation!
+        let stream = AsyncStream<AudioBatch>(
+            // ~3 seconds. If the socket stalls longer than that, the oldest
+            // audio is dropped rather than queued: stale speech is worthless to
+            // a live translator, and an unbounded queue would trade a stall for
+            // permanently growing latency.
+            bufferingPolicy: .bufferingNewest(30)
+        ) { handle = $0 }
+        audioFeed = handle
+
+        let client = liveClient
+        audioPumpTask = Task {
+            for await batch in stream {
+                await client.sendAudio(batch.pcm, sampleRate: batch.sampleRate)
+            }
+        }
+
+        // The closure captures only the continuation — never `self`. It runs on
+        // the audio render thread, where hopping to the main actor to read a
+        // property would be both a concurrency violation and a glitch source.
+        let feed = handle!
+        do {
+            try capture.start { pcm, rate in
+                feed.yield(AudioBatch(pcm: pcm, sampleRate: rate))
+            }
+        } catch {
+            stopAudioPump()
+            throw error
+        }
+    }
+
+    private func stopAudioPump() {
+        audioFeed?.finish()
+        audioFeed = nil
+        audioPumpTask?.cancel()
+        audioPumpTask = nil
     }
 
     private func recoverFromDisconnect(_ message: String) {
@@ -141,6 +203,7 @@ final class TranslationViewModel: ObservableObject {
         reconnectTask = Task { [weak self] in
             guard let self else { return }
             capture.stop()
+            stopAudioPump()
             playback.stop()
             await liveClient.close()
             for attempt in 1...4 {
@@ -165,7 +228,9 @@ final class TranslationViewModel: ObservableObject {
     private func cleanupTransport() async {
         speakingResetTask?.cancel()
         speakingResetTask = nil
+        // Capture first, so nothing new is yielded, then close the pump.
         capture.stop()
+        stopAudioPump()
         playback.stop()
         await liveClient.close()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)

@@ -235,7 +235,13 @@ class SessionCoordinator(
         val theirCode = LiveSessionConfigFactory.translateCodeFor(policy.theirLanguage.bcp47)
         stateStore.set(RuntimeState.BOOTSTRAPPING)
         val legs = try {
-            val primary = bootstrapRepository.bootstrap(policy.provider, myCode)
+            // captionsEnabled travels with the credential, not only with the
+            // setup frame below: the Gemini token locks the session config, so
+            // minting for one config and asking for another is a contradiction
+            // the client cannot win.
+            val primary = bootstrapRepository.bootstrap(
+                policy.provider, myCode, policy.captionsEnabled,
+            )
             val specs = mutableListOf(myCode to primary)
             // Gemini's echoTargetLanguage=false supports two simultaneous
             // directions safely. OpenAI's dedicated translation session has
@@ -246,7 +252,9 @@ class SessionCoordinator(
                 primary.provider == TranslationProvider.GEMINI &&
                 !theirCode.equals(myCode, ignoreCase = true)
             ) {
-                specs += theirCode to bootstrapRepository.bootstrap(primary.provider, theirCode)
+                specs += theirCode to bootstrapRepository.bootstrap(
+                    primary.provider, theirCode, policy.captionsEnabled,
+                )
             }
             specs.map { (targetCode, bootstrap) ->
                 Leg(targetCode, bootstrap, TranslationLiveProtocols.forProvider(bootstrap.provider), socketFactory())

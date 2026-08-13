@@ -239,12 +239,13 @@ class MainActivity : ComponentActivity() {
     /**
      * Prominent in-app disclosure (Google Play User Data policy): names the
      * third parties that can receive audio (Gemini or OpenAI — resolved per
-     * session from the keys the user has supplied), the data (microphone audio), the purpose (live
-     * translation), and retention, gated behind an explicit "I agree". Shown
-     * before the FIRST capture on any entry point; the choice persists.
+     * session from the keys the user has supplied), the data (microphone audio),
+     * the purpose (live translation), and retention, gated behind an explicit
+     * "I agree". Shown before the FIRST capture on any entry point; the choice
+     * persists.
      *
      * The wording lives in `R.string.audio_disclosure_body`. If the set of
-     * set of providers the app can mint against ever changes, that string and the Play
+     * providers the app can mint against ever changes, that string and the Play
      * Data safety declaration must change with it.
      */
     private fun showAudioEgressDisclosure() {
