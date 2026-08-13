@@ -25,6 +25,12 @@ final class TranslationViewModel: ObservableObject {
         "Japanese": "ja", "Arabic": "ar",
     ]
 
+    /// True while no provider key is stored, so the app can show setup instead
+    /// of a Start button that could only ever fail. Nothing here reads or
+    /// publishes the key itself.
+    @Published private(set) var needsKey: Bool
+
+    private let keys = ProviderKeyStore()
     private let bootstrapClient = BootstrapClient()
     private let liveClient = LiveTranslationClient()
     private let capture = AudioCapture()
@@ -40,6 +46,15 @@ final class TranslationViewModel: ObservableObject {
         provider = TranslationProvider(
             rawValue: UserDefaults.standard.string(forKey: Self.providerKey) ?? "auto"
         ) ?? .automatic
+        needsKey = !ProviderKeyStore().hasAnyKey
+    }
+
+    /// Re-read whether a key exists. Called after setup completes, and on
+    /// foreground — the Keychain can be emptied from outside this process
+    /// (a restore onto a new device carries no `ThisDeviceOnly` item), and a
+    /// Start button that cannot work is the "UI lying while failing" pattern.
+    func refreshKeyState() {
+        needsKey = !keys.hasAnyKey
     }
 
     func start() {
@@ -48,6 +63,14 @@ final class TranslationViewModel: ObservableObject {
             return
         case .idle, .failed:
             break
+        }
+        // Belt and braces with the view's needsKey gate: the tile-less iOS app
+        // has one entry point today, but a future one (Shortcuts, a widget)
+        // must not be able to open the mic for a session that cannot mint.
+        refreshKeyState()
+        if needsKey {
+            errorMessage = BootstrapClient.missingKey(provider).message
+            return
         }
         manualStop = false
         errorMessage = nil

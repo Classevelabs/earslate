@@ -15,17 +15,33 @@ enum TranslationProvider: String, Codable, CaseIterable, Identifiable, Sendable 
     }
 }
 
-struct BootstrapResponse: Decodable, Sendable {
-    let provider: TranslationProvider
+/// Everything needed to open one provider socket.
+///
+/// This was `BootstrapResponse`, a `Decodable` of the JSON the ClassEve session
+/// broker returned. There is no broker and no JSON: the values are produced
+/// on-device by `ProviderSessionMinter` from the user's own API key, so the
+/// snake_case `CodingKeys` and the `Decodable` conformance went with it. A type
+/// that still knew how to decode a server response would be the last thread
+/// tying the app to an endpoint that returns 404.
+struct SessionBootstrap: Sendable {
     let credential: String
+    let provider: TranslationProvider
     let wssURL: String
-    let expiresAt: String?
     let model: String
+    let expiresAt: String?
 
-    enum CodingKeys: String, CodingKey {
-        case provider, credential, model
-        case wssURL = "wss_url"
-        case expiresAt = "expires_at"
+    init(
+        credential: String,
+        provider: TranslationProvider,
+        wssURL: String,
+        model: String,
+        expiresAt: String? = nil
+    ) {
+        self.credential = credential
+        self.provider = provider
+        self.wssURL = wssURL
+        self.model = model
+        self.expiresAt = expiresAt
     }
 }
 

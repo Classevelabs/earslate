@@ -2,8 +2,25 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject private var model: TranslationViewModel
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
+        Group {
+            if model.needsKey {
+                // No key means no session is possible. Showing the normal
+                // screen with a live-looking Start button would be a UI that
+                // lies: it can only ever produce an error.
+                KeySetupView { model.refreshKeyState() }
+            } else {
+                translator
+            }
+        }
+        .onChange(of: scenePhase) { phase in
+            if phase == .active { model.refreshKeyState() }
+        }
+    }
+
+    private var translator: some View {
         ZStack {
             BrandColor.ink.ignoresSafeArea()
 

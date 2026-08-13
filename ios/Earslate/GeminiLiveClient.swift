@@ -8,7 +8,7 @@ actor LiveTranslationClient {
     private let session = URLSession(configuration: .default)
 
     func connect(
-        bootstrap: BootstrapResponse,
+        bootstrap: SessionBootstrap,
         targetLanguage: String,
         onCaption: @escaping @Sendable (String) -> Void,
         onAudio: @escaping @Sendable (Data) -> Void,
