@@ -77,12 +77,48 @@ class AndroidAudioPlaybackEngine(
 
     private val bytesPerSample = 2
 
-    private val buffer = JitterBuffer(
-        startupBytes = startupBytesFor(defaultSampleRateHz),
-        maxTargetBytes = bytesFor(defaultSampleRateHz, MAX_LATENCY_MS),
-        growthStepBytes = bytesFor(defaultSampleRateHz, GROWTH_STEP_MS),
-        maxBufferedBytes = bytesFor(defaultSampleRateHz, MAX_BACKLOG_MS),
-        recoveryBytes = bytesFor(defaultSampleRateHz, RECOVERY_QUIET_MS),
+    /**
+     * The jitter buffer belongs to exactly ONE playback session and is replaced
+     * wholesale by [start].
+     *
+     * It used to be a single instance shared by every session for the life of
+     * the process, and that was a real defect on the reconnect path — the one
+     * path that only runs when the user is already suffering. A graceful [stop]
+     * hands the tail to a coroutine that drains for up to [DRAIN_TIMEOUT_MS] and
+     * then calls `clear()`. Reconnect attempt 1 has a 0 ms backoff, so the next
+     * session could call [start] — and begin enqueuing real audio — while that
+     * coroutine was still running. It then cleared the NEW session's buffer out
+     * from under it.
+     *
+     * Ownership, not timing, is the fix: a departing session drains the buffer
+     * it owns, and a fresh one is constructed here for the arriving session, so
+     * a stale coroutine cannot reach live audio no matter how the two overlap.
+     */
+    @Volatile private var buffer: JitterBuffer = newBuffer(defaultSampleRateHz)
+
+    /** Guards session handover: [start] and [stop] must never interleave. */
+    private val sessionLock = Any()
+
+    /**
+     * The graceful tail-drain of the PREVIOUS session, if one is still playing
+     * out. [start] settles it before building a new track — see
+     * [finishPendingDrain].
+     */
+    @Volatile private var drainJob: Job? = null
+
+    /**
+     * The track owned by [drainJob] while a tail is playing out. Read and
+     * written only under [sessionLock], so exactly one of the drain coroutine
+     * and [finishPendingDrain] can ever release it.
+     */
+    private var drainingTrack: AudioTrack? = null
+
+    private fun newBuffer(rate: Int) = JitterBuffer(
+        startupBytes = startupBytesFor(rate),
+        maxTargetBytes = bytesFor(rate, MAX_LATENCY_MS),
+        growthStepBytes = bytesFor(rate, GROWTH_STEP_MS),
+        maxBufferedBytes = bytesFor(rate, MAX_BACKLOG_MS),
+        recoveryBytes = bytesFor(rate, RECOVERY_QUIET_MS),
     )
 
     /**
@@ -163,16 +199,30 @@ class AndroidAudioPlaybackEngine(
         return true
     }
 
-    override fun start(audioSessionId: Int) {
+    override fun start(audioSessionId: Int): Unit = synchronized(sessionLock) {
         if (track != null) {
             Log.i(TAG, "start called while already running; ignoring")
             return
         }
+        // A previous session's tail may still be playing out. Once a NEW session
+        // is starting, that tail is no longer wanted: on reconnect it would be
+        // the dead session's last words layered underneath the live one, on two
+        // AudioTracks at once. Settle it before building anything.
+        finishPendingDrain()
+
         sessionId = audioSessionId
-        buffer.reset(startupBytesFor(defaultSampleRateHz))
+        // A brand-new buffer, not a reset of the old one: see the field KDoc.
+        // Reset would have left a departing drain coroutine holding a reference
+        // to the very object this session is about to fill.
+        val sessionBuffer = newBuffer(defaultSampleRateHz)
+        buffer = sessionBuffer
         if (!buildAndPlay(defaultSampleRateHz, audioSessionId)) return
 
         loopJob = scope.launch {
+            // Bound to THIS session's buffer for the whole loop. Re-reading the
+            // field each tick would let a late-arriving session's buffer be
+            // drained by the outgoing session's loop.
+            val buffer = sessionBuffer
             while (isActive) {
                 // Park during a rate rebuild rather than spinning on `continue`,
                 // and crucially without touching the buffer — audio pulled here
@@ -227,8 +277,11 @@ class AndroidAudioPlaybackEngine(
         buffer.enqueue(pcm)
     }
 
-    @Synchronized
-    private fun maybeRebuildForRate(rate: Int) {
+    // Shares [sessionLock] with start/stop rather than locking on `this`: a
+    // mid-stream rebuild swaps the same track and buffer fields that a session
+    // handover does, and two different monitors guarding one piece of state is
+    // not mutual exclusion.
+    private fun maybeRebuildForRate(rate: Int): Unit = synchronized(sessionLock) {
         if (track == null || rate <= 0 || rate == activeRateHz) return
         Log.i(TAG, "playback rate $activeRateHz → $rate; rebuilding AudioTrack")
         rebuilding = true
@@ -271,7 +324,7 @@ class AndroidAudioPlaybackEngine(
      * drain the jitter buffer into the track, call `stop()` (which plays out
      * what the track already holds), and only then release.
      */
-    override fun stop(graceful: Boolean) {
+    override fun stop(graceful: Boolean): Unit = synchronized(sessionLock) {
         loopJob?.cancel()
         loopJob = null
         val active = track
@@ -279,8 +332,13 @@ class AndroidAudioPlaybackEngine(
         activeRateHz = 0
         rebuilding = false
 
+        // The departing session's buffer, captured by reference. Everything
+        // below touches only this one, never the field, so a session that
+        // starts while the tail is still draining is untouched by it.
+        val departing = buffer
+
         if (active == null) {
-            buffer.clear()
+            departing.clear()
             return
         }
 
@@ -290,27 +348,61 @@ class AndroidAudioPlaybackEngine(
                 active.flush()
                 active.release()
             }
-            buffer.clear()
+            departing.clear()
             return
         }
 
         // Play the tail out on the IO scope so the caller — usually the main
         // thread stopping a session — is never blocked waiting for audio.
-        scope.launch {
+        drainingTrack = active
+        drainJob = scope.launch {
             withTimeoutOrNull(DRAIN_TIMEOUT_MS) {
-                while (buffer.pendingBytes > 0) {
-                    val chunk = buffer.drain() ?: break
+                while (departing.pendingBytes > 0) {
+                    val chunk = departing.drain() ?: break
                     active.write(chunk, 0, chunk.size, AudioTrack.WRITE_BLOCKING)
                 }
             }
-            runCatching {
-                // stop() lets the track's own buffer finish. Deliberately no
-                // flush(): flushing discards exactly the audio stop() is
-                // draining, which is what used to clip the final word.
-                active.stop()
-                active.release()
+            // Cancellation cannot interrupt the release below (there is no
+            // suspension point in it), so ownership is settled under the lock:
+            // whichever of this coroutine and finishPendingDrain arrives first
+            // releases the track, and the other finds null and does nothing.
+            synchronized(sessionLock) {
+                if (drainingTrack === active) {
+                    runCatching {
+                        // stop() lets the track's own buffer finish. Deliberately
+                        // no flush(): flushing discards exactly the audio stop()
+                        // is draining, which is what used to clip the final word.
+                        active.stop()
+                        active.release()
+                    }
+                    drainingTrack = null
+                }
             }
-            buffer.clear()
+            departing.clear()
+        }
+    }
+
+    /**
+     * Settle a still-running graceful drain from a previous session.
+     *
+     * Called only from [start], under [sessionLock]. Cancelling the coroutine
+     * can leave the old [AudioTrack] alive and playing, so the track is released
+     * here explicitly rather than left to a coroutine that is no longer running
+     * — the leak that would otherwise put two tracks on the speaker at once
+     * during a reconnect.
+     */
+    private fun finishPendingDrain() {
+        val pending = drainJob ?: return
+        drainJob = null
+        if (!pending.isActive) return
+        Log.i(TAG, "new session starting; discarding previous tail")
+        pending.cancel()
+        val orphan = drainingTrack
+        drainingTrack = null
+        runCatching {
+            orphan?.pause()
+            orphan?.flush()
+            orphan?.release()
         }
     }
 

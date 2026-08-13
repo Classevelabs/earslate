@@ -9,7 +9,21 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!--
+      No BLUETOOTH_CONNECT. Bluetooth earbuds are the intended output route, so
+      it looks like it belongs here, but nothing in the app calls a Bluetooth
+      API: AudioDeviceMonitor reads AudioDeviceInfo.getType() through
+      AudioManager.getDevices(), which is unrestricted, and playback reaches
+      A2DP through normal media routing. Only reading a Bluetooth device's NAME
+      would need the permission, and no screen shows one.
+
+      It was requested at runtime on API 31+ for two releases. A permission a
+      user must decide about, for a capability the app does not exercise, costs
+      trust at the exact moment the app is asking to hear them — and it is a
+      Play data-safety line item for nothing. Do not re-add it without a call
+      site.
+    -->
 
     <application
         android:name=".EarslateApplication"

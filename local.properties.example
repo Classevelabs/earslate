@@ -2,17 +2,28 @@
 sdk.dir=/path/to/android-sdk
 
 # ──────────────────────────────────────────────────────────────────────
-# Optional public session-broker origin. Provider keys are Worker secrets and
-# must never be placed in local.properties or BuildConfig.
+# There is no service URL to configure.
+#
+# This file used to document EARSLATE_WORKER_URL, pointing at a session broker
+# on api.classeve.com. That broker was removed in 0.4.0 and its route now 404s:
+# earslate mints session credentials on-device from the user's own provider key
+# and has no backend of any kind. A debug build needs nothing here but sdk.dir.
 # ──────────────────────────────────────────────────────────────────────
-EARSLATE_WORKER_URL=https://api.classeve.com
 
 # ──────────────────────────────────────────────────────────────────────
 # Release signing.
 #
 # All four properties must be set to produce a Play-uploadable release APK.
-# If any are missing, build.gradle.kts falls back to the debug keystore (so
-# engineers can still iterate locally) and prints a configure-time warning.
+# There is NO fallback: the `verifyReleaseSigning` task fails the build when any
+# of them is missing or when the keystore file does not exist. (This file
+# previously claimed the build falls back to the debug keystore. It does not,
+# and has not since that task was added — a debug-signed artifact that looks
+# like a release is exactly what fail-closed exists to prevent.)
+#
+# The keystore must be the shared brand keystore, whose DN is
+# `CN=<App>, O=ClassEve, C=IN` and nothing else. `verifyReleaseIdentity` runs
+# after every assembleRelease and fails the build on any other DN, or on entity
+# strings anywhere in the APK's raw bytes.
 #
 # Generate the keystore once with:
 #

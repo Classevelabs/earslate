@@ -157,6 +157,21 @@ class AndroidAudioCaptureEngine(
                 }
             } finally {
                 flushBatch()
+                // The capture loop owns the AudioRecord's teardown, and is the
+                // ONLY place that releases it.
+                //
+                // stop() used to release from the caller's thread while this
+                // coroutine could still be parked inside the blocking
+                // rec.read() below. Cancelling a coroutine does not interrupt a
+                // blocking native call, so the two raced: release() freeing the
+                // native object under an in-flight read is undefined, and
+                // presents as an IllegalStateException or a native crash inside
+                // AudioRecord — from a thread with no handler, so it takes the
+                // process with it. Releasing here means the read has provably
+                // returned before the object is freed, which removes the race
+                // rather than narrowing its window.
+                runCatching { rec.stop() }
+                runCatching { rec.release() }
             }
         }
 
@@ -164,13 +179,16 @@ class AndroidAudioCaptureEngine(
     }
 
     override fun stop() {
-        loopJob?.cancel()
+        val job = loopJob
         loopJob = null
-        record?.let {
-            runCatching { it.stop() }
-            runCatching { it.release() }
-        }
+        val rec = record
         record = null
+        // stop() is safe to call from another thread while a read is blocked —
+        // it is what makes that read return — so the loop can observe
+        // cancellation promptly. release() is NOT safe that way, and is left to
+        // the loop's own finally above.
+        runCatching { rec?.stop() }
+        job?.cancel()
     }
 
     companion object {

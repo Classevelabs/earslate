@@ -55,6 +55,32 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The iOS client still mints its session credential from
+      # POST https://api.classeve.com/v1/earslate/session. That route was
+      # deleted when Android moved to bring-your-own-key in 0.4.0 — the Worker
+      # source has no earslate handler left and migration 00052 removed the
+      # product entirely — so the endpoint answers 404 and this app cannot start
+      # a single session.
+      #
+      # Everything below this step passed the whole time: the wire-format tests
+      # assert the SHAPE of the setup frame, and the build proves it compiles.
+      # Neither has any opinion about whether the credential source exists, so
+      # CI reported green on an app that is architecturally dead. A green check
+      # that certifies a dead app is worse than a red one, because it stops
+      # anybody looking.
+      #
+      # This step fails until iOS is ported to on-device minting (mirroring
+      # Android's ProviderSessionMinter + a Keychain-backed key store). Delete
+      # it in the same commit that lands the port.
+      - name: Reject the deleted broker endpoint
+        run: |
+          if grep -rn "v1/earslate/session\|api\.classeve\.com" --include=*.swift . ; then
+            echo "::error::iOS still targets the removed ClassEve session broker (404). \
+          Port to on-device key minting before this can build meaningfully."
+            exit 1
+          fi
+          echo "no broker references remain"
+
       - name: Show Xcode version
         run: xcodebuild -version
 

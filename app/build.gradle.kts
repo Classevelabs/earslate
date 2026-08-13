@@ -44,8 +44,13 @@ android {
         applicationId = "com.classeve.earslate"
         minSdk = 29
         targetSdk = 36
-        versionCode = 18
-        versionName = "0.4.3"
+        // 0.4.4 — brand signing certificate (the 0.4.3 cert leaked the legal
+        // entity, city and state into every APK), BLUETOOTH_CONNECT removed,
+        // two audio-teardown races fixed. The certificate change alone requires
+        // a new version: an install signed by the old key cannot take this one
+        // as an update.
+        versionCode = 19
+        versionName = "0.4.4"
 
         vectorDrawables.useSupportLibrary = true
     }
@@ -139,6 +144,118 @@ val verifyReleaseSigning by tasks.registering {
 
 tasks.matching { it.name == "preReleaseBuild" }.configureEach {
     dependsOn(verifyReleaseSigning)
+}
+
+/**
+ * Fails the build if a release APK carries the legal entity, a city, or a state.
+ *
+ * This exists because the check did not, and the omission shipped. Up to
+ * 0.4.3 the release keystore's DN was
+ *   CN=Earslate, OU=ClassEve, O=ClassEve, L=REDACTED, ST=REDACTED, C=IN
+ * so every published APK — including the one served from classeve.com — had the
+ * registered company name, the city and the state in its bytes, against
+ * INTERNAL-RULES §2.
+ *
+ * It survived because the obvious checks all report CLEAN on a dirty APK: the
+ * DN is DER-encoded inside the v2 signing block, and these builds carry no v1
+ * signature, so `strings` finds nothing and `keytool -printcert -jarfile`
+ * has no JAR signature to read.
+ *
+ * Two assertions, because either alone has a hole:
+ *  1. The signer DN must equal [ALLOWED_DN] EXACTLY. Checking the DN rather
+ *     than grepping for city names is what makes this precise — "REDACTED" is
+ *     also the stem of "Punjabi", and the day that language is added to
+ *     SupportedLanguages a substring scan would fail an innocent build.
+ *  2. A raw-byte scan for entity strings that can never be legitimate,
+ *     catching a leak that arrives through some path other than the
+ *     certificate.
+ *
+ * Fails closed: if apksigner cannot be found or run, that is a failure, not a
+ * skip. A gate that quietly does nothing is worse than no gate, because it
+ * reads as proof.
+ */
+val verifyReleaseIdentity by tasks.registering {
+    group = "verification"
+    description = "Fails if the release APK leaks the legal entity, a city, or a state."
+
+    val apkDir = layout.buildDirectory.dir("outputs/apk/release")
+    val sdkDir = localProperties.getProperty("sdk.dir")
+
+    doLast {
+        val allowedDn = "CN=Earslate, O=ClassEve, C=IN"
+        // Strings that are never legitimate in a shipped artifact. Deliberately
+        // NOT bare city/state words — see the KDoc.
+        val forbiddenSubstrings = listOf(
+            "REDACTED",
+            "Pvt Ltd",
+            "Pvt. Ltd",
+            "REDACTED",
+            "Bengaluru",
+        )
+
+        val apks = apkDir.get().asFile.listFiles { f: File -> f.name.endsWith(".apk") }
+            ?.sortedBy { it.name }
+            .orEmpty()
+        if (apks.isEmpty()) {
+            throw GradleException("verifyReleaseIdentity: no release APK found in ${apkDir.get().asFile}")
+        }
+
+        val sdk = sdkDir?.let(::File)
+            ?: throw GradleException("verifyReleaseIdentity: sdk.dir is not set in local.properties")
+        val apksignerJar = File(sdk, "build-tools").listFiles()
+            ?.filter { it.isDirectory }
+            ?.sortedBy { it.name }
+            ?.reversed()
+            ?.map { File(it, "lib/apksigner.jar") }
+            ?.firstOrNull { it.isFile }
+            ?: throw GradleException(
+                "verifyReleaseIdentity: apksigner.jar not found under ${File(sdk, "build-tools")}. " +
+                    "The identity gate fails closed rather than skipping.",
+            )
+
+        for (apk in apks) {
+            // 1. Exact signer DN.
+            val process = ProcessBuilder(
+                "java", "-jar", apksignerJar.absolutePath,
+                "verify", "--print-certs", apk.absolutePath,
+            ).redirectErrorStream(true).start()
+            val output = process.inputStream.bufferedReader().readText()
+            if (process.waitFor() != 0) {
+                throw GradleException("verifyReleaseIdentity: apksigner failed on ${apk.name}:\n$output")
+            }
+            val dnLine = output.lineSequence()
+                .firstOrNull { it.contains("certificate DN:") }
+                ?: throw GradleException(
+                    "verifyReleaseIdentity: apksigner printed no certificate DN for ${apk.name}:\n$output",
+                )
+            val dn = dnLine.substringAfter("certificate DN:").trim()
+            if (dn != allowedDn) {
+                throw GradleException(
+                    "verifyReleaseIdentity: ${apk.name} is signed with a non-brand certificate.\n" +
+                        "  expected: $allowedDn\n" +
+                        "  actual:   $dn\n" +
+                        "INTERNAL-RULES §2: no OU, no O beyond 'ClassEve', no L, no ST.",
+                )
+            }
+
+            // 2. Raw bytes, because a certificate is not the only way to leak.
+            val bytes = apk.readBytes()
+            val haystack = String(bytes, Charsets.ISO_8859_1)
+            val hits = forbiddenSubstrings.filter { haystack.contains(it) }
+            if (hits.isNotEmpty()) {
+                throw GradleException(
+                    "verifyReleaseIdentity: ${apk.name} contains forbidden identity strings: " +
+                        hits.joinToString() + " (INTERNAL-RULES §2)",
+                )
+            }
+            // ASCII only: CI log encodings mangle anything else.
+            logger.lifecycle("verifyReleaseIdentity: ${apk.name} - DN clean, raw bytes clean")
+        }
+    }
+}
+
+tasks.matching { it.name == "assembleRelease" }.configureEach {
+    finalizedBy(verifyReleaseIdentity)
 }
 
 dependencies {

@@ -219,10 +219,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun proceedStart() {
+        // Only what the app actually exercises. BLUETOOTH_CONNECT used to be
+        // requested here on API 31+ and was never called for — see the note in
+        // AndroidManifest.xml.
         val needed = buildList {
             add(Manifest.permission.RECORD_AUDIO)
             if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
-            if (Build.VERSION.SDK_INT >= 31) add(Manifest.permission.BLUETOOTH_CONNECT)
         }
         val missing = needed.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
