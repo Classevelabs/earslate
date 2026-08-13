@@ -13,6 +13,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Owns the translated-audio playback path.
@@ -108,11 +109,15 @@ class AndroidAudioPlaybackEngine(
     @Volatile private var drainJob: Job? = null
 
     /**
-     * The track owned by [drainJob] while a tail is playing out. Read and
-     * written only under [sessionLock], so exactly one of the drain coroutine
-     * and [finishPendingDrain] can ever release it.
+     * The track owned by [drainJob] while a tail is playing out.
+     *
+     * Atomic rather than lock-guarded on purpose. The drain coroutine releases
+     * this from its own `finally`, and [finishPendingDrain] may run while that
+     * coroutine is mid-flight; if both went through [sessionLock] — which
+     * [finishPendingDrain] already holds via [start] — they would deadlock.
+     * A compare-and-set makes the release happen exactly once with no lock.
      */
-    private var drainingTrack: AudioTrack? = null
+    private val drainingTrack = AtomicReference<AudioTrack?>(null)
 
     private fun newBuffer(rate: Int) = JitterBuffer(
         startupBytes = startupBytesFor(rate),
@@ -353,8 +358,9 @@ class AndroidAudioPlaybackEngine(
         // Both paths tear down on the IO scope so the caller — usually the main
         // thread stopping a session — is never blocked waiting for audio, and
         // so both can join the loop before releasing.
-        drainingTrack = active
+        drainingTrack.set(active)
         drainJob = scope.launch {
+            try {
             if (!graceful) {
                 // pause() makes an in-flight WRITE_BLOCKING return promptly.
                 runCatching { active.pause() }
@@ -378,8 +384,20 @@ class AndroidAudioPlaybackEngine(
             // suspension point in it), so ownership is settled under the lock:
             // whichever of this coroutine and finishPendingDrain arrives first
             // releases the track, and the other finds null and does nothing.
-            synchronized(sessionLock) {
-                if (drainingTrack === active) {
+            } finally {
+                // This coroutine ALWAYS releases its own track, cancelled or
+                // not: a `finally` body has no suspension point, so
+                // cancellation cannot skip it, and by the time control reaches
+                // here any in-flight write has returned.
+                //
+                // finishPendingDrain used to cancel this coroutine and release
+                // the track itself, which is not the same thing at all —
+                // cancelling does not interrupt a blocking native write, so the
+                // track was freed underneath one. On an emulator that is
+                // "IllegalStateException: Unable to retrieve AudioTrack pointer
+                // for write()" from a thread with no handler, taking the
+                // process with it. Found by AudioTeardownTest, not by reading.
+                if (drainingTrack.compareAndSet(active, null)) {
                     runCatching {
                         // stop() lets the track's own buffer finish. Deliberately
                         // no flush() on the graceful path: flushing discards
@@ -388,10 +406,9 @@ class AndroidAudioPlaybackEngine(
                         if (graceful) active.stop()
                         active.release()
                     }
-                    drainingTrack = null
                 }
+                departing.clear()
             }
-            departing.clear()
         }
     }
 
@@ -407,16 +424,22 @@ class AndroidAudioPlaybackEngine(
     private fun finishPendingDrain() {
         val pending = drainJob ?: return
         drainJob = null
-        if (!pending.isActive) return
-        Log.i(TAG, "new session starting; discarding previous tail")
-        pending.cancel()
-        val orphan = drainingTrack
-        drainingTrack = null
-        runCatching {
-            orphan?.pause()
-            orphan?.flush()
-            orphan?.release()
+        if (!pending.isActive) {
+            // Already finished, so its finally has already released. Backstop
+            // in case it completed exceptionally before reaching the release.
+            drainingTrack.getAndSet(null)?.let { runCatching { it.release() } }
+            return
         }
+        Log.i(TAG, "new session starting; discarding previous tail")
+        // Cancel only. The track is NOT released here: the drain coroutine's
+        // finally owns that, and it runs only once any in-flight write has
+        // returned. Releasing from this side is what crashed the process.
+        //
+        // The cost is that the outgoing tail may overlap the new track for the
+        // length of one write — tens of milliseconds — which is a far better
+        // trade than a native crash, and pause() below cuts it short.
+        runCatching { drainingTrack.get()?.pause() }
+        pending.cancel()
     }
 
     override fun snapshot(): PlaybackSnapshot {

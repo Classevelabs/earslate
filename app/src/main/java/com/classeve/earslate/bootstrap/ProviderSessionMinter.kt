@@ -1,5 +1,6 @@
 package com.classeve.earslate.bootstrap
 
+import com.classeve.earslate.live.LiveSessionConfigFactory
 import com.classeve.earslate.security.KeyProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -44,20 +45,33 @@ class ProviderSessionMinter(
     private val installId: String,
 ) {
 
+    /**
+     * @param captionsEnabled must be the SAME value the session's setup frame
+     *   will be built with. The token locks the session configuration, so a
+     *   token minted with transcription enabled and a setup frame that omits it
+     *   describe two different sessions. Both are now built by
+     *   [LiveSessionConfigFactory] from this one flag; see
+     *   `GeminiSessionSetupParityTest`.
+     */
     suspend fun mint(
         provider: KeyProvider,
         apiKey: String,
         targetLanguageCode: String,
+        captionsEnabled: Boolean,
     ): SessionBootstrap = withContext(Dispatchers.IO) {
         val language = LanguageCodes.normalize(targetLanguageCode)
             ?: throw BootstrapException("Choose a supported target language.")
         when (provider) {
-            KeyProvider.GEMINI -> mintGemini(apiKey, language)
+            KeyProvider.GEMINI -> mintGemini(apiKey, language, captionsEnabled)
             KeyProvider.OPENAI -> mintOpenAI(apiKey, language)
         }
     }
 
-    private fun mintGemini(apiKey: String, language: String): SessionBootstrap {
+    private fun mintGemini(
+        apiKey: String,
+        language: String,
+        captionsEnabled: Boolean,
+    ): SessionBootstrap {
         val now = System.currentTimeMillis()
         val expiresAt = iso8601(now + 30 * 60_000L)
         val newSessionExpiresAt = iso8601(now + 60_000L)
@@ -72,24 +86,23 @@ class ProviderSessionMinter(
         //  2. inputAudioTranscription / outputAudioTranscription belong to
         //     bidiGenerateContentSetup, NOT to generationConfig. translationConfig
         //     is the opposite — it lives inside generationConfig.
-        val setup = JSONObject()
-            .put("model", "models/$GEMINI_MODEL")
-            .put(
-                "generationConfig",
-                JSONObject()
-                    .put("responseModalities", org.json.JSONArray().put("AUDIO"))
-                    .put(
-                        "translationConfig",
-                        JSONObject()
-                            .put("targetLanguageCode", language)
-                            // Silence this leg when the speaker is already
-                            // speaking the target language. It is what lets two
-                            // legs run at once without talking over each other.
-                            .put("echoTargetLanguage", false),
-                    ),
-            )
-            .put("inputAudioTranscription", JSONObject())
-            .put("outputAudioTranscription", JSONObject())
+        //
+        // This object is NOT built here any more. It is the same session setup
+        // the client sends once the socket opens, and building it twice is what
+        // let the two drift: the copy that used to live here always carried
+        // transcription, while the client's copy omitted it with captions off.
+        // Embed, never re-describe.
+        val setup = JSONObject(
+            LiveSessionConfigFactory.buildTokenSessionSetup(
+                model = GEMINI_MODEL,
+                targetLanguageCode = language,
+                // Silence this leg when the speaker is already speaking the
+                // target language. It is what lets two legs run at once without
+                // talking over each other.
+                echoTargetLanguage = false,
+                captionsEnabled = captionsEnabled,
+            ),
+        )
 
         val body = JSONObject()
             .put("uses", 1)

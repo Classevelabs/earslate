@@ -53,6 +53,12 @@ android {
         versionName = "0.4.4"
 
         vectorDrawables.useSupportLibrary = true
+
+        // The audio teardown paths cannot be covered by JVM unit tests:
+        // AudioTrack and AudioRecord are stubs off-device, so the two races
+        // fixed in 0.4.4 were reasoning-verified only. These run on a device or
+        // emulator and exercise the real framework objects.
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -290,4 +296,9 @@ dependencies {
     // "not mocked". The real implementation lets us assert the exact JSON we
     // send to a provider without needing a device.
     testImplementation("org.json:json:20240303")
+
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:rules:1.6.1")
+    androidTestImplementation(libs.kotlinx.coroutines.test)
 }
