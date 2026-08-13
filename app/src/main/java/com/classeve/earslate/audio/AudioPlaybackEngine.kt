@@ -24,8 +24,9 @@ import kotlinx.coroutines.withTimeoutOrNull
  *     clarity. No hardware AEC coupling: capture deliberately takes raw ambient
  *     audio, and echo is handled by the half-duplex mic gate in the session
  *     coordinator rather than by the platform reference mix.
- *   - An adaptive [JitterBuffer] that starts at 40 ms and only buys more
- *     latency when the network makes it necessary.
+ *   - An adaptive [JitterBuffer] starting at [startupLatencyMs] that only buys
+ *     more latency when the network makes it necessary. (This said 40 ms long
+ *     after the floor was raised to 180 ms for the reason documented there.)
  *   - A genuinely graceful stop that lets the last word finish.
  */
 interface AudioPlaybackEngine {
@@ -325,7 +326,14 @@ class AndroidAudioPlaybackEngine(
      * what the track already holds), and only then release.
      */
     override fun stop(graceful: Boolean): Unit = synchronized(sessionLock) {
-        loopJob?.cancel()
+        // Kept so teardown can JOIN it. Cancelling is not enough: the loop
+        // writes with AudioTrack.WRITE_BLOCKING, and cancellation does not
+        // interrupt a blocking native call — the coroutine only notices at its
+        // next suspension point. Releasing the track while that write is still
+        // inside the framework is the same use-after-free that AudioRecord had
+        // on the capture side, and it crashes from a thread with no handler.
+        val loop = loopJob
+        loop?.cancel()
         loopJob = null
         val active = track
         track = null
@@ -342,25 +350,29 @@ class AndroidAudioPlaybackEngine(
             return
         }
 
-        if (!graceful) {
-            runCatching {
-                active.pause()
-                active.flush()
-                active.release()
-            }
-            departing.clear()
-            return
-        }
-
-        // Play the tail out on the IO scope so the caller — usually the main
-        // thread stopping a session — is never blocked waiting for audio.
+        // Both paths tear down on the IO scope so the caller — usually the main
+        // thread stopping a session — is never blocked waiting for audio, and
+        // so both can join the loop before releasing.
         drainingTrack = active
         drainJob = scope.launch {
-            withTimeoutOrNull(DRAIN_TIMEOUT_MS) {
-                while (departing.pendingBytes > 0) {
-                    val chunk = departing.drain() ?: break
-                    active.write(chunk, 0, chunk.size, AudioTrack.WRITE_BLOCKING)
+            if (!graceful) {
+                // pause() makes an in-flight WRITE_BLOCKING return promptly.
+                runCatching { active.pause() }
+            }
+            // The write has provably returned once this join completes. Bounded
+            // because a wedged framework call must not strand the track
+            // forever; the timeout is far longer than a write of one chunk.
+            withTimeoutOrNull(LOOP_JOIN_TIMEOUT_MS) { loop?.join() }
+
+            if (graceful) {
+                withTimeoutOrNull(DRAIN_TIMEOUT_MS) {
+                    while (departing.pendingBytes > 0) {
+                        val chunk = departing.drain() ?: break
+                        active.write(chunk, 0, chunk.size, AudioTrack.WRITE_BLOCKING)
+                    }
                 }
+            } else {
+                runCatching { active.flush() }
             }
             // Cancellation cannot interrupt the release below (there is no
             // suspension point in it), so ownership is settled under the lock:
@@ -370,9 +382,10 @@ class AndroidAudioPlaybackEngine(
                 if (drainingTrack === active) {
                     runCatching {
                         // stop() lets the track's own buffer finish. Deliberately
-                        // no flush(): flushing discards exactly the audio stop()
-                        // is draining, which is what used to clip the final word.
-                        active.stop()
+                        // no flush() on the graceful path: flushing discards
+                        // exactly the audio stop() is draining, which is what
+                        // used to clip the final word.
+                        if (graceful) active.stop()
                         active.release()
                     }
                     drainingTrack = null
@@ -468,5 +481,12 @@ class AndroidAudioPlaybackEngine(
         private const val IDLE_POLL_MS = 5L
         private const val REBUILD_PARK_MS = 2L
         private const val DRAIN_TIMEOUT_MS = 1_500L
+
+        /**
+         * How long teardown waits for the playback loop to leave an in-flight
+         * blocking write. A single chunk's write returns in well under this;
+         * the bound exists so a wedged framework call cannot strand the track.
+         */
+        private const val LOOP_JOIN_TIMEOUT_MS = 500L
     }
 }
