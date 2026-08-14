@@ -312,7 +312,11 @@ class SessionCoordinator(
         stateStore.set(RuntimeState.CONNECTING)
         // Start frame collectors before connecting. OpenAI can emit its first
         // session event immediately after the upgrade; SharedFlow has no replay.
-        for (leg in legs) launch { pumpFrames(leg) }
+        for (leg in legs) launch {
+            pumpFrames(leg) { message ->
+                abortSession(outer, legs, RuntimeError(RuntimeError.Kind.PROVIDER_ERROR, message))
+            }
+        }
         for (leg in legs) {
             try {
                 leg.socket.connect(
@@ -328,6 +332,7 @@ class SessionCoordinator(
                 // try/finally that owns cleanup, so a leg that connected before
                 // this one failed would otherwise be left open with no owner.
                 abortSession(
+                    outer,
                     legs,
                     RuntimeError(
                         kind = RuntimeError.Kind.CONNECT_FAILED,
@@ -368,6 +373,7 @@ class SessionCoordinator(
                 // stopping, with an empty banner. The actionable fact is the
                 // timeout itself, and now it is said.
                 abortSession(
+                    outer,
                     legs,
                     RuntimeError(
                         kind = RuntimeError.Kind.CONNECT_FAILED,
@@ -389,6 +395,7 @@ class SessionCoordinator(
             Log.i(TAG, "setup sent=$sent target=${leg.targetCode}")
             if (!sent) {
                 abortSession(
+                    outer,
                     legs,
                     RuntimeError(RuntimeError.Kind.CONNECT_FAILED, "Could not configure the translation session."),
                 )
@@ -402,6 +409,7 @@ class SessionCoordinator(
             val ready = withTimeoutOrNull(7_000) { leg.setupReady.await(); true } ?: false
             if (!ready) {
                 abortSession(
+                    outer,
                     legs,
                     RuntimeError(RuntimeError.Kind.CONNECT_FAILED, "The translation provider did not become ready."),
                 )
@@ -455,6 +463,7 @@ class SessionCoordinator(
                 // hurt most: the mic is typically held by a call or another
                 // recorder, and the user was told to check their connection.
                 abortSession(
+                    outer,
                     legs,
                     RuntimeError(
                         kind = RuntimeError.Kind.UNKNOWN,
@@ -520,11 +529,30 @@ class SessionCoordinator(
      * can forget the flag — five hand-written copies of this sequence is how
      * one of them ended up with no message at all.
      */
-    private fun abortSession(legs: List<Leg>, error: RuntimeError) {
+    private fun abortSession(session: CoroutineScope, legs: List<Leg>, error: RuntimeError) {
         deliberateTeardown = true
         for (leg in legs) runCatching { leg.socket.close() }
         stateStore.setError(error)
         stateStore.set(RuntimeState.IDLE)
+        // Cancelling the scope is not tidiness — it is the only thing that ends
+        // it.
+        //
+        // The per-leg frame pumps are children of this scope, and each one is a
+        // `collect` on a SharedFlow, which never completes. `return@coroutineScope`
+        // does not end a scope; it waits for the children. So the ONLY thing
+        // that ever terminated these paths was the death watcher's
+        // `outer.cancel(...)` — and teaching the watcher to ignore a deliberate
+        // close removed exactly that, without putting anything in its place.
+        //
+        // The result was worse than the bug it fixed: runSession never returned,
+        // reconnectLoop never returned, lifecycleJob was never nulled, and every
+        // later start() hit "start ignored; already active" for the life of the
+        // process. The banner read correctly and the service stopped itself, so
+        // nothing looked wrong — the app just never translated again until it
+        // was force-stopped. Reachable on a first tap: a captive-portal network
+        // times out at 5s here against OkHttp's 10s connect timeout, and a
+        // microphone held by a phone call does it too.
+        session.cancel(CancellationException("session aborted: ${error.message}"))
     }
 
     private fun willReconnect(): Boolean =
@@ -532,7 +560,17 @@ class SessionCoordinator(
             wasSocketDeath &&
             reconnectManager.attemptNumber < MAX_RECONNECT_ATTEMPTS
 
-    private suspend fun pumpFrames(leg: Leg) {
+    /**
+     * @param onProviderError ends the whole session with the provider's verdict.
+     *   This used to be a bare `leg.socket.close(1011, "provider_error")`, which
+     *   is a close the death watcher cannot tell from a network failure — so a
+     *   quota refusal was retried four times (re-minting a credential on the
+     *   user's key each attempt, twice over for a two-leg Gemini session) and
+     *   then reported as "Lost connection and could not reconnect". The one
+     *   path that finally carried the provider's real message was also the one
+     *   path that threw it away again.
+     */
+    private suspend fun pumpFrames(leg: Leg, onProviderError: (String) -> Unit) {
         leg.socket.frames.collect { raw ->
             val parsed = leg.protocol.parse(raw)
             parsed.forEach { event ->
@@ -541,7 +579,13 @@ class SessionCoordinator(
                     .onFailure { Log.e(TAG, "dispatch failed for ${event.javaClass.simpleName}: ${it.message}", it) }
                 _events.tryEmit(event)
                 if (event is LiveEvent.Error) {
-                    leg.socket.close(1011, "provider_error")
+                    // Terminal by nature: a bad key, an exhausted quota or a
+                    // model the account cannot reach will not resolve itself in
+                    // four retries.
+                    onProviderError(
+                        ProviderMessage.sanitize(event.message)
+                            ?: "The translation provider ended the session.",
+                    )
                 }
             }
         }
@@ -629,13 +673,10 @@ class SessionCoordinator(
                 // parameters — including the key — back inside it. See
                 // [ProviderMessage]. If nothing survives redaction we say
                 // something true in our own words rather than show a blank.
-                stateStore.setError(
-                    RuntimeError(
-                        kind = RuntimeError.Kind.PROVIDER_ERROR,
-                        message = ProviderMessage.sanitize(event.message)
-                            ?: "The translation provider ended the session.",
-                    ),
-                )
+                // The error itself is raised by pumpFrames' onProviderError,
+                // which ends the session with it rather than letting the retry
+                // loop overwrite it. Setting it here as well would be a second
+                // copy of the same decision in a second place.
                 stateStore.set(RuntimeState.DEGRADED)
             }
         }
