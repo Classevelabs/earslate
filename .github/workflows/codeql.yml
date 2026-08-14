@@ -28,7 +28,7 @@ jobs:
   analyze:
     name: Analyse Kotlin
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
 
     permissions:
       # Writing the findings back to the Security tab is the entire point.
@@ -37,21 +37,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # build-mode: none reads the source directly. The alternative compiles the
-      # app, which drags in the Android SDK and doubles the runtime to tell us
-      # the same thing about a codebase this size.
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # This was written as build-mode: none first, and it went green while
+      # extracting nothing. The only Java it had found was the accessor code
+      # Gradle generates under .gradle, so the run reported four findings about
+      # its own scaffolding and none about the app. Excluding that directory is
+      # what surfaced it: the next run failed outright with "could not process
+      # any of it". Kotlin needs a real compile, so it gets one.
       - name: Initialise CodeQL
         uses: github/codeql-action/init@v3
         with:
           languages: java-kotlin
-          build-mode: none
+          build-mode: manual
           queries: security-and-quality
-          # CodeQL generates Gradle dependency accessors under .gradle to read
-          # the project model. Scanning its own scaffolding produced every
-          # finding in the first run and none of them were about this app.
           config: |
             paths-ignore:
               - '.gradle/**'
+              - 'app/src/test/**'
+
+      - name: Build
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Analyse
         uses: github/codeql-action/analyze@v3
