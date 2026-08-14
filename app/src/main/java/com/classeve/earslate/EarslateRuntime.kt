@@ -9,6 +9,7 @@ import com.classeve.earslate.audio.AndroidAudioCaptureEngine
 import com.classeve.earslate.audio.AndroidAudioPlaybackEngine
 import com.classeve.earslate.audio.AudioCaptureEngine
 import com.classeve.earslate.audio.AudioDeviceMonitor
+import com.classeve.earslate.audio.AudioRoute
 import com.classeve.earslate.audio.AudioPlaybackEngine
 import com.classeve.earslate.bootstrap.InstallationId
 import com.classeve.earslate.bootstrap.LocalKeyBootstrapRepository
@@ -104,6 +105,13 @@ object EarslateRuntime {
                         appContext,
                         Manifest.permission.RECORD_AUDIO,
                     ) == PackageManager.PERMISSION_GRANTED
+                },
+                // Only the loudspeaker puts our own output back into the mic.
+                // On a headset there is no acoustic path, so capture keeps the
+                // clean minimally-processed source. Read at each start(), so
+                // plugging headphones in between sessions takes effect.
+                echoCancellationNeeded = {
+                    deviceMonitor(appContext).route.value == AudioRoute.SPEAKER
                 },
             ).also { captureEngine = it }
         }
