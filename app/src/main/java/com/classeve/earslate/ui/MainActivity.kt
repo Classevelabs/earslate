@@ -16,6 +16,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.ActivityCompat
 import com.classeve.earslate.service.TranslatorTileService
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
@@ -84,6 +85,7 @@ import com.classeve.earslate.EarslateRuntime
 import com.classeve.earslate.R
 import com.classeve.earslate.audio.AudioRoute
 import com.classeve.earslate.service.TranslatorService
+import com.classeve.earslate.session.RuntimeError
 import com.classeve.earslate.session.RuntimeState
 import com.classeve.earslate.session.SupportedLanguages
 import com.classeve.earslate.session.TargetLanguage
@@ -121,7 +123,53 @@ class MainActivity : ComponentActivity() {
     ) { _ ->
         val micOk = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
-        if (micOk) TranslatorService.start(this)
+        if (micOk) {
+            TranslatorService.start(this)
+            return@registerForActivityResult
+        }
+        // Denial used to fall off the end of this callback: no error, no state
+        // change, no toast. RuntimeError.Kind.PERMISSION_DENIED and the
+        // "PERMISSION NEEDED" banner both already existed and nothing ever
+        // constructed one, so the entire permission-denied experience was dead
+        // code and the screen was byte-identical to before the tap.
+        //
+        // The two cases are not the same and must not read the same. After a
+        // first "Don't allow" the user knows what they did. After a permanent
+        // denial Android shows no sheet at all, so the tap is indistinguishable
+        // from a broken button — and there was no route to Settings anywhere in
+        // the app, which left no way back even for someone who knew the cause.
+        val canAskAgain = ActivityCompat.shouldShowRequestPermissionRationale(
+            this, Manifest.permission.RECORD_AUDIO,
+        )
+        EarslateRuntime.stateStore.setError(
+            RuntimeError(
+                kind = RuntimeError.Kind.PERMISSION_DENIED,
+                message = if (canAskAgain) {
+                    "earslate needs the microphone to hear the conversation. Tap start to allow it."
+                } else {
+                    "Microphone access is turned off for earslate. Turn it on in Settings to translate."
+                },
+            ),
+        )
+        if (!canAskAgain) micPermissionPermanentlyDenied = true
+    }
+
+    /**
+     * Set when Android will no longer show the permission sheet, so the UI can
+     * offer the only remaining route — the system app-settings page.
+     */
+    private var micPermissionPermanentlyDenied by mutableStateOf(false)
+
+    /** Opens this app's page in system Settings, where the mic can be re-enabled. */
+    private fun openAppSettings() {
+        runCatching {
+            startActivity(
+                Intent(
+                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.fromParts("package", packageName, null),
+                ),
+            )
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -149,6 +197,8 @@ class MainActivity : ComponentActivity() {
                         onStart = ::requestStart,
                         onStop = { TranslatorService.stop(this) },
                         onRequestQsTile = ::requestAddQuickSettingsTile,
+                        onOpenAppSettings =
+                            if (micPermissionPermanentlyDenied) ::openAppSettings else null,
                     )
                 }
             }
@@ -288,6 +338,7 @@ private fun EarslateApp(
     onStart: () -> Unit,
     onStop: () -> Unit,
     onRequestQsTile: () -> Unit = {},
+    onOpenAppSettings: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val settingsRepo = remember(context) { EarslateRuntime.settingsRepository(context) }
@@ -386,6 +437,7 @@ private fun EarslateApp(
                 onStart = onStart,
                 onStop = onStop,
                 onOpenSettings = { screen = Screen.SETTINGS },
+                onOpenAppSettings = onOpenAppSettings,
                 currentLanguage = currentLanguage,
                 currentTheirLanguage = currentTheirs,
                 onMyLanguageChange = { lang ->
@@ -459,6 +511,8 @@ private fun MainScreen(
     onStart: () -> Unit,
     onStop: () -> Unit,
     onOpenSettings: () -> Unit,
+    /** Non-null only when the mic permission can no longer be requested. */
+    onOpenAppSettings: (() -> Unit)? = null,
     currentLanguage: TargetLanguage = TargetLanguage.EnglishUS,
     currentTheirLanguage: TargetLanguage = TargetLanguage.EnglishUS,
     onMyLanguageChange: (TargetLanguage) -> Unit = {},
@@ -559,9 +613,17 @@ private fun MainScreen(
                 exit = shrinkVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeOut(tween(MotionBaseMs)),
             ) {
                 lastError?.let { err ->
+                    // When Android will not show the permission sheet again,
+                    // RETRY is a button that provably does nothing — the only
+                    // route left is the system settings page, so that is what
+                    // the banner offers.
+                    val settingsRoute = onOpenAppSettings.takeIf {
+                        err.kind == RuntimeError.Kind.PERMISSION_DENIED
+                    }
                     ErrorBanner(
                         error = err,
-                        onRetry = onStart,
+                        onRetry = settingsRoute ?: onStart,
+                        retryLabel = if (settingsRoute != null) "OPEN SETTINGS" else "RETRY",
                         onDismiss = { EarslateRuntime.stateStore.clearError() },
                     )
                 }

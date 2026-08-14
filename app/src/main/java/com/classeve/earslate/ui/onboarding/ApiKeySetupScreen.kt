@@ -3,6 +3,7 @@ package com.classeve.earslate.ui.onboarding
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -99,6 +100,22 @@ fun ApiKeySetupScreen(
     var hint by remember { mutableStateOf<String?>(null) }
     var saved by remember { mutableStateOf(keys.configured()) }
 
+    /**
+     * Explains a key that vanished on its own.
+     *
+     * When the platform destroys the encryption key, every stored secret becomes
+     * unreadable and KeyVault clears it — by design, and it records the fact in
+     * `wasResetByKeystore` precisely so this could be explained. Nothing ever
+     * read that flag: the accessor and `acknowledgeKeystoreReset()` were both
+     * dead code, so the app simply saw "no key" and dropped the user back here
+     * with no explanation, as though it had forgotten what they pasted for no
+     * reason. Reading it once, on arrival, is the whole fix — and acknowledging
+     * it means the notice appears once rather than on every visit.
+     */
+    val keystoreReset = remember {
+        keys.wasResetByKeystore().also { if (it) keys.acknowledgeKeystoreReset() }
+    }
+
     // If a pasted key clearly belongs to the other provider, switch to it — but
     // only when we recognise it. An unrecognised key is not an error: provider
     // key formats change, and the provider itself is the only real judge.
@@ -177,6 +194,20 @@ fun ApiKeySetupScreen(
                     "encrypted on this device and never sent anywhere else.",
             )
 
+            if (keystoreReset) {
+                FramedPanel {
+                    Text(
+                        text = "Your saved key was cleared because this device's secure storage " +
+                            "was reset. Nothing was sent anywhere — the stored copy simply became " +
+                            "unreadable, and it can't be recovered. Paste it again below.",
+                        style = EarslateTheme.textStyles.bodySmall,
+                        color = EarslateTheme.colors.textSecondary,
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+
             SectionHeader(
                 kicker = "Step 1",
                 headline = "Choose a provider.",
@@ -192,6 +223,11 @@ fun ApiKeySetupScreen(
                         selected = provider == option,
                         alreadySaved = saved.contains(option),
                         onSelect = { provider = option },
+                        onForget = {
+                            keys.forget(option)
+                            saved = keys.configured()
+                            problem = null
+                        },
                     )
                 }
             }
@@ -363,6 +399,17 @@ private fun ProviderRow(
     selected: Boolean,
     alreadySaved: Boolean,
     onSelect: () -> Unit,
+    /**
+     * Removes the stored key for this provider.
+     *
+     * ProviderKeyStore.forget() existed and had no caller anywhere in the app,
+     * so there was no way to take a key off the device at all: this screen can
+     * overwrite one but never delete it, and the Settings row only reopens this
+     * screen. Someone selling a phone, handing it over, or rotating a key had
+     * only "clear app data" — which also destroys their languages and
+     * onboarding — or uninstalling.
+     */
+    onForget: (() -> Unit)? = null,
 ) {
     Row(
         modifier = Modifier
@@ -390,6 +437,20 @@ private fun ProviderRow(
                     color = EarslateTheme.colors.textTertiary,
                 )
             }
+        }
+        if (alreadySaved && onForget != null) {
+            Text(
+                text = "REMOVE",
+                style = EarslateTheme.textStyles.meta,
+                color = EarslateTheme.colors.textTertiary,
+                modifier = Modifier
+                    .defaultMinSize(minHeight = 48.dp)
+                    .clickable(role = Role.Button, onClick = onForget)
+                    .padding(horizontal = 8.dp, vertical = 14.dp)
+                    .semantics {
+                        contentDescription = "Remove the saved ${provider.displayName} key"
+                    },
+            )
         }
         Text(
             text = if (selected) "SELECTED" else "",

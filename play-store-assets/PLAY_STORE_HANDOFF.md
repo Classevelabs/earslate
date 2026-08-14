@@ -102,7 +102,7 @@ HOW IT WORKS
 • Works across 150+ language pairs
 
 YOUR KEY, YOUR AUDIO
-Your key is encrypted with a key held in the Android keystore and never leaves your device. It is used once over HTTPS to mint a short-lived session credential, so your long-lived key is never sitting on an open connection. ClassEve has no server in this path and never receives your audio.
+Your key is sealed by the Android keystore, and is excluded from backups and device-to-device transfer. It goes to one place and one place only: the provider that issued it, over HTTPS, once per session, to mint a short-lived session credential — so your long-lived key never sits on an open connection. ClassEve has no server in this path and never receives your audio.
 
 GREAT FOR
 • Travel — follow signs, announcements, and conversations abroad

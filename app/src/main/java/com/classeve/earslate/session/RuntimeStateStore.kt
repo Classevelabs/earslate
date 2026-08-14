@@ -65,6 +65,14 @@ data class RuntimeError(
         BOOTSTRAP_FAILED,
         CONNECT_FAILED,
         PERMISSION_DENIED,
+
+        /**
+         * The provider accepted the session and then refused it — quota, an
+         * invalid key, a model the account cannot reach. Distinct from
+         * CONNECT_FAILED because the fix is on the user's provider account, not
+         * on their network, and telling them the wrong one wastes their time.
+         */
+        PROVIDER_ERROR,
         UNKNOWN,
     }
 }

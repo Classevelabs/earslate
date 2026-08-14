@@ -13,6 +13,7 @@ import com.classeve.earslate.bootstrap.SessionBootstrapRepository
 import com.classeve.earslate.live.LiveEvent
 import com.classeve.earslate.live.LiveSessionConfigFactory
 import com.classeve.earslate.live.LiveSocketClient
+import com.classeve.earslate.live.ProviderMessage
 import com.classeve.earslate.live.LiveSocketState
 import com.classeve.earslate.live.TranslationLiveProtocol
 import com.classeve.earslate.live.TranslationLiveProtocols
@@ -84,6 +85,27 @@ class SessionCoordinator(
     @Volatile private var sessionStartElapsed: Long = 0L
     @Volatile private var firstAudioSeen: Boolean = false
     @Volatile private var wasSocketDeath: Boolean = false
+
+    /**
+     * True once this attempt has decided to fail and has begun closing its own
+     * sockets.
+     *
+     * Without it the runtime could not tell a socket that DIED from a socket it
+     * had just closed on purpose, and every deliberate failure laundered itself
+     * into a network fault. `return@coroutineScope` does not end the scope —
+     * it waits for the children — so the close() in a failure branch drove each
+     * socket to CLOSED, the still-running death watcher fired, and
+     * `wasSocketDeath` was set on sockets the app itself had shut.
+     *
+     * The user paid for that twice. Four more full sessions were retried
+     * against a failure that had already been diagnosed as terminal, each one
+     * minting a fresh credential on their own API key; and the accurate message
+     * ("Could not open the microphone.", "The translation provider did not
+     * become ready.") was then overwritten by "Lost connection and could not
+     * reconnect" — sending someone to debug their network for a microphone
+     * conflict.
+     */
+    @Volatile private var deliberateTeardown: Boolean = false
     @Volatile private var playbackGateActive: Boolean = false
     @Volatile private var gateCooldownJob: Job? = null
     @Volatile private var currentPolicy: TranslatorPolicy? = null
@@ -194,6 +216,7 @@ class SessionCoordinator(
             sessionStartElapsed = android.os.SystemClock.elapsedRealtime()
             firstAudioSeen = false
             wasSocketDeath = false
+            deliberateTeardown = false
 
             try {
                 runSession(policy)
@@ -261,6 +284,14 @@ class SessionCoordinator(
             specs.map { (targetCode, bootstrap) ->
                 Leg(targetCode, bootstrap, TranslationLiveProtocols.forProvider(bootstrap.provider), socketFactory())
             }
+        } catch (cancelled: CancellationException) {
+            // A stop is not a failure. This catch was `Throwable` alone, and
+            // bootstrap is two suspending network calls, so stopping while the
+            // pill still read BOOTSTRAPPING landed here and showed the user a
+            // red banner — often literally "StandaloneCoroutine was cancelled" —
+            // for their own deliberate stop. lastError is sticky, so it then sat
+            // there until dismissed. Rethrowing keeps cancellation cancellation.
+            throw cancelled
         } catch (t: Throwable) {
             Log.e(TAG, "bootstrap failed: ${t.javaClass.simpleName}")
             stateStore.setError(
@@ -288,20 +319,21 @@ class SessionCoordinator(
                     leg.bootstrap.webSocketUrl,
                     leg.protocol.headers(leg.bootstrap),
                 )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (t: Throwable) {
                 Log.e(TAG, "socket connect failed: ${t.message}")
-                // This early return sits BEFORE the try/finally below that owns
-                // socket cleanup — without an explicit close here, any leg that
-                // connected before this one failed is leaked (still open, no
-                // owner, never closed).
-                for (l in legs) runCatching { l.socket.close() }
-                stateStore.setError(
+                // abortSession also closes every leg, which matters here for the
+                // reason the old comment gave: this return sits BEFORE the
+                // try/finally that owns cleanup, so a leg that connected before
+                // this one failed would otherwise be left open with no owner.
+                abortSession(
+                    legs,
                     RuntimeError(
                         kind = RuntimeError.Kind.CONNECT_FAILED,
                         message = "Could not reach the selected translation provider.",
                     ),
                 )
-                stateStore.set(RuntimeState.IDLE)
                 return@coroutineScope
             }
         }
@@ -311,6 +343,14 @@ class SessionCoordinator(
             launch {
                 val death = leg.socket.state.first {
                     it == LiveSocketState.CLOSED || it == LiveSocketState.FAILED
+                }
+                // A socket we closed ourselves is not a death. See
+                // [deliberateTeardown] — this single check is what stops a
+                // diagnosed, terminal failure from being retried four times and
+                // then reported as a network fault.
+                if (deliberateTeardown) {
+                    Log.i(TAG, "leg ${leg.targetCode} socket $death — expected, session is ending")
+                    return@launch
                 }
                 Log.i(TAG, "leg ${leg.targetCode} socket $death — tripping reconnect")
                 wasSocketDeath = true
@@ -322,12 +362,18 @@ class SessionCoordinator(
         for (leg in legs) {
             if (!waitForSocketOpen(leg.socket)) {
                 Log.w(TAG, "leg ${leg.targetCode} did not reach OPEN in 5s")
-                // Same leak as the connect-failure path above: this return sits
-                // before the try/finally that owns cleanup, so a leg that DID
-                // reach OPEN while a sibling timed out would otherwise be left
-                // connected with no owner.
-                for (l in legs) runCatching { l.socket.close() }
-                stateStore.set(RuntimeState.IDLE)
+                // This branch used to be the only failure in runSession that set
+                // IDLE with no error beside it, so a slow or captive-portal
+                // network showed the pill going CONNECTING and then simply
+                // stopping, with an empty banner. The actionable fact is the
+                // timeout itself, and now it is said.
+                abortSession(
+                    legs,
+                    RuntimeError(
+                        kind = RuntimeError.Kind.CONNECT_FAILED,
+                        message = "The translation provider took too long to accept the connection.",
+                    ),
+                )
                 return@coroutineScope
             }
         }
@@ -342,11 +388,10 @@ class SessionCoordinator(
             val sent = leg.socket.sendText(setupFrame)
             Log.i(TAG, "setup sent=$sent target=${leg.targetCode}")
             if (!sent) {
-                for (item in legs) runCatching { item.socket.close() }
-                stateStore.setError(
+                abortSession(
+                    legs,
                     RuntimeError(RuntimeError.Kind.CONNECT_FAILED, "Could not configure the translation session."),
                 )
-                stateStore.set(RuntimeState.IDLE)
                 return@coroutineScope
             }
         }
@@ -356,11 +401,10 @@ class SessionCoordinator(
         for (leg in legs) {
             val ready = withTimeoutOrNull(7_000) { leg.setupReady.await(); true } ?: false
             if (!ready) {
-                for (item in legs) runCatching { item.socket.close() }
-                stateStore.setError(
+                abortSession(
+                    legs,
                     RuntimeError(RuntimeError.Kind.CONNECT_FAILED, "The translation provider did not become ready."),
                 )
-                stateStore.set(RuntimeState.IDLE)
                 return@coroutineScope
             }
         }
@@ -406,10 +450,15 @@ class SessionCoordinator(
             )
             if (sessionId == 0) {
                 Log.w(TAG, "capture failed to start")
-                stateStore.setError(
+                // Through abortSession so the finally's socket closes are not
+                // mistaken for a network death. This is the case the laundering
+                // hurt most: the mic is typically held by a call or another
+                // recorder, and the user was told to check their connection.
+                abortSession(
+                    legs,
                     RuntimeError(
                         kind = RuntimeError.Kind.UNKNOWN,
-                        message = "Could not open the microphone.",
+                        message = "Could not open the microphone. Another app may be using it.",
                     ),
                 )
                 return@coroutineScope
@@ -460,6 +509,24 @@ class SessionCoordinator(
      * disagreement is invisible: the state machine would simply announce the
      * wrong thing on a path nobody exercises by hand.
      */
+    /**
+     * End the current attempt with a diagnosis, and make sure it stays the
+     * diagnosis.
+     *
+     * Marking the teardown deliberate BEFORE closing anything is the whole
+     * point: the close() calls below are what used to trip the death watchers
+     * and turn this terminal failure into four retries and a wrong message.
+     * Every failure branch in [runSession] goes through here so none of them
+     * can forget the flag — five hand-written copies of this sequence is how
+     * one of them ended up with no message at all.
+     */
+    private fun abortSession(legs: List<Leg>, error: RuntimeError) {
+        deliberateTeardown = true
+        for (leg in legs) runCatching { leg.socket.close() }
+        stateStore.setError(error)
+        stateStore.set(RuntimeState.IDLE)
+    }
+
     private fun willReconnect(): Boolean =
         !stopRequested &&
             wasSocketDeath &&
@@ -550,6 +617,25 @@ class SessionCoordinator(
             is LiveEvent.SocketClosed -> Unit
             is LiveEvent.Error -> {
                 Log.w(TAG, "live error: ${event.message}")
+                // The provider's own verdict is the most useful sentence
+                // available — "You exceeded your current quota" tells someone
+                // what to do; "Lost connection" sends them to reboot a router
+                // that is working. It used to go to Log.w and nowhere else, so
+                // the socket was closed, the retries ran, and the user was
+                // finally told the network had dropped.
+                //
+                // It is sanitised rather than trusted: this is the one string in
+                // the system we did not write, and providers do echo request
+                // parameters — including the key — back inside it. See
+                // [ProviderMessage]. If nothing survives redaction we say
+                // something true in our own words rather than show a blank.
+                stateStore.setError(
+                    RuntimeError(
+                        kind = RuntimeError.Kind.PROVIDER_ERROR,
+                        message = ProviderMessage.sanitize(event.message)
+                            ?: "The translation provider ended the session.",
+                    ),
+                )
                 stateStore.set(RuntimeState.DEGRADED)
             }
         }
