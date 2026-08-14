@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import com.classeve.earslate.EarslateRuntime
 import com.classeve.earslate.bootstrap.ProviderKeyVerifier
 import com.classeve.earslate.security.KeyProvider
+import com.classeve.earslate.security.KeyVault
 import com.classeve.earslate.ui.components.BackRow
 import com.classeve.earslate.ui.components.EmberButton
 import com.classeve.earslate.ui.components.FramedPanel
@@ -121,11 +122,27 @@ fun ApiKeySetupScreen(
         scope.launch {
             when (val result = verifier.verify(provider, candidate, targetLanguageCode)) {
                 is ProviderKeyVerifier.Result.Valid -> {
-                    keys.save(provider, candidate)
+                    // A write to the vault fails closed by design, and nothing
+                    // caught it: VaultUnavailable is a RuntimeException with no
+                    // handler anywhere in the app, thrown from inside this
+                    // coroutine. The user had just watched their key be verified
+                    // against the live provider, and the app died at the moment
+                    // it went to store it — the worst possible instant, and with
+                    // no message. Failing closed is right; failing silently and
+                    // then crashing is not the same thing.
+                    val stored = runCatching { keys.save(provider, candidate) }
                     checking = false
-                    keyText = ""
-                    saved = keys.configured()
-                    onDone()
+                    stored.fold(
+                        onSuccess = {
+                            keyText = ""
+                            saved = keys.configured()
+                            onDone()
+                        },
+                        onFailure = { failure ->
+                            problem = (failure as? KeyVault.VaultUnavailable)?.message
+                                ?: "That key could not be saved on this device."
+                        },
+                    )
                 }
 
                 is ProviderKeyVerifier.Result.Rejected -> {
@@ -301,9 +318,18 @@ fun ApiKeySetupScreen(
             }
 
             Text(
-                text = "Your key is stored encrypted by this device's hardware keystore. " +
-                    "It is excluded from Android backups and device-to-device transfer, so it " +
-                    "never leaves this phone.",
+                // "never leaves this phone" was false, on the one screen where
+                // being trusted matters most. The key IS sent — to the provider,
+                // over HTTPS, once per session, to mint the short-lived
+                // credential the socket then uses. What never leaves the device
+                // is the STORED copy: no backup, no transfer, and no ClassEve
+                // server, which is the claim actually worth making. Conflating
+                // "not backed up" with "never transmitted" is the kind of
+                // sentence a user would be right to feel misled by.
+                text = "Your key is sealed by this device's hardware keystore, and is excluded " +
+                    "from Android backups and device-to-device transfer. It is sent only to " +
+                    "the provider you chose — over an encrypted connection, once per session, " +
+                    "to open that session. It is never sent to ClassEve.",
                 style = EarslateTheme.textStyles.bodySmall,
                 color = EarslateTheme.colors.textTertiary,
                 textAlign = TextAlign.Start,

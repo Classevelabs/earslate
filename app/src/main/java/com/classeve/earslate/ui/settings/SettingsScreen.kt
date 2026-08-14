@@ -55,6 +55,7 @@ fun SettingsScreen(
     initialTheirLanguage: TargetLanguage = TargetLanguage.EnglishUS,
     initialCaptionsEnabled: Boolean = true,
     initialPreferEarbuds: Boolean = true,
+    initialExternalOnly: Boolean = false,
     initialDiagnosticsEnabled: Boolean = false,
     initialPersistentNotification: Boolean = false,
     initialProvider: TranslationProvider = TranslationProvider.AUTOMATIC,
@@ -63,6 +64,7 @@ fun SettingsScreen(
     onTheirLanguageChange: (TargetLanguage) -> Unit = {},
     onCaptionsEnabledChange: (Boolean) -> Unit = {},
     onPreferEarbudsChange: (Boolean) -> Unit = {},
+    onExternalOnlyChange: (Boolean) -> Unit = {},
     onDiagnosticsEnabledChange: (Boolean) -> Unit = {},
     onPersistentNotificationChange: (Boolean) -> Unit = {},
     onProviderChange: (TranslationProvider) -> Unit = {},
@@ -77,6 +79,7 @@ fun SettingsScreen(
     var theirLanguage by remember { mutableStateOf(initialTheirLanguage) }
     var captionsEnabled by remember { mutableStateOf(initialCaptionsEnabled) }
     var preferEarbuds by remember { mutableStateOf(initialPreferEarbuds) }
+    var externalOnly by remember { mutableStateOf(initialExternalOnly) }
     var diagnosticsEnabled by remember { mutableStateOf(initialDiagnosticsEnabled) }
     var persistentNotification by remember { mutableStateOf(initialPersistentNotification) }
     var provider by remember { mutableStateOf(initialProvider) }
@@ -205,6 +208,22 @@ fun SettingsScreen(
                     onChange = {
                         preferEarbuds = it
                         onPreferEarbudsChange(it)
+                    },
+                )
+                Divider()
+                // The runtime has honoured this since the half-duplex gate was
+                // written (SessionCoordinator.shouldGateMic) and the in-app help
+                // told users to enable it, but no control ever existed to set
+                // it — the only writer was a repository setter with no caller.
+                // On speaker the gate is unconditional; this is the earbud
+                // opt-in, which is why the helper says what it says.
+                ToggleRow(
+                    label = "External only",
+                    helper = "Mute the microphone while the translator speaks, on earbuds too. On speaker this always happens.",
+                    value = externalOnly,
+                    onChange = {
+                        externalOnly = it
+                        onExternalOnlyChange(it)
                     },
                 )
                 Divider()

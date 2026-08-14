@@ -214,8 +214,11 @@ actor LiveTranslationClient {
             frame = [
                 "setup": [
                     "model": normalized,
-                    "inputAudioTranscription": [:],
-                    "outputAudioTranscription": [:],
+                    // Explicitly typed, not `[:]` — see BootstrapClient's note.
+                    // An empty literal in an `Any` value position does not
+                    // compile. Same JSON on the wire.
+                    "inputAudioTranscription": [String: Any](),
+                    "outputAudioTranscription": [String: Any](),
                     "generationConfig": [
                         "responseModalities": ["AUDIO"],
                         "translationConfig": [

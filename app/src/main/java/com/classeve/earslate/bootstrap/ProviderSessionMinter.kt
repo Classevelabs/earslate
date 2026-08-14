@@ -178,7 +178,23 @@ class ProviderSessionMinter(
             )
         }
         response.use {
-            val raw = it.body?.string().orEmpty()
+            // Reading the body is a SECOND network operation and throws its own
+            // IOException — execute() returns as soon as the headers are in, so
+            // a connection that dies mid-body lands here, outside the guard
+            // above. That escaped as a raw IOException, and ProviderKeyVerifier
+            // catches only BootstrapException, so a truncated reply during key
+            // setup crashed the screen instead of saying "try again". The
+            // session path survived it only because SessionCoordinator happens
+            // to catch Throwable.
+            val raw = try {
+                it.body?.string().orEmpty()
+            } catch (io: IOException) {
+                throw BootstrapException(
+                    "The connection to ${provider.displayName} dropped before it finished " +
+                        "replying. Try again.",
+                    io,
+                )
+            }
             if (!it.isSuccessful) throw explain(it.code, provider)
             return runCatching { JSONObject(raw) }.getOrElse {
                 throw BootstrapException("${provider.displayName} sent a reply we couldn't read. Try again.")

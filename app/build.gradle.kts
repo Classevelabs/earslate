@@ -180,25 +180,37 @@ tasks.matching { it.name == "preReleaseBuild" }.configureEach {
  * skip. A gate that quietly does nothing is worse than no gate, because it
  * reads as proof.
  */
+/**
+ * The one definition of what a clean artifact looks like.
+ *
+ * Both the APK gate and the bundle gate read these. They were nearly written
+ * out twice, which is the same mistake as any other duplicated contract: the
+ * copies drift, each has its own passing check, and neither notices.
+ */
+val brandCertificateDn = "CN=Earslate, O=ClassEve, C=IN"
+
+/**
+ * Strings that are never legitimate in a shipped artifact. Deliberately NOT
+ * bare city/state words — see [verifyReleaseIdentity]'s KDoc.
+ */
+val forbiddenIdentityStrings = listOf(
+    "REDACTED",
+    "Pvt Ltd",
+    "Pvt. Ltd",
+    "REDACTED",
+    "Bengaluru",
+)
+
 val verifyReleaseIdentity by tasks.registering {
     group = "verification"
     description = "Fails if the release APK leaks the legal entity, a city, or a state."
 
     val apkDir = layout.buildDirectory.dir("outputs/apk/release")
     val sdkDir = localProperties.getProperty("sdk.dir")
+    val allowedDn = brandCertificateDn
+    val forbiddenSubstrings = forbiddenIdentityStrings
 
     doLast {
-        val allowedDn = "CN=Earslate, O=ClassEve, C=IN"
-        // Strings that are never legitimate in a shipped artifact. Deliberately
-        // NOT bare city/state words — see the KDoc.
-        val forbiddenSubstrings = listOf(
-            "REDACTED",
-            "Pvt Ltd",
-            "Pvt. Ltd",
-            "REDACTED",
-            "Bengaluru",
-        )
-
         val apks = apkDir.get().asFile.listFiles { f: File -> f.name.endsWith(".apk") }
             ?.sortedBy { it.name }
             .orEmpty()
@@ -260,8 +272,101 @@ val verifyReleaseIdentity by tasks.registering {
     }
 }
 
+/**
+ * The same gate, on the artifact Play actually receives.
+ *
+ * [verifyReleaseIdentity] reads `outputs/apk/release` and is wired only to
+ * `assembleRelease`. Play is given an **AAB**, produced by `bundleRelease`, and
+ * those are separate Gradle invocations — so the gate written *because* the
+ * entity leak shipped never ran on the thing that ships. The APK it does check
+ * is the one served from classeve.com; the store build had no check at all.
+ *
+ * `apksigner` cannot read an AAB, but it does not need to: an AAB is a JAR, so
+ * it carries a v1 signature that `keytool -printcert -jarfile` can read — the
+ * tool the APK KDoc dismisses, for the opposite reason. There it fails because
+ * these APKs have no v1 signature; here v1 is all there is.
+ *
+ * Fails closed, like its sibling: no bundle, no keytool, or no readable signer
+ * is a failure and not a skip.
+ */
+val verifyBundleIdentity by tasks.registering {
+    group = "verification"
+    description = "Fails if the release AAB leaks the legal entity, a city, or a state."
+
+    val bundleDir = layout.buildDirectory.dir("outputs/bundle/release")
+    val allowedDn = brandCertificateDn
+    val forbiddenSubstrings = forbiddenIdentityStrings
+    val javaHome = System.getProperty("java.home")
+
+    doLast {
+        val bundles = bundleDir.get().asFile.listFiles { f: File -> f.name.endsWith(".aab") }
+            ?.sortedBy { it.name }
+            .orEmpty()
+        if (bundles.isEmpty()) {
+            throw GradleException("verifyBundleIdentity: no release AAB found in ${bundleDir.get().asFile}")
+        }
+
+        val keytool = File(javaHome, if (File(javaHome, "bin/keytool.exe").isFile) "bin/keytool.exe" else "bin/keytool")
+        if (!keytool.isFile) {
+            throw GradleException(
+                "verifyBundleIdentity: keytool not found at $keytool. " +
+                    "The identity gate fails closed rather than skipping.",
+            )
+        }
+
+        for (aab in bundles) {
+            // 1. Exact signer DN, read from the JAR signature.
+            val process = ProcessBuilder(
+                keytool.absolutePath, "-printcert", "-jarfile", aab.absolutePath,
+            ).redirectErrorStream(true).start()
+            val output = process.inputStream.bufferedReader().readText()
+            if (process.waitFor() != 0) {
+                throw GradleException("verifyBundleIdentity: keytool failed on ${aab.name}:\n$output")
+            }
+            val owners = output.lineSequence()
+                .filter { it.trimStart().startsWith("Owner:") }
+                .map { it.substringAfter("Owner:").trim() }
+                .toList()
+            if (owners.isEmpty()) {
+                throw GradleException(
+                    "verifyBundleIdentity: ${aab.name} has no readable signer. An unsigned " +
+                        "bundle cannot be uploaded, and an unreadable one cannot be checked:\n$output",
+                )
+            }
+            // keytool and apksigner space a DN differently; compare on content,
+            // not on formatting, so this fails on identity and never on layout.
+            fun normalise(dn: String) = dn.split(",").joinToString(", ") { it.trim() }
+            for (owner in owners) {
+                if (normalise(owner) != normalise(allowedDn)) {
+                    throw GradleException(
+                        "verifyBundleIdentity: ${aab.name} is signed with a non-brand certificate.\n" +
+                            "  expected: $allowedDn\n" +
+                            "  actual:   $owner\n" +
+                            "INTERNAL-RULES 2: no OU, no O beyond 'ClassEve', no L, no ST.",
+                    )
+                }
+            }
+
+            // 2. Raw bytes, because a certificate is not the only way to leak.
+            val haystack = String(aab.readBytes(), Charsets.ISO_8859_1)
+            val hits = forbiddenSubstrings.filter { haystack.contains(it) }
+            if (hits.isNotEmpty()) {
+                throw GradleException(
+                    "verifyBundleIdentity: ${aab.name} contains forbidden identity strings: " +
+                        hits.joinToString() + " (INTERNAL-RULES 2)",
+                )
+            }
+            logger.lifecycle("verifyBundleIdentity: ${aab.name} - DN clean, raw bytes clean")
+        }
+    }
+}
+
 tasks.matching { it.name == "assembleRelease" }.configureEach {
     finalizedBy(verifyReleaseIdentity)
+}
+
+tasks.matching { it.name == "bundleRelease" }.configureEach {
+    finalizedBy(verifyBundleIdentity)
 }
 
 dependencies {

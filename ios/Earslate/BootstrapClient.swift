@@ -98,8 +98,15 @@ struct ProviderSessionMinter: Sendable {
                     "echoTargetLanguage": false,
                 ],
             ],
-            "inputAudioTranscription": [:],
-            "outputAudioTranscription": [:],
+            // `[String: Any]()`, not `[:]`. The surrounding literal is
+            // [String: Any], so each VALUE is checked against `Any` — and an
+            // empty collection literal against `Any` has nothing to infer its
+            // Key and Value from, which Swift rejects outright:
+            //   error: empty collection literal requires an explicit type
+            // The emitted JSON is identical (`{}`); this is purely about giving
+            // the type checker something to bind to.
+            "inputAudioTranscription": [String: Any](),
+            "outputAudioTranscription": [String: Any](),
         ]
         let body: [String: Any] = [
             "uses": 1,

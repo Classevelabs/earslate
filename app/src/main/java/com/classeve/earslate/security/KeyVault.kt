@@ -37,12 +37,22 @@ import javax.crypto.spec.GCMParameterSpec
  *  - AES-GCM authenticates as well as encrypts, so a tampered store fails to
  *    decrypt rather than returning attacker-chosen bytes.
  *
- * It **fails closed**. If the keystore cannot be reached we raise
- * [VaultUnavailable] rather than quietly writing plaintext. The one case we
- * heal automatically is [KeyPermanentlyInvalidatedException] — the OS destroys
- * the key when device credentials are removed, and the only recovery is a new
- * key, which means previously stored secrets are unreadable and must be
- * re-entered. That is reported honestly rather than crashing.
+ * It **fails closed on writes**. If the keystore cannot be reached, [put] raises
+ * [VaultUnavailable] rather than quietly writing plaintext, and the caller is
+ * expected to tell the user — a write that cannot be made secure must not look
+ * like it succeeded.
+ *
+ * **Reads degrade instead.** [get] answers null when the vault is unreachable,
+ * because to a caller that is the same fact as "nothing is stored": either way
+ * there is no key to use, and the app has a correct path for that. This is a
+ * deliberate asymmetry, and it is not symmetry for its own sake — it is what
+ * stops a broken keystore from crashing the app during composition. Nothing is
+ * deleted on that path; the ciphertext is left alone to decrypt another day.
+ *
+ * The one case we heal automatically is [KeyPermanentlyInvalidatedException] —
+ * the OS destroys the key when device credentials are removed, and the only
+ * recovery is a new key, which means previously stored secrets are unreadable
+ * and must be re-entered. That is reported honestly rather than crashing.
  */
 class KeyVault(context: Context) {
 
@@ -111,6 +121,29 @@ class KeyVault(context: Context) {
             // Authentication failure => the stored blob is not ours. Drop it.
             Log.w(TAG, "stored secret failed authentication; discarding entry")
             remove(name)
+            null
+        } catch (unavailable: VaultUnavailable) {
+            // A READ cannot usefully fail closed, and this one was crashing the
+            // app on launch.
+            //
+            // VaultUnavailable is a RuntimeException, so neither catch above
+            // sees it, and secretKey() raises it whenever AndroidKeyStore will
+            // not load or open. MainActivity calls providerKeys.hasAnyKey()
+            // during composition, which lands here for any user who already has
+            // a key stored — so a device whose keystore breaks got an immediate
+            // crash loop and no explanation at all.
+            //
+            // To a caller, "the vault is unreachable" and "no key is stored" are
+            // the same fact: there is no key available to use. The app already
+            // has a correct, well-trodden path for the second one — it shows key
+            // setup. Taking that path ends somewhere honest, because the SAVE at
+            // the end of it still fails loudly with the real reason. Crashing
+            // ends nowhere.
+            //
+            // The entry is deliberately NOT removed: the ciphertext is fine and
+            // may well decrypt on the next boot. Nothing is destroyed on the
+            // strength of a transient platform failure.
+            Log.w(TAG, "secure storage unavailable; treating as no stored secret", unavailable)
             null
         }
     }

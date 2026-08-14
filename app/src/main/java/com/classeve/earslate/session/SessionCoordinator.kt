@@ -201,21 +201,23 @@ class SessionCoordinator(
                 // either user stop or socket-death trip — both catch here
             }
 
+            // Same predicate the teardown used to decide whether to announce
+            // IDLE, so the two can never disagree about what happens next.
             // A user stop must never be mistaken for a socket death and retried.
-            if (stopRequested) {
-                return
-            }
-            if (!wasSocketDeath) {
-                return
-            }
-            if (reconnectManager.attemptNumber >= MAX_RECONNECT_ATTEMPTS) {
-                Log.w(TAG, "reconnect budget exhausted after ${reconnectManager.attemptNumber} attempts")
-                stateStore.setError(
-                    RuntimeError(
-                        kind = RuntimeError.Kind.CONNECT_FAILED,
-                        message = "Lost connection and could not reconnect. Tap start to try again.",
-                    ),
-                )
+            if (!willReconnect()) {
+                // Told apart here rather than by three separate returns: the
+                // only case that owes the user a message is a real socket death
+                // that ran out of attempts. A user stop and a non-socket exit
+                // have both already said whatever needed saying.
+                if (wasSocketDeath && !stopRequested) {
+                    Log.w(TAG, "reconnect budget exhausted after ${reconnectManager.attemptNumber} attempts")
+                    stateStore.setError(
+                        RuntimeError(
+                            kind = RuntimeError.Kind.CONNECT_FAILED,
+                            message = "Lost connection and could not reconnect. Tap start to try again.",
+                        ),
+                    )
+                }
                 return
             }
 
@@ -430,9 +432,38 @@ class SessionCoordinator(
                 for (leg in legs) runCatching { leg.socket.close() }
             }
             runCatching { audioManager.abandonAudioFocusRequest(audioFocusRequest) }
-            stateStore.set(RuntimeState.IDLE)
+            // IDLE only when nothing more is coming.
+            //
+            // This was unconditional, and IDLE is not a neutral "attempt over"
+            // marker — it is the terminal resting state, and TranslatorService
+            // treats it as the signal to demote the foreground service and
+            // stopSelf(). So every socket death announced IDLE on its way to
+            // RECONNECTING, killing the microphone-typed foreground service that
+            // the reconnect it was about to perform depends on. RuntimeState's
+            // own KDoc says failure branches go through RECONNECTING "without
+            // tearing down the service"; the teardown path did not honour it.
+            //
+            // The consequence was that any network blip ended the session
+            // instead of recovering from it, which is the one moment reconnect
+            // exists for.
+            stateStore.set(
+                if (willReconnect()) RuntimeState.RECONNECTING else RuntimeState.IDLE,
+            )
         }
     }
+
+    /**
+     * Whether [reconnectLoop] will retry once the current attempt has unwound.
+     *
+     * Deliberately ONE predicate, read both by the teardown above and by the
+     * loop itself. Written out twice these would eventually disagree, and the
+     * disagreement is invisible: the state machine would simply announce the
+     * wrong thing on a path nobody exercises by hand.
+     */
+    private fun willReconnect(): Boolean =
+        !stopRequested &&
+            wasSocketDeath &&
+            reconnectManager.attemptNumber < MAX_RECONNECT_ATTEMPTS
 
     private suspend fun pumpFrames(leg: Leg) {
         leg.socket.frames.collect { raw ->

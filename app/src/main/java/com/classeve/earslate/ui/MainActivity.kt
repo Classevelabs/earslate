@@ -401,6 +401,7 @@ private fun EarslateApp(
                 initialTheirLanguage = currentTheirs,
                 initialCaptionsEnabled = userSettings.captionsEnabled,
                 initialPreferEarbuds = userSettings.preferEarbuds,
+                initialExternalOnly = userSettings.externalOnly,
                 initialDiagnosticsEnabled = userSettings.diagnosticsEnabled,
                 initialPersistentNotification = userSettings.persistentNotification,
                 initialProvider = userSettings.provider,
@@ -416,6 +417,9 @@ private fun EarslateApp(
                 },
                 onPreferEarbudsChange = { enabled ->
                     scope.launch { settingsRepo.setPreferEarbuds(enabled) }
+                },
+                onExternalOnlyChange = { enabled ->
+                    scope.launch { settingsRepo.setExternalOnly(enabled) }
                 },
                 onDiagnosticsEnabledChange = { enabled ->
                     scope.launch { settingsRepo.setDiagnosticsEnabled(enabled) }

@@ -106,9 +106,14 @@ fun HelpScreen(
                     title = "Notification controls",
                     body = "Enable notification controls in Settings to keep a start/stop toggle in the notification shade even when the app is in the background.",
                 )
+                // There is no "Conversation mode" setting, and there never can
+                // be: the product is ALWAYS bidirectional (see TranslatorPolicy
+                // — "there are no modes"). This entry told users to go and
+                // enable something Settings does not contain, which reads as a
+                // broken app rather than as stale help.
                 HelpEntry(
-                    title = "Conversation mode",
-                    body = "Enable this in Settings for two-way translation. Your speech translates to a secondary language, and foreign speech translates to your language.",
+                    title = "Two-way translation",
+                    body = "Always on — there is nothing to switch. Set both languages in Settings: foreign speech arrives in your language, and your speech goes out in theirs. When both are the same, only one direction runs.",
                 )
             }
 
@@ -124,9 +129,15 @@ fun HelpScreen(
                     title = "No translation happening",
                     body = "Check that microphone permission is granted. Make sure someone is speaking a language different from your target language. The translator stays silent when it hears your own language.",
                 )
+                // This had the mechanism backwards. On SPEAKER the mic is always
+                // muted while the translator talks \u2014 shouldGateMic() returns
+                // true for that route unconditionally \u2014 so there was nothing to
+                // enable, and the setting it named had no control in Settings at
+                // all. "External only" is the OPT-IN for earbud routes, which is
+                // the opposite case, and it now exists as a real toggle.
                 HelpEntry(
                     title = "Echo or repeated translations",
-                    body = "Switch to earbuds. If using speaker mode, enable External Only in Settings to suppress re-translation of the device\u2019s own playback.",
+                    body = "On speaker, the microphone is already muted while the translator is speaking. On earbuds it stays open, which is right for most earbuds but can echo with open or leaky ones \u2014 turn on External only in Settings to mute it there too.",
                 )
                 HelpEntry(
                     title = "High latency",
