@@ -46,6 +46,12 @@ jobs:
           languages: java-kotlin
           build-mode: none
           queries: security-and-quality
+          # CodeQL generates Gradle dependency accessors under .gradle to read
+          # the project model. Scanning its own scaffolding produced every
+          # finding in the first run and none of them were about this app.
+          config: |
+            paths-ignore:
+              - '.gradle/**'
 
       - name: Analyse
         uses: github/codeql-action/analyze@v3
