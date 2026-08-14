@@ -388,13 +388,20 @@ private fun EarslateApp(
     // to that would work.
     BackHandler(
         enabled = screen != Screen.MAIN &&
-            screen != Screen.ONBOARDING &&
+            // FIRST-RUN onboarding is the trap-free case: there is nothing
+            // behind it, so back should exit. Onboarding reached from Settings
+            // by "View onboarding" is the opposite, and excluding the whole
+            // screen made that a one-way door — system back closed the app
+            // instead of going back, from a screen the user had deliberately
+            // opened to read.
+            !(screen == Screen.ONBOARDING && firstLaunch) &&
             !(screen == Screen.KEY_SETUP && !hasKey),
     ) {
         screen = when (screen) {
             Screen.DIAGNOSTICS -> Screen.SETTINGS
             Screen.HELP -> Screen.SETTINGS
             Screen.KEY_SETUP -> Screen.SETTINGS
+            Screen.ONBOARDING -> Screen.SETTINGS
             else -> Screen.MAIN
         }
     }
@@ -612,6 +619,20 @@ private fun MainScreen(
                 exit = shrinkVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeOut(tween(MotionBaseMs)),
             ) {
                 SpeakerEchoNotice()
+            }
+
+            // A session is built from the policy it started with — the policy
+            // is immutable and rebuilding the session is how it changes — so a
+            // language picked mid-session does not reach the running one. The
+            // chips stay usable, because preparing the next session is a real
+            // thing to want; what they stop doing is pretending.
+            if (state.isActive) {
+                Text(
+                    text = "Language changes apply to the next session.",
+                    style = EarslateTheme.textStyles.bodySmall,
+                    color = EarslateTheme.colors.textTertiary,
+                    modifier = Modifier.padding(bottom = 6.dp),
+                )
             }
 
             LanguageBar(

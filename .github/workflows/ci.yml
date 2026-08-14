@@ -61,10 +61,13 @@ jobs:
           # green. A floor far below reality is not a safety margin, it is a
           # disabled check that reads as an enabled one.
           #
-          # 77 against the current 86 leaves room to delete a genuinely obsolete
+          # 86 against the current 95 leaves room to delete a genuinely obsolete
           # test without a CI edit, and no room to lose a suite. Raise it when
-          # the count rises. (Was 70/79 before the session-setup parity suite.)
-          MIN_TESTS=77
+          # the count rises. (70/79, then 77/86, then this.) Raising the floor
+          # is part of adding tests, not a follow-up: the batch that added the
+          # redaction suite left it behind, which is exactly how a floor drifts
+          # far enough below reality to stop being a check at all.
+          MIN_TESTS=86
           if [ "$total" -lt "$MIN_TESTS" ]; then
             echo "::error::only $total tests ran; expected at least $MIN_TESTS. Suites have been lost or skipped."
             exit 1

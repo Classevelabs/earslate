@@ -194,7 +194,20 @@ class SessionCoordinator(
         }
     }
 
-    fun stop() {
+    /**
+     * @return true if a live session was actually cancelled.
+     *
+     * The caller needs this from the coordinator rather than from
+     * [RuntimeStateStore], which is a mirror of the session and not the session.
+     * TranslatorService decided whether to stopSelf() by reading
+     * `stateStore.state.value.isActive`, and the two disagree in both
+     * directions: a coordinator that is still tearing down while the store
+     * already reads IDLE made STOP take the "nothing running" branch and kill
+     * the foreground service out from under a live capture — and this
+     * coordinator is a process-wide singleton with its own scope, so it would
+     * have carried on recording without one.
+     */
+    fun stop(): Boolean {
         stopRequested = true
         val job = synchronized(this) { lifecycleJob }
         if (job == null) {
@@ -206,9 +219,10 @@ class SessionCoordinator(
                 Log.w(TAG, "stop with no live job; clearing stale ${stateStore.state.value}")
                 stateStore.set(RuntimeState.IDLE)
             }
-            return
+            return false
         }
         job.cancel()
+        return true
     }
 
     private suspend fun reconnectLoop(policy: TranslatorPolicy) {

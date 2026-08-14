@@ -195,10 +195,12 @@ class TranslatorService : Service() {
             ACTION_STOP -> {
                 startJob?.cancel()
                 startJob = null
-                val active = EarslateRuntime.stateStore.state.value.isActive
-                if (active) {
-                    EarslateRuntime.sessionCoordinator(this).stop()
-                } else {
+                // Ask the coordinator, which owns the session, rather than
+                // the state store, which only mirrors it. stop() is safe to
+                // call either way and reports whether there was anything to
+                // stop; when there was, the lifecycle's own teardown drives the
+                // store to IDLE and the collector above stops this service.
+                if (!EarslateRuntime.sessionCoordinator(this).stop()) {
                     stopForegroundSmart()
                     stopSelf()
                 }
