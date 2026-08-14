@@ -1,0 +1,53 @@
+name: CodeQL
+
+# CI proves the app builds and behaves. It says nothing about whether a change
+# introduced a taint path — a provider string reaching a log, a key reaching an
+# intent, a path assembled from something the user typed. That is what this
+# looks for, and it is the one class of bug the test floor cannot catch because
+# nobody writes a test for a vulnerability they have not thought of yet.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Rules improve after the code is written, so the same commit is worth
+    # rescanning. Wednesday, off the hour, away from the Dependabot sweep.
+    - cron: "42 4 * * 3"
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyse Kotlin
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    permissions:
+      # Writing the findings back to the Security tab is the entire point.
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # build-mode: none reads the source directly. The alternative compiles the
+      # app, which drags in the Android SDK and doubles the runtime to tell us
+      # the same thing about a codebase this size.
+      - name: Initialise CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: java-kotlin
+          build-mode: none
+          queries: security-and-quality
+
+      - name: Analyse
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:java-kotlin
