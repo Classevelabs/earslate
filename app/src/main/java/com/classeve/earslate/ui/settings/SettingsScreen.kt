@@ -55,6 +55,7 @@ fun SettingsScreen(
     initialTheirLanguage: TargetLanguage = TargetLanguage.EnglishUS,
     initialCaptionsEnabled: Boolean = true,
     initialPreferEarbuds: Boolean = true,
+    initialExternalOnly: Boolean = false,
     initialDiagnosticsEnabled: Boolean = false,
     initialPersistentNotification: Boolean = false,
     initialProvider: TranslationProvider = TranslationProvider.AUTOMATIC,
@@ -63,6 +64,7 @@ fun SettingsScreen(
     onTheirLanguageChange: (TargetLanguage) -> Unit = {},
     onCaptionsEnabledChange: (Boolean) -> Unit = {},
     onPreferEarbudsChange: (Boolean) -> Unit = {},
+    onExternalOnlyChange: (Boolean) -> Unit = {},
     onDiagnosticsEnabledChange: (Boolean) -> Unit = {},
     onPersistentNotificationChange: (Boolean) -> Unit = {},
     onProviderChange: (TranslationProvider) -> Unit = {},
@@ -73,13 +75,28 @@ fun SettingsScreen(
     configuredKeySummary: String = "Not set up",
     padding: PaddingValues = PaddingValues(0.dp),
 ) {
-    var myLanguage by remember { mutableStateOf(initialMyLanguage) }
-    var theirLanguage by remember { mutableStateOf(initialTheirLanguage) }
-    var captionsEnabled by remember { mutableStateOf(initialCaptionsEnabled) }
-    var preferEarbuds by remember { mutableStateOf(initialPreferEarbuds) }
-    var diagnosticsEnabled by remember { mutableStateOf(initialDiagnosticsEnabled) }
-    var persistentNotification by remember { mutableStateOf(initialPersistentNotification) }
-    var provider by remember { mutableStateOf(initialProvider) }
+    // Keyed on the incoming value, not remembered once.
+    //
+    // These are fed from the settings StateFlow, which is SEEDED WITH DEFAULTS
+    // until DataStore's first disk read lands. A bare remember{} captures that
+    // seed on the first composition and never looks again, so a screen opened
+    // quickly after a cold start — the ordinary case after process death —
+    // showed every row at its default: captions on, earbuds preferred, English.
+    // The rows are the user's own settings misreported back to them, which is
+    // worse than a spinner, because there is nothing to indicate it is wrong.
+    //
+    // Keying re-seeds each row when the real value arrives. A local edit is not
+    // lost to it: every onChange writes through immediately, so the value that
+    // comes back IS the edit.
+    var myLanguage by remember(initialMyLanguage) { mutableStateOf(initialMyLanguage) }
+    var theirLanguage by remember(initialTheirLanguage) { mutableStateOf(initialTheirLanguage) }
+    var captionsEnabled by remember(initialCaptionsEnabled) { mutableStateOf(initialCaptionsEnabled) }
+    var preferEarbuds by remember(initialPreferEarbuds) { mutableStateOf(initialPreferEarbuds) }
+    var externalOnly by remember(initialExternalOnly) { mutableStateOf(initialExternalOnly) }
+    var diagnosticsEnabled by remember(initialDiagnosticsEnabled) { mutableStateOf(initialDiagnosticsEnabled) }
+    var persistentNotification by
+        remember(initialPersistentNotification) { mutableStateOf(initialPersistentNotification) }
+    var provider by remember(initialProvider) { mutableStateOf(initialProvider) }
     var showMyPicker by remember { mutableStateOf(false) }
     var showTheirPicker by remember { mutableStateOf(false) }
 
@@ -205,6 +222,22 @@ fun SettingsScreen(
                     onChange = {
                         preferEarbuds = it
                         onPreferEarbudsChange(it)
+                    },
+                )
+                Divider()
+                // The runtime has honoured this since the half-duplex gate was
+                // written (SessionCoordinator.shouldGateMic) and the in-app help
+                // told users to enable it, but no control ever existed to set
+                // it — the only writer was a repository setter with no caller.
+                // On speaker the gate is unconditional; this is the earbud
+                // opt-in, which is why the helper says what it says.
+                ToggleRow(
+                    label = "External only",
+                    helper = "Mute the microphone while the translator speaks, on earbuds too. On speaker this always happens.",
+                    value = externalOnly,
+                    onChange = {
+                        externalOnly = it
+                        onExternalOnlyChange(it)
                     },
                 )
                 Divider()

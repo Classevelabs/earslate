@@ -36,8 +36,20 @@ internal data class ClientSetupPayload(
     // field." Because they are only emitted when captions are on, and captions
     // default to ON, that single misplacement made every default install unable
     // to open a session at all. translationConfig is the opposite — it must stay
-    // inside generationConfig. Identical shape to the mint body in
-    // ProviderSessionMinter; both are pinned by GeminiAuthTokenShapeTest.
+    // inside generationConfig.
+    //
+    // This payload is ALSO what the ephemeral token carries as
+    // `bidiGenerateContentSetup`: ProviderSessionMinter embeds the output of
+    // LiveSessionConfigFactory rather than describing the object again. That
+    // used to be two hand-written copies, and this comment used to claim they
+    // were of "identical shape" — they were not. The token always carried
+    // transcription while this payload dropped it with captions off, so a
+    // captions-off session locked its credential to one configuration and then
+    // asked for another. Nothing caught it because each copy had its own
+    // passing test and neither test compared them.
+    //
+    // Enforced now by GeminiSessionSetupParityTest. If you find yourself
+    // building this object somewhere else, that is the bug.
     val inputAudioTranscription: JsonObject? = null,
     val outputAudioTranscription: JsonObject? = null,
     val systemInstruction: Content? = null,

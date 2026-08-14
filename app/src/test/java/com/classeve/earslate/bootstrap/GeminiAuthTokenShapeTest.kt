@@ -1,5 +1,6 @@
 package com.classeve.earslate.bootstrap
 
+import com.classeve.earslate.live.LiveSessionConfigFactory
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -22,29 +23,28 @@ import org.junit.Test
  *     `generationConfig` returns `Cannot find field`. `translationConfig` is
  *     the opposite — it must be inside `generationConfig`.
  *
- * This builds the body the same way [ProviderSessionMinter] does and asserts
- * the placement, so a well-meaning tidy-up cannot quietly move a field back and
- * break setup for everyone.
+ * The `bidiGenerateContentSetup` object below is the REAL one — the same call
+ * [ProviderSessionMinter] makes. It used to be a hand-written copy of it, which
+ * is precisely how the minter and the client setup frame were allowed to drift
+ * apart on the captions flag while this file stayed green. A test that mirrors
+ * the code it is testing proves only that someone typed the same thing twice.
+ *
+ * The AuthToken envelope around it (`uses` / `expireTime` /
+ * `newSessionExpireTime`) is still mirrored, because it is built inside a
+ * private method with a clock in it. That is a smaller and static surface, but
+ * it IS still a mirror — if the envelope changes, change it here too.
  */
 class GeminiAuthTokenShapeTest {
 
-    /** Mirrors the body construction in ProviderSessionMinter.mintGemini. */
-    private fun body(language: String = "es"): JSONObject {
-        val setup = JSONObject()
-            .put("model", "models/${ProviderSessionMinter.GEMINI_MODEL}")
-            .put(
-                "generationConfig",
-                JSONObject()
-                    .put("responseModalities", org.json.JSONArray().put("AUDIO"))
-                    .put(
-                        "translationConfig",
-                        JSONObject()
-                            .put("targetLanguageCode", language)
-                            .put("echoTargetLanguage", false),
-                    ),
-            )
-            .put("inputAudioTranscription", JSONObject())
-            .put("outputAudioTranscription", JSONObject())
+    private fun body(language: String = "es", captionsEnabled: Boolean = true): JSONObject {
+        val setup = JSONObject(
+            LiveSessionConfigFactory.buildTokenSessionSetup(
+                model = ProviderSessionMinter.GEMINI_MODEL,
+                targetLanguageCode = language,
+                echoTargetLanguage = false,
+                captionsEnabled = captionsEnabled,
+            ),
+        )
 
         return JSONObject()
             .put("uses", 1)

@@ -3,6 +3,7 @@ package com.classeve.earslate.ui.onboarding
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -50,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import com.classeve.earslate.EarslateRuntime
 import com.classeve.earslate.bootstrap.ProviderKeyVerifier
 import com.classeve.earslate.security.KeyProvider
+import com.classeve.earslate.security.KeyVault
 import com.classeve.earslate.ui.components.BackRow
 import com.classeve.earslate.ui.components.EmberButton
 import com.classeve.earslate.ui.components.FramedPanel
@@ -81,6 +83,12 @@ import kotlinx.coroutines.launch
 fun ApiKeySetupScreen(
     onDone: () -> Unit,
     onBack: (() -> Unit)? = null,
+    /**
+     * Fired when the set of stored keys changes without leaving this screen,
+     * which is what removing one does. The host tracks "does the app have a
+     * key at all" and only recomputed it on navigation.
+     */
+    onKeysChanged: () -> Unit = {},
     targetLanguageCode: String,
     initialProvider: KeyProvider = KeyProvider.GEMINI,
     padding: PaddingValues = PaddingValues(0.dp),
@@ -97,6 +105,22 @@ fun ApiKeySetupScreen(
     var problem by remember { mutableStateOf<String?>(null) }
     var hint by remember { mutableStateOf<String?>(null) }
     var saved by remember { mutableStateOf(keys.configured()) }
+
+    /**
+     * Explains a key that vanished on its own.
+     *
+     * When the platform destroys the encryption key, every stored secret becomes
+     * unreadable and KeyVault clears it — by design, and it records the fact in
+     * `wasResetByKeystore` precisely so this could be explained. Nothing ever
+     * read that flag: the accessor and `acknowledgeKeystoreReset()` were both
+     * dead code, so the app simply saw "no key" and dropped the user back here
+     * with no explanation, as though it had forgotten what they pasted for no
+     * reason. Reading it once, on arrival, is the whole fix — and acknowledging
+     * it means the notice appears once rather than on every visit.
+     */
+    val keystoreReset = remember {
+        keys.wasResetByKeystore().also { if (it) keys.acknowledgeKeystoreReset() }
+    }
 
     // If a pasted key clearly belongs to the other provider, switch to it — but
     // only when we recognise it. An unrecognised key is not an error: provider
@@ -121,11 +145,27 @@ fun ApiKeySetupScreen(
         scope.launch {
             when (val result = verifier.verify(provider, candidate, targetLanguageCode)) {
                 is ProviderKeyVerifier.Result.Valid -> {
-                    keys.save(provider, candidate)
+                    // A write to the vault fails closed by design, and nothing
+                    // caught it: VaultUnavailable is a RuntimeException with no
+                    // handler anywhere in the app, thrown from inside this
+                    // coroutine. The user had just watched their key be verified
+                    // against the live provider, and the app died at the moment
+                    // it went to store it — the worst possible instant, and with
+                    // no message. Failing closed is right; failing silently and
+                    // then crashing is not the same thing.
+                    val stored = runCatching { keys.save(provider, candidate) }
                     checking = false
-                    keyText = ""
-                    saved = keys.configured()
-                    onDone()
+                    stored.fold(
+                        onSuccess = {
+                            keyText = ""
+                            saved = keys.configured()
+                            onDone()
+                        },
+                        onFailure = { failure ->
+                            problem = (failure as? KeyVault.VaultUnavailable)?.message
+                                ?: "That key could not be saved on this device."
+                        },
+                    )
                 }
 
                 is ProviderKeyVerifier.Result.Rejected -> {
@@ -160,6 +200,20 @@ fun ApiKeySetupScreen(
                     "encrypted on this device and never sent anywhere else.",
             )
 
+            if (keystoreReset) {
+                FramedPanel {
+                    Text(
+                        text = "Your saved key was cleared because this device's secure storage " +
+                            "was reset. Nothing was sent anywhere — the stored copy simply became " +
+                            "unreadable, and it can't be recovered. Paste it again below.",
+                        style = EarslateTheme.textStyles.bodySmall,
+                        color = EarslateTheme.colors.textSecondary,
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+
             SectionHeader(
                 kicker = "Step 1",
                 headline = "Choose a provider.",
@@ -175,6 +229,12 @@ fun ApiKeySetupScreen(
                         selected = provider == option,
                         alreadySaved = saved.contains(option),
                         onSelect = { provider = option },
+                        onForget = {
+                            keys.forget(option)
+                            saved = keys.configured()
+                            problem = null
+                            onKeysChanged()
+                        },
                     )
                 }
             }
@@ -301,9 +361,18 @@ fun ApiKeySetupScreen(
             }
 
             Text(
-                text = "Your key is stored encrypted by this device's hardware keystore. " +
-                    "It is excluded from Android backups and device-to-device transfer, so it " +
-                    "never leaves this phone.",
+                // "never leaves this phone" was false, on the one screen where
+                // being trusted matters most. The key IS sent — to the provider,
+                // over HTTPS, once per session, to mint the short-lived
+                // credential the socket then uses. What never leaves the device
+                // is the STORED copy: no backup, no transfer, and no ClassEve
+                // server, which is the claim actually worth making. Conflating
+                // "not backed up" with "never transmitted" is the kind of
+                // sentence a user would be right to feel misled by.
+                text = "Your key is sealed by this device's hardware keystore, and is excluded " +
+                    "from Android backups and device-to-device transfer. It is sent only to " +
+                    "the provider you chose — over an encrypted connection, once per session, " +
+                    "to open that session. It is never sent to ClassEve.",
                 style = EarslateTheme.textStyles.bodySmall,
                 color = EarslateTheme.colors.textTertiary,
                 textAlign = TextAlign.Start,
@@ -337,6 +406,17 @@ private fun ProviderRow(
     selected: Boolean,
     alreadySaved: Boolean,
     onSelect: () -> Unit,
+    /**
+     * Removes the stored key for this provider.
+     *
+     * ProviderKeyStore.forget() existed and had no caller anywhere in the app,
+     * so there was no way to take a key off the device at all: this screen can
+     * overwrite one but never delete it, and the Settings row only reopens this
+     * screen. Someone selling a phone, handing it over, or rotating a key had
+     * only "clear app data" — which also destroys their languages and
+     * onboarding — or uninstalling.
+     */
+    onForget: (() -> Unit)? = null,
 ) {
     Row(
         modifier = Modifier
@@ -364,6 +444,20 @@ private fun ProviderRow(
                     color = EarslateTheme.colors.textTertiary,
                 )
             }
+        }
+        if (alreadySaved && onForget != null) {
+            Text(
+                text = "REMOVE",
+                style = EarslateTheme.textStyles.meta,
+                color = EarslateTheme.colors.textTertiary,
+                modifier = Modifier
+                    .defaultMinSize(minHeight = 48.dp)
+                    .clickable(role = Role.Button, onClick = onForget)
+                    .padding(horizontal = 8.dp, vertical = 14.dp)
+                    .semantics {
+                        contentDescription = "Remove the saved ${provider.displayName} key"
+                    },
+            )
         }
         Text(
             text = if (selected) "SELECTED" else "",

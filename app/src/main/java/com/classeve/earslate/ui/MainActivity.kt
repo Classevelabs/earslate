@@ -16,6 +16,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.ActivityCompat
 import com.classeve.earslate.service.TranslatorTileService
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
@@ -84,6 +85,7 @@ import com.classeve.earslate.EarslateRuntime
 import com.classeve.earslate.R
 import com.classeve.earslate.audio.AudioRoute
 import com.classeve.earslate.service.TranslatorService
+import com.classeve.earslate.session.RuntimeError
 import com.classeve.earslate.session.RuntimeState
 import com.classeve.earslate.session.SupportedLanguages
 import com.classeve.earslate.session.TargetLanguage
@@ -121,12 +123,77 @@ class MainActivity : ComponentActivity() {
     ) { _ ->
         val micOk = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
-        if (micOk) TranslatorService.start(this)
+        if (micOk) {
+            TranslatorService.start(this)
+            return@registerForActivityResult
+        }
+        // Denial used to fall off the end of this callback: no error, no state
+        // change, no toast. RuntimeError.Kind.PERMISSION_DENIED and the
+        // "PERMISSION NEEDED" banner both already existed and nothing ever
+        // constructed one, so the entire permission-denied experience was dead
+        // code and the screen was byte-identical to before the tap.
+        //
+        // The two cases are not the same and must not read the same. After a
+        // first "Don't allow" the user knows what they did. After a permanent
+        // denial Android shows no sheet at all, so the tap is indistinguishable
+        // from a broken button — and there was no route to Settings anywhere in
+        // the app, which left no way back even for someone who knew the cause.
+        val canAskAgain = ActivityCompat.shouldShowRequestPermissionRationale(
+            this, Manifest.permission.RECORD_AUDIO,
+        )
+        EarslateRuntime.stateStore.setError(
+            RuntimeError(
+                kind = RuntimeError.Kind.PERMISSION_DENIED,
+                message = if (canAskAgain) {
+                    "earslate needs the microphone to hear the conversation. Tap start to allow it."
+                } else {
+                    "Microphone access is turned off for earslate. Turn it on in Settings to translate."
+                },
+            ),
+        )
+        if (!canAskAgain) micPermissionPermanentlyDenied = true
+    }
+
+    /**
+     * Set when Android will no longer show the permission sheet, so the UI can
+     * offer the only remaining route — the system app-settings page.
+     *
+     * Recomputed in [onCreate] rather than merely remembered, because an
+     * Activity field does not survive a configuration change: rotating the
+     * phone reset this to false and turned "OPEN SETTINGS" back into a "RETRY"
+     * that provably cannot work. Every input to it outlives the Activity — the
+     * error lives in the process-wide state store, and the permission and its
+     * rationale flag are platform state — so it is derived, not stored.
+     */
+    private var micPermissionPermanentlyDenied by mutableStateOf(false)
+
+    private fun recomputeMicDenialState() {
+        val denied = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        val alreadyReported =
+            EarslateRuntime.stateStore.lastError.value?.kind == RuntimeError.Kind.PERMISSION_DENIED
+        micPermissionPermanentlyDenied = denied && alreadyReported &&
+            !ActivityCompat.shouldShowRequestPermissionRationale(
+                this, Manifest.permission.RECORD_AUDIO,
+            )
+    }
+
+    /** Opens this app's page in system Settings, where the mic can be re-enabled. */
+    private fun openAppSettings() {
+        runCatching {
+            startActivity(
+                Intent(
+                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.fromParts("package", packageName, null),
+                ),
+            )
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        recomputeMicDenialState()
         // Warm up the audio device monitor so route state is populated for the UI.
         EarslateRuntime.deviceMonitor(this)
 
@@ -149,6 +216,8 @@ class MainActivity : ComponentActivity() {
                         onStart = ::requestStart,
                         onStop = { TranslatorService.stop(this) },
                         onRequestQsTile = ::requestAddQuickSettingsTile,
+                        onOpenAppSettings =
+                            if (micPermissionPermanentlyDenied) ::openAppSettings else null,
                     )
                 }
             }
@@ -219,10 +288,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun proceedStart() {
+        // Only what the app actually exercises. BLUETOOTH_CONNECT used to be
+        // requested here on API 31+ and was never called for — see the note in
+        // AndroidManifest.xml.
         val needed = buildList {
             add(Manifest.permission.RECORD_AUDIO)
             if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
-            if (Build.VERSION.SDK_INT >= 31) add(Manifest.permission.BLUETOOTH_CONNECT)
         }
         val missing = needed.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
@@ -236,13 +307,14 @@ class MainActivity : ComponentActivity() {
 
     /**
      * Prominent in-app disclosure (Google Play User Data policy): names the
-     * third parties that can receive audio (Gemini or OpenAI — the broker picks
-     * one per session), the data (microphone audio), the purpose (live
-     * translation), and retention, gated behind an explicit "I agree". Shown
-     * before the FIRST capture on any entry point; the choice persists.
+     * third parties that can receive audio (Gemini or OpenAI — resolved per
+     * session from the keys the user has supplied), the data (microphone audio),
+     * the purpose (live translation), and retention, gated behind an explicit
+     * "I agree". Shown before the FIRST capture on any entry point; the choice
+     * persists.
      *
      * The wording lives in `R.string.audio_disclosure_body`. If the set of
-     * providers the broker can mint for ever changes, that string and the Play
+     * providers the app can mint against ever changes, that string and the Play
      * Data safety declaration must change with it.
      */
     private fun showAudioEgressDisclosure() {
@@ -285,6 +357,7 @@ private fun EarslateApp(
     onStart: () -> Unit,
     onStop: () -> Unit,
     onRequestQsTile: () -> Unit = {},
+    onOpenAppSettings: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val settingsRepo = remember(context) { EarslateRuntime.settingsRepository(context) }
@@ -315,13 +388,20 @@ private fun EarslateApp(
     // to that would work.
     BackHandler(
         enabled = screen != Screen.MAIN &&
-            screen != Screen.ONBOARDING &&
+            // FIRST-RUN onboarding is the trap-free case: there is nothing
+            // behind it, so back should exit. Onboarding reached from Settings
+            // by "View onboarding" is the opposite, and excluding the whole
+            // screen made that a one-way door — system back closed the app
+            // instead of going back, from a screen the user had deliberately
+            // opened to read.
+            !(screen == Screen.ONBOARDING && firstLaunch) &&
             !(screen == Screen.KEY_SETUP && !hasKey),
     ) {
         screen = when (screen) {
             Screen.DIAGNOSTICS -> Screen.SETTINGS
             Screen.HELP -> Screen.SETTINGS
             Screen.KEY_SETUP -> Screen.SETTINGS
+            Screen.ONBOARDING -> Screen.SETTINGS
             else -> Screen.MAIN
         }
     }
@@ -377,12 +457,19 @@ private fun EarslateApp(
                     hasKey = providerKeys.hasAnyKey()
                     screen = Screen.MAIN
                 },
+                // Removing a key changes whether the app has one at all, and
+                // hasKey was only recomputed on navigation — so deleting the
+                // last key left the main screen still offering START for a
+                // session that could not mint.
+                onKeysChanged = { hasKey = providerKeys.hasAnyKey() },
             )
             Screen.MAIN -> MainScreen(
                 padding = padding,
                 onStart = onStart,
                 onStop = onStop,
                 onOpenSettings = { screen = Screen.SETTINGS },
+                onOpenAppSettings = onOpenAppSettings,
+                captionsEnabled = userSettings.captionsEnabled,
                 currentLanguage = currentLanguage,
                 currentTheirLanguage = currentTheirs,
                 onMyLanguageChange = { lang ->
@@ -398,6 +485,7 @@ private fun EarslateApp(
                 initialTheirLanguage = currentTheirs,
                 initialCaptionsEnabled = userSettings.captionsEnabled,
                 initialPreferEarbuds = userSettings.preferEarbuds,
+                initialExternalOnly = userSettings.externalOnly,
                 initialDiagnosticsEnabled = userSettings.diagnosticsEnabled,
                 initialPersistentNotification = userSettings.persistentNotification,
                 initialProvider = userSettings.provider,
@@ -413,6 +501,9 @@ private fun EarslateApp(
                 },
                 onPreferEarbudsChange = { enabled ->
                     scope.launch { settingsRepo.setPreferEarbuds(enabled) }
+                },
+                onExternalOnlyChange = { enabled ->
+                    scope.launch { settingsRepo.setExternalOnly(enabled) }
                 },
                 onDiagnosticsEnabledChange = { enabled ->
                     scope.launch { settingsRepo.setDiagnosticsEnabled(enabled) }
@@ -452,6 +543,14 @@ private fun MainScreen(
     onStart: () -> Unit,
     onStop: () -> Unit,
     onOpenSettings: () -> Unit,
+    /** Non-null only when the mic permission can no longer be requested. */
+    onOpenAppSettings: (() -> Unit)? = null,
+    /**
+     * Whether the user wants captions. The panel was rendered unconditionally,
+     * so turning captions off left a permanent empty transcript pane with its
+     * placeholder — the setting appeared to do nothing at all.
+     */
+    captionsEnabled: Boolean = true,
     currentLanguage: TargetLanguage = TargetLanguage.EnglishUS,
     currentTheirLanguage: TargetLanguage = TargetLanguage.EnglishUS,
     onMyLanguageChange: (TargetLanguage) -> Unit = {},
@@ -529,6 +628,20 @@ private fun MainScreen(
                 SpeakerEchoNotice()
             }
 
+            // A session is built from the policy it started with — the policy
+            // is immutable and rebuilding the session is how it changes — so a
+            // language picked mid-session does not reach the running one. The
+            // chips stay usable, because preparing the next session is a real
+            // thing to want; what they stop doing is pretending.
+            if (state.isActive) {
+                Text(
+                    text = "Language changes apply to the next session.",
+                    style = EarslateTheme.textStyles.bodySmall,
+                    color = EarslateTheme.colors.textTertiary,
+                    modifier = Modifier.padding(bottom = 6.dp),
+                )
+            }
+
             LanguageBar(
                 mine = currentLanguage,
                 theirs = currentTheirLanguage,
@@ -552,21 +665,34 @@ private fun MainScreen(
                 exit = shrinkVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeOut(tween(MotionBaseMs)),
             ) {
                 lastError?.let { err ->
+                    // When Android will not show the permission sheet again,
+                    // RETRY is a button that provably does nothing — the only
+                    // route left is the system settings page, so that is what
+                    // the banner offers.
+                    val settingsRoute = onOpenAppSettings.takeIf {
+                        err.kind == RuntimeError.Kind.PERMISSION_DENIED
+                    }
                     ErrorBanner(
                         error = err,
-                        onRetry = onStart,
+                        onRetry = settingsRoute ?: onStart,
+                        retryLabel = if (settingsRoute != null) "OPEN SETTINGS" else "RETRY",
                         onDismiss = { EarslateRuntime.stateStore.clearError() },
                     )
                 }
             }
 
-            Spacer(Modifier.height(8.dp))
+            // Only when the user asked for captions. Rendering it regardless
+            // left a permanent empty transcript pane showing its placeholder,
+            // so the Captions toggle looked like it did nothing.
+            if (captionsEnabled) {
+                Spacer(Modifier.height(8.dp))
 
-            CaptionsView(
-                lines = captionLines,
-                pending = captionPending,
-                active = state.isActive,
-            )
+                CaptionsView(
+                    lines = captionLines,
+                    pending = captionPending,
+                    active = state.isActive,
+                )
+            }
 
             Spacer(Modifier.height(16.dp))
         }

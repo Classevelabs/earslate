@@ -13,16 +13,18 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import com.classeve.earslate.EarslateRuntime
 import com.classeve.earslate.ui.MainActivity
+import com.classeve.earslate.session.RuntimeError
 import com.classeve.earslate.session.RuntimeState
 import com.classeve.earslate.session.SupportedLanguages
 import com.classeve.earslate.session.isActive
 import com.classeve.earslate.settings.OnboardingPrefs
-import com.classeve.earslate.settings.toTranslatorPolicy
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 
 /**
@@ -44,6 +46,12 @@ class TranslatorService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var stateJob: Job? = null
+
+    /**
+     * The in-flight settings read for a pending ACTION_START, so an ACTION_STOP
+     * arriving first can cancel it instead of being overtaken by it.
+     */
+    private var startJob: Job? = null
     private var sawActive = false
 
     override fun onCreate() {
@@ -136,16 +144,63 @@ class TranslatorService : Service() {
                     stopSelf()
                     return START_NOT_STICKY
                 }
-                val policy = EarslateRuntime.settingsRepository(this)
-                    .settings.value
-                    .toTranslatorPolicy()
-                EarslateRuntime.sessionCoordinator(this).start(policy)
+                // The policy is AWAITED, not read from settings.value.
+                //
+                // This service is reachable with a cold process — the QS tile and
+                // the notification's Start action both call it directly — and the
+                // settings StateFlow is seeded with defaults until DataStore's
+                // first disk read lands. Reading .value here produced a policy of
+                // myLanguage == theirLanguage == "en-US", which collapses the
+                // session to one English leg: connected, listening, translating
+                // English into English, with the user's language pair, captions
+                // choice and provider choice all silently discarded.
+                //
+                // Suspending costs one disk read before capture opens. The
+                // session already reports BOOTSTRAPPING through the same state
+                // store, so there is no window where the UI looks idle.
+                startJob?.cancel()
+                startJob = scope.launch {
+                    // Reading from disk can fail where reading a StateFlow could
+                    // not, and this scope has no exception handler — an
+                    // unhandled IOException from a corrupted preferences file
+                    // would take the process down. Starting anyway is not the
+                    // fallback: a policy built from defaults is the exact defect
+                    // this await exists to prevent. So it says so and stops.
+                    val policy = try {
+                        EarslateRuntime.settingsRepository(this@TranslatorService)
+                            .translatorPolicy()
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "could not read settings", t)
+                        EarslateRuntime.stateStore.setError(
+                            RuntimeError(
+                                kind = RuntimeError.Kind.UNKNOWN,
+                                message = "Could not read your settings. Try again.",
+                            ),
+                        )
+                        stopForegroundSmart()
+                        stopSelf()
+                        return@launch
+                    }
+                    // A STOP can arrive while that read is in flight; without this
+                    // the session would start immediately after being stopped.
+                    // ensureActive() rather than a bare `isActive`, which this
+                    // file already imports for RuntimeState — two extension
+                    // properties of the same name cannot both be imported.
+                    coroutineContext.ensureActive()
+                    EarslateRuntime.sessionCoordinator(this@TranslatorService).start(policy)
+                }
             }
             ACTION_STOP -> {
-                val active = EarslateRuntime.stateStore.state.value.isActive
-                if (active) {
-                    EarslateRuntime.sessionCoordinator(this).stop()
-                } else {
+                startJob?.cancel()
+                startJob = null
+                // Ask the coordinator, which owns the session, rather than
+                // the state store, which only mirrors it. stop() is safe to
+                // call either way and reports whether there was anything to
+                // stop; when there was, the lifecycle's own teardown drives the
+                // store to IDLE and the collector above stops this service.
+                if (!EarslateRuntime.sessionCoordinator(this).stop()) {
                     stopForegroundSmart()
                     stopSelf()
                 }

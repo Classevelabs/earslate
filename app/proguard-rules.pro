@@ -18,15 +18,15 @@
 # Compose
 -keep class androidx.compose.runtime.** { *; }
 
-# Tink crypto (transitive: errorprone annotations + optional KeysDownloader deps are compile-time / unused)
--dontwarn com.google.errorprone.annotations.**
--dontwarn com.google.api.client.**
--dontwarn org.joda.time.**
--keep class com.google.crypto.tink.** { *; }
-
-# WorkManager / EncryptedSharedPreferences workers
--keep class * extends androidx.work.CoroutineWorker { <init>(...); }
--keep class * extends androidx.work.Worker { <init>(...); }
+# Removed 2026-08-13: keep/dontwarn rules for Tink, Google API client, Joda-Time
+# and WorkManager. None of those libraries are dependencies — KeyVault
+# deliberately talks to AndroidKeyStore directly instead of pulling in
+# androidx.security-crypto (and Tink behind it), and there is no WorkManager in
+# the version catalogue. Rules naming absent libraries are not harmless: they
+# are read as evidence that the library IS present, which contradicts the audit
+# story the KeyVault KDoc tells, and a blanket keep would suppress real shrinker
+# feedback the day one of them ever is added. Verified by a clean release build
+# after removal.
 
 # Strip android.util.Log calls in release builds — mirrors Lven-Android.
 # Logcat is world-readable to any adb-attached host and to system bugreports;

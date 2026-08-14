@@ -24,13 +24,14 @@ class LocalKeyBootstrapRepository(
     override suspend fun bootstrap(
         provider: TranslationProvider,
         targetLanguageCode: String,
+        captionsEnabled: Boolean,
     ): SessionBootstrap {
         val chosen = keys.resolve(provider)
             ?: throw missingKey(provider)
         val apiKey = keys.key(chosen) ?: throw missingKey(provider)
 
         return try {
-            minter.mint(chosen, apiKey, targetLanguageCode)
+            minter.mint(chosen, apiKey, targetLanguageCode, captionsEnabled)
         } catch (primaryFailure: BootstrapException) {
             // "Automatic" is a reliability promise, not a label. If the user
             // has a second key and the first provider is refusing sessions,
@@ -41,7 +42,7 @@ class LocalKeyBootstrapRepository(
                 ?: throw primaryFailure
             val fallbackKey = keys.key(fallback) ?: throw primaryFailure
             try {
-                minter.mint(fallback, fallbackKey, targetLanguageCode)
+                minter.mint(fallback, fallbackKey, targetLanguageCode, captionsEnabled)
             } catch (_: BootstrapException) {
                 // Report the provider the user would have expected to be used.
                 throw primaryFailure
@@ -83,7 +84,11 @@ class ProviderKeyVerifier(private val minter: ProviderSessionMinter) {
         apiKey: String,
         targetLanguageCode: String,
     ): Result = try {
-        minter.mint(provider, apiKey, targetLanguageCode)
+        // Verified with transcription ON — the product default, and the richer
+        // of the two configurations. A key that can mint this can mint the
+        // captions-off variant; checking the other way round would pass a key
+        // that then fails the first time the user leaves captions on.
+        minter.mint(provider, apiKey, targetLanguageCode, captionsEnabled = true)
         Result.Valid
     } catch (failure: BootstrapException) {
         Result.Rejected(failure.message ?: "That key could not be verified.")

@@ -30,29 +30,75 @@ object LiveSessionConfigFactory {
         explicitNulls = false
     }
 
+    /**
+     * The session configuration itself, with no frame around it.
+     *
+     * There are two places this exact object has to appear, and they must be
+     * byte-identical:
+     *
+     *  1. `bidiGenerateContentSetup` inside the ephemeral-token request, which
+     *     LOCKS the session — the socket is opened against
+     *     `BidiGenerateContentConstrained`.
+     *  2. The `setup` frame the client sends once that socket is open.
+     *
+     * They used to be built twice, by hand, in two files. `LiveWireModels`
+     * asserted in a comment that they were "identical shape", and they were
+     * not: the token always carried `inputAudioTranscription` /
+     * `outputAudioTranscription`, while this builder omitted them when captions
+     * were off. Turning captions off therefore produced a session whose token
+     * and setup frame disagreed — a locked config the client then contradicted.
+     * Both halves had a passing test; neither test compared them, so the suite
+     * was green on a contradiction.
+     *
+     * One builder, two emitters, is why that cannot happen again. Do not
+     * reintroduce a second copy of this object anywhere — embed this one.
+     */
+    private fun sessionSetup(
+        model: String,
+        targetLanguageCode: String,
+        echoTargetLanguage: Boolean,
+        captionsEnabled: Boolean,
+    ) = ClientSetupPayload(
+        model = normalizeModel(model),
+        generationConfig = GenerationConfig(
+            responseModalities = listOf("AUDIO"),
+            translationConfig = TranslationConfig(
+                targetLanguageCode = targetLanguageCode,
+                echoTargetLanguage = echoTargetLanguage,
+            ),
+        ),
+        // Transcription config sits on the setup, one level ABOVE
+        // generationConfig. See ClientSetupPayload for the 1007 close this
+        // caused when it was nested.
+        inputAudioTranscription = if (captionsEnabled) JsonObject(emptyMap()) else null,
+        outputAudioTranscription = if (captionsEnabled) JsonObject(emptyMap()) else null,
+    )
+
+    /** The first frame after the socket opens: the setup, wrapped in `setup`. */
     fun buildSetup(
         model: String,
         targetLanguageCode: String,
         echoTargetLanguage: Boolean,
         captionsEnabled: Boolean,
-    ): String {
-        val setup = ClientSetupPayload(
-            model = normalizeModel(model),
-            generationConfig = GenerationConfig(
-                responseModalities = listOf("AUDIO"),
-                translationConfig = TranslationConfig(
-                    targetLanguageCode = targetLanguageCode,
-                    echoTargetLanguage = echoTargetLanguage,
-                ),
-            ),
-            // Transcription config sits on the setup, one level ABOVE
-            // generationConfig. See ClientSetupPayload for the 1007 close this
-            // caused when it was nested.
-            inputAudioTranscription = if (captionsEnabled) JsonObject(emptyMap()) else null,
-            outputAudioTranscription = if (captionsEnabled) JsonObject(emptyMap()) else null,
-        )
-        return json.encodeToString(ClientSetupFrame(setup = setup))
-    }
+    ): String = json.encodeToString(
+        ClientSetupFrame(
+            setup = sessionSetup(model, targetLanguageCode, echoTargetLanguage, captionsEnabled),
+        ),
+    )
+
+    /**
+     * The same setup, unwrapped, for `bidiGenerateContentSetup` in the token
+     * request. Returned as JSON text so the minter — which builds its body with
+     * `org.json` — can embed it without this module owning a second serializer.
+     */
+    fun buildTokenSessionSetup(
+        model: String,
+        targetLanguageCode: String,
+        echoTargetLanguage: Boolean,
+        captionsEnabled: Boolean,
+    ): String = json.encodeToString(
+        sessionSetup(model, targetLanguageCode, echoTargetLanguage, captionsEnabled),
+    )
 
     fun buildAudioChunk(pcm16k: ByteArray): String {
         val base64 = Base64.getEncoder().encodeToString(pcm16k)
