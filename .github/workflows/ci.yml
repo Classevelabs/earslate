@@ -13,10 +13,18 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Nothing here writes to the repository, so the token should not be able to.
+# Without this the default token is writable, and a compromised build dependency
+# would inherit that write access on a fork PR.
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Test, lint, assemble
     runs-on: ubuntu-latest
+    # A wedged Gradle daemon otherwise runs until the six-hour ceiling.
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
