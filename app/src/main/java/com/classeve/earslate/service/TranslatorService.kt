@@ -13,10 +13,12 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import com.classeve.earslate.EarslateRuntime
 import com.classeve.earslate.ui.MainActivity
+import com.classeve.earslate.session.RuntimeError
 import com.classeve.earslate.session.RuntimeState
 import com.classeve.earslate.session.SupportedLanguages
 import com.classeve.earslate.session.isActive
 import com.classeve.earslate.settings.OnboardingPrefs
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -158,8 +160,29 @@ class TranslatorService : Service() {
                 // store, so there is no window where the UI looks idle.
                 startJob?.cancel()
                 startJob = scope.launch {
-                    val policy = EarslateRuntime.settingsRepository(this@TranslatorService)
-                        .translatorPolicy()
+                    // Reading from disk can fail where reading a StateFlow could
+                    // not, and this scope has no exception handler — an
+                    // unhandled IOException from a corrupted preferences file
+                    // would take the process down. Starting anyway is not the
+                    // fallback: a policy built from defaults is the exact defect
+                    // this await exists to prevent. So it says so and stops.
+                    val policy = try {
+                        EarslateRuntime.settingsRepository(this@TranslatorService)
+                            .translatorPolicy()
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "could not read settings", t)
+                        EarslateRuntime.stateStore.setError(
+                            RuntimeError(
+                                kind = RuntimeError.Kind.UNKNOWN,
+                                message = "Could not read your settings. Try again.",
+                            ),
+                        )
+                        stopForegroundSmart()
+                        stopSelf()
+                        return@launch
+                    }
                     // A STOP can arrive while that read is in flight; without this
                     // the session would start immediately after being stopped.
                     // ensureActive() rather than a bare `isActive`, which this
