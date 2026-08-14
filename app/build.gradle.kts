@@ -44,13 +44,19 @@ android {
         applicationId = "com.classeve.earslate"
         minSdk = 29
         targetSdk = 36
+        // 0.4.5 — a session's configuration is now stated once rather than
+        // twice (captions-off minted a token that contradicted its own setup
+        // frame), a cold start no longer ignores the user's languages, a socket
+        // death no longer tears down the foreground service it needs to
+        // reconnect, and diagnosed failures are no longer laundered into
+        // "check your network". See the log between v0.4.4 and here.
+        //
         // 0.4.4 — brand signing certificate (the 0.4.3 cert leaked the legal
         // entity, city and state into every APK), BLUETOOTH_CONNECT removed,
-        // two audio-teardown races fixed. The certificate change alone requires
-        // a new version: an install signed by the old key cannot take this one
-        // as an update.
-        versionCode = 19
-        versionName = "0.4.4"
+        // two audio-teardown races fixed. That certificate change is why an
+        // install signed by the old key cannot take these as an update.
+        versionCode = 20
+        versionName = "0.4.5"
 
         vectorDrawables.useSupportLibrary = true
 
@@ -153,6 +159,27 @@ tasks.matching { it.name == "preReleaseBuild" }.configureEach {
 }
 
 /**
+ * The one definition of what a clean artifact looks like.
+ *
+ * Both the APK gate and the bundle gate read these. They were nearly written
+ * out twice, which is the same mistake as any other duplicated contract: the
+ * copies drift, each has its own passing check, and neither notices.
+ */
+val brandCertificateDn = "CN=Earslate, O=ClassEve, C=IN"
+
+/**
+ * Strings that are never legitimate in a shipped artifact. Deliberately NOT
+ * bare city/state words — see [verifyReleaseIdentity]'s KDoc.
+ */
+val forbiddenIdentityStrings = listOf(
+    "REDACTED",
+    "Pvt Ltd",
+    "Pvt. Ltd",
+    "REDACTED",
+    "Bengaluru",
+)
+
+/**
  * Fails the build if a release APK carries the legal entity, a city, or a state.
  *
  * This exists because the check did not, and the omission shipped. Up to
@@ -180,27 +207,6 @@ tasks.matching { it.name == "preReleaseBuild" }.configureEach {
  * skip. A gate that quietly does nothing is worse than no gate, because it
  * reads as proof.
  */
-/**
- * The one definition of what a clean artifact looks like.
- *
- * Both the APK gate and the bundle gate read these. They were nearly written
- * out twice, which is the same mistake as any other duplicated contract: the
- * copies drift, each has its own passing check, and neither notices.
- */
-val brandCertificateDn = "CN=Earslate, O=ClassEve, C=IN"
-
-/**
- * Strings that are never legitimate in a shipped artifact. Deliberately NOT
- * bare city/state words — see [verifyReleaseIdentity]'s KDoc.
- */
-val forbiddenIdentityStrings = listOf(
-    "REDACTED",
-    "Pvt Ltd",
-    "Pvt. Ltd",
-    "REDACTED",
-    "Bengaluru",
-)
-
 val verifyReleaseIdentity by tasks.registering {
     group = "verification"
     description = "Fails if the release APK leaks the legal entity, a city, or a state."

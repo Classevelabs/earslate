@@ -83,6 +83,12 @@ import kotlinx.coroutines.launch
 fun ApiKeySetupScreen(
     onDone: () -> Unit,
     onBack: (() -> Unit)? = null,
+    /**
+     * Fired when the set of stored keys changes without leaving this screen,
+     * which is what removing one does. The host tracks "does the app have a
+     * key at all" and only recomputed it on navigation.
+     */
+    onKeysChanged: () -> Unit = {},
     targetLanguageCode: String,
     initialProvider: KeyProvider = KeyProvider.GEMINI,
     padding: PaddingValues = PaddingValues(0.dp),
@@ -227,6 +233,7 @@ fun ApiKeySetupScreen(
                             keys.forget(option)
                             saved = keys.configured()
                             problem = null
+                            onKeysChanged()
                         },
                     )
                 }

@@ -157,8 +157,26 @@ class MainActivity : ComponentActivity() {
     /**
      * Set when Android will no longer show the permission sheet, so the UI can
      * offer the only remaining route — the system app-settings page.
+     *
+     * Recomputed in [onCreate] rather than merely remembered, because an
+     * Activity field does not survive a configuration change: rotating the
+     * phone reset this to false and turned "OPEN SETTINGS" back into a "RETRY"
+     * that provably cannot work. Every input to it outlives the Activity — the
+     * error lives in the process-wide state store, and the permission and its
+     * rationale flag are platform state — so it is derived, not stored.
      */
     private var micPermissionPermanentlyDenied by mutableStateOf(false)
+
+    private fun recomputeMicDenialState() {
+        val denied = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        val alreadyReported =
+            EarslateRuntime.stateStore.lastError.value?.kind == RuntimeError.Kind.PERMISSION_DENIED
+        micPermissionPermanentlyDenied = denied && alreadyReported &&
+            !ActivityCompat.shouldShowRequestPermissionRationale(
+                this, Manifest.permission.RECORD_AUDIO,
+            )
+    }
 
     /** Opens this app's page in system Settings, where the mic can be re-enabled. */
     private fun openAppSettings() {
@@ -175,6 +193,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        recomputeMicDenialState()
         // Warm up the audio device monitor so route state is populated for the UI.
         EarslateRuntime.deviceMonitor(this)
 
@@ -431,6 +450,11 @@ private fun EarslateApp(
                     hasKey = providerKeys.hasAnyKey()
                     screen = Screen.MAIN
                 },
+                // Removing a key changes whether the app has one at all, and
+                // hasKey was only recomputed on navigation — so deleting the
+                // last key left the main screen still offering START for a
+                // session that could not mint.
+                onKeysChanged = { hasKey = providerKeys.hasAnyKey() },
             )
             Screen.MAIN -> MainScreen(
                 padding = padding,
