@@ -344,4 +344,144 @@ class JitterBufferTest {
         b.enqueue(ByteArray(0))
         assertEquals(0, b.pendingBytes)
     }
+
+    // ── Mid-speech starvation: the 500 ms freeze ───────────────────────
+
+    /**
+     * Real on-device numbers: Gemini sends 12000-byte chunks at 24 kHz mono
+     * PCM16, which is 250 ms of audio each, roughly every 248 ms.
+     */
+    private fun geminiLikeBuffer(): JitterBuffer {
+        fun ms(n: Int) = (24_000 * n / 1000) * 2
+        return JitterBuffer(
+            startupBytes = ms(180),
+            maxTargetBytes = ms(600),
+            growthStepBytes = ms(60),
+            maxBufferedBytes = ms(1_200),
+            recoveryBytes = ms(12_000),
+        )
+    }
+
+    private val geminiChunk get() = ByteArray(12_000) { 7 }
+
+    @Test
+    fun `one late chunk mid-speech does not halt playback until two more arrive`() {
+        // The failure this pins: a single late packet on mobile data used to
+        // disarm the buffer. Re-arming needs armThresholdBytes, which is
+        // 1.25x the largest chunk the provider has sent = 15000 bytes, and a
+        // chunk is 12000 — so playback stayed silent until a SECOND chunk
+        // landed. At a 248 ms cadence that is roughly half a second of dead
+        // air in the middle of a sentence, for one late packet.
+        //
+        // The class KDoc already promised this could not happen ("Never fully
+        // stall... the moment a packet lands it plays"). onUnderrun did it
+        // anyway.
+        val b = geminiLikeBuffer()
+        b.enqueue(geminiChunk)
+        b.enqueue(geminiChunk)
+        assertNotNull("two chunks arm the buffer", b.drain())
+        assertNotNull(b.drain())
+
+        // The network hiccups: nothing to play this tick.
+        assertNull("starved tick returns nothing", b.drain())
+
+        // One chunk arrives. It must play immediately.
+        b.enqueue(geminiChunk)
+        assertNotNull(
+            "a chunk in hand must play at once, not wait for a second chunk",
+            b.drain(),
+        )
+    }
+
+    @Test
+    fun `sustained starvation is charged once, not once per polling tick`() {
+        // The other half of the same fix. Staying armed means drain() keeps
+        // reaching onUnderrun while the queue is empty, and the playback loop
+        // polls every 5 ms. Charging an underrun per tick would add a growth
+        // step per tick and peg the target at its ceiling within a few tens of
+        // milliseconds — turning a smoothness fix into a latency bug.
+        val b = geminiLikeBuffer()
+        b.enqueue(geminiChunk)
+        b.enqueue(geminiChunk)
+        b.drain()
+        b.drain()
+
+        repeat(200) { assertNull(b.drain()) }
+
+        assertEquals(
+            "one continuous gap is one underrun, however often it is polled",
+            1,
+            b.underrunCount,
+        )
+        val afterOneGap = b.adaptedTargetBytes
+        b.enqueue(geminiChunk)
+        assertNotNull(b.drain())
+        repeat(200) { assertNull(b.drain()) }
+        assertEquals("a second distinct gap is a second underrun", 2, b.underrunCount)
+        assertTrue(
+            "each gap buys exactly one growth step",
+            b.adaptedTargetBytes > afterOneGap,
+        )
+    }
+
+    @Test
+    fun `end of turn still disarms so the next utterance re-arms with the cushion`() {
+        // Staying armed is for mid-speech only. When the provider says the turn
+        // is over, the quiet is expected: disarm, charge nothing, and make the
+        // next utterance wait for the full (possibly grown) cushion. That is
+        // the one place added latency is free, because nobody is speaking.
+        val b = geminiLikeBuffer()
+        b.enqueue(geminiChunk)
+        b.enqueue(geminiChunk)
+        b.drain()
+        b.drain()
+        b.markTurnEnd()
+        assertNull(b.drain())
+        assertEquals("end of turn is not a fault", 0, b.underrunCount)
+
+        // Disarmed: one chunk is below the 15000-byte arm threshold.
+        b.enqueue(geminiChunk)
+        assertNull("next utterance re-arms properly", b.drain())
+        b.enqueue(geminiChunk)
+        assertNotNull(b.drain())
+    }
+
+    /**
+     * The graceful stop must not lose the tail just because the cushion is
+     * disarmed — which is the buffer's ordinary state right after a turn ends,
+     * and therefore the state it is usually in when someone presses STOP.
+     */
+    @Test
+    fun `shutdown drain returns buffered audio while drain refuses`() {
+        val b = JitterBuffer(startupBytes = 1_000)
+        b.enqueue(ByteArray(200) { 7 })
+
+        // Below the arm threshold, so the session-time drain correctly refuses.
+        assertNull("drain must respect the cushion during a session", b.drain())
+        assertEquals(200, b.pendingBytes)
+
+        val tail = b.drainForShutdown()
+        assertNotNull("the tail must survive a graceful stop", tail)
+        assertArrayEquals(ByteArray(200) { 7 }, tail)
+        assertEquals(0, b.pendingBytes)
+        assertNull("nothing left after the tail is taken", b.drainForShutdown())
+    }
+
+    /**
+     * The exact loop the playback engine runs on a graceful stop. With drain()
+     * this emptied nothing at all.
+     */
+    @Test
+    fun `the graceful stop loop empties a disarmed buffer completely`() {
+        val b = JitterBuffer(startupBytes = 10_000)
+        repeat(4) { b.enqueue(ByteArray(500) { it.toByte() }) }
+        assertEquals(2_000, b.pendingBytes)
+
+        var played = 0
+        while (b.pendingBytes > 0) {
+            val chunk = b.drainForShutdown() ?: break
+            played += chunk.size
+        }
+        assertEquals("every buffered byte must reach the track", 2_000, played)
+    }
 }

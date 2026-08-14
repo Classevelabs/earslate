@@ -29,12 +29,20 @@ fun ErrorBanner(
     error: RuntimeError,
     modifier: Modifier = Modifier,
     onRetry: (() -> Unit)? = null,
+    /**
+     * What the primary action says. "RETRY" is right for a failure the user can
+     * simply try again, and wrong for one they cannot — a permanently denied
+     * microphone shows no permission sheet, so a RETRY button there is a button
+     * that visibly does nothing.
+     */
+    retryLabel: String = "RETRY",
     onDismiss: (() -> Unit)? = null,
 ) {
     val kickerLabel = when (error.kind) {
         RuntimeError.Kind.BOOTSTRAP_FAILED -> "BOOTSTRAP FAILED"
         RuntimeError.Kind.CONNECT_FAILED -> "CONNECT FAILED"
         RuntimeError.Kind.PERMISSION_DENIED -> "PERMISSION NEEDED"
+        RuntimeError.Kind.PROVIDER_ERROR -> "PROVIDER REFUSED"
         RuntimeError.Kind.UNKNOWN -> "ERROR"
     }
 
@@ -71,7 +79,7 @@ fun ErrorBanner(
                 if (showRetry) {
                     onRetry?.let {
                         BannerAction(
-                            label = "RETRY",
+                            label = retryLabel,
                             primary = true,
                             onClick = it,
                         )

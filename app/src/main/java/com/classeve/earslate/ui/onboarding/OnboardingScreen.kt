@@ -102,16 +102,22 @@ fun OnboardingScreen(
 
             Reveal(index = 1) {
                 FramedPanel {
+                    // Both of these described the 0.3.x broker product and were
+                    // still on the first screen of the shipping app at 0.4.4.
+                    // "no API key setup" was the exact opposite of the truth —
+                    // the very next screen asks for a key — and the credential
+                    // claim named a ClassEve server that was deleted in 0.4.0.
+                    // Found by running the release APK, not by reading it.
                     ValueProp(
-                        title = "Free",
-                        body = "No price, no subscription, no account, and no API key setup. " +
-                            "Choose Automatic, Gemini, or OpenAI and start listening.",
+                        title = "Free, on your own key",
+                        body = "No price, no subscription, no account. You bring a Gemini or " +
+                            "OpenAI key, and sessions bill to that account at your provider's rates.",
                     )
                     ValueProp(
                         title = "Private",
-                        body = "Audio goes straight from your phone to the selected translation " +
-                            "provider. ClassEve issues a short-lived session credential but " +
-                            "never receives or stores your audio.",
+                        body = "Audio goes straight from your phone to the provider you chose. " +
+                            "There is no ClassEve server in the path — your key opens the session " +
+                            "from the device itself, and we never receive or store your audio.",
                     )
                     ValueProp(
                         title = "Live",

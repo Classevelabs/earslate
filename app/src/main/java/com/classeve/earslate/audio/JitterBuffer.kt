@@ -77,6 +77,13 @@ class JitterBuffer(
      */
     private var turnEnded = false
 
+    /**
+     * True while the queue has come back empty mid-speech and the gap has
+     * already been charged as an underrun. Cleared by the next successful
+     * drain. See [onUnderrun] for why one gap must not be counted per tick.
+     */
+    private var starved = false
+
     /** Underruns since the last [reset]. Surfaced in diagnostics as buffer health. */
     val underrunCount: Int get() = synchronized(lock) { underruns }
 
@@ -134,6 +141,31 @@ class JitterBuffer(
      * an underrun does **not** mean playback has stopped — the buffer stays
      * armed and returns audio as soon as any arrives.
      */
+    /**
+     * Take the next chunk for SHUTDOWN, ignoring the arm threshold.
+     *
+     * [drain] refuses while the buffer is disarmed, which is correct during a
+     * session — that gate is the cushion doing its job — and wrong at the end
+     * of one. The graceful stop loops `while (pendingBytes > 0)` over [drain],
+     * so a buffer that happened to be disarmed returned null on the first call
+     * and the loop broke with the whole tail still in it. Disarmed is the
+     * ordinary state right after a turn ends, which is exactly when someone
+     * reaches for STOP.
+     *
+     * So the last words were dropped by the code whose stated purpose is to let
+     * the last word finish — and silently, because pendingBytes was still
+     * positive and nothing checked.
+     *
+     * Deliberately does not touch the adaptation counters: nothing is being
+     * smoothed any more, and charging an underrun against a buffer that is
+     * about to be discarded would only distort the diagnostics.
+     */
+    fun drainForShutdown(): ByteArray? = synchronized(lock) {
+        val next = queue.removeFirstOrNull() ?: return null
+        accumulated -= next.size
+        next
+    }
+
     fun drain(): ByteArray? = synchronized(lock) {
         if (!draining) return null
         val next = queue.removeFirstOrNull()
@@ -142,6 +174,7 @@ class JitterBuffer(
             return null
         }
         accumulated -= next.size
+        starved = false
         onCleanDrain(next.size)
         next
     }
@@ -167,16 +200,47 @@ class JitterBuffer(
             // Expected quiet. Re-arm for the next utterance, but buy nothing:
             // this is not evidence the network is struggling.
             draining = false
+            starved = false
             return
         }
+        // One continuous gap is ONE underrun, however many times the playback
+        // loop polls during it. Because the buffer now stays armed (below),
+        // drain() keeps arriving here every few milliseconds while the queue is
+        // empty. Charging each visit would add a growth step per tick and peg
+        // the target at its ceiling within a few tens of milliseconds, turning
+        // a smoothness fix into a latency bug — and it would make the underrun
+        // metric a measure of polling frequency rather than of network health.
+        if (starved) return
+        starved = true
         underruns++
-        // Widen the cushion so the next gap is absorbed instead of heard.
+        // Widen the cushion so the NEXT utterance absorbs a gap this size.
         if (targetBytes < maxTargetBytes) {
             targetBytes = minOf(maxTargetBytes, targetBytes + growthStepBytes)
         }
-        // Re-arm: wait for the (now larger) cushion before resuming, but only
-        // if nothing is queued. If audio is already waiting we keep playing.
-        if (accumulated < armThresholdBytes()) draining = false
+        // Deliberately NOT disarming mid-speech.
+        //
+        // This line used to read `if (accumulated < armThresholdBytes()) draining = false`,
+        // whose comment claimed it only disarmed when nothing was queued. It
+        // disarmed every time: drain() only reaches onUnderrun when the queue
+        // came back empty, so `accumulated` is always 0 here and the condition
+        // is always true.
+        //
+        // The cost was severe and only visible on a real network. Re-arming
+        // needs armThresholdBytes — 1.25x the largest chunk the provider has
+        // sent, so 15000 bytes against Gemini's 12000-byte chunks. One late
+        // packet therefore silenced playback until TWO more chunks arrived: at
+        // the measured ~248 ms cadence, roughly half a second of dead air in
+        // the middle of a sentence, in exchange for one late packet.
+        //
+        // The class KDoc has promised the opposite since this buffer was
+        // written — "Never fully stall... the moment a packet lands it plays".
+        // The code simply did not implement its own contract. It does now: the
+        // gap is bridged by the playback engine's comfort silence, which is
+        // capped at 100 ms, and the next chunk plays the instant it lands.
+        //
+        // The grown target is not wasted. It applies at the next arm, which is
+        // end-of-turn — the one moment when buying latency is free, because
+        // nobody is speaking.
     }
 
     private fun onCleanDrain(bytes: Int) {
@@ -215,6 +279,7 @@ class JitterBuffer(
         recoveryBytes = recoveryTargetBytes
         targetBytes = (minBytes * adaptationRatio).toInt().coerceIn(minBytes, maxBytes)
         cleanBytes = 0
+        starved = false
         // A chunk's byte size is rate-dependent, so what we learned at the old
         // rate would misstate one chunk's worth at the new one. Re-learn it.
         largestChunkBytes = 0
@@ -225,6 +290,7 @@ class JitterBuffer(
         accumulated = 0
         draining = false
         cleanBytes = 0
+        starved = false
     }
 
     /** Resets adaptation as well as contents. Used when a session ends. */
@@ -236,6 +302,7 @@ class JitterBuffer(
         targetBytes = startupBytes
         largestChunkBytes = 0
         turnEnded = false
+        starved = false
         underruns = 0
         dropped = 0
     }

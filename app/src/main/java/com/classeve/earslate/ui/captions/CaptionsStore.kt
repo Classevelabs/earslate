@@ -44,10 +44,15 @@ class CaptionsStore(
     }
 
     fun clear() {
+        // _lines is cleared INSIDE the lock with the rest. It used to sit
+        // outside, which left a window where a concurrent appendDelta/commitLine
+        // from a still-draining session could commit a line after the builder
+        // was emptied but before the list was — resurrecting the previous
+        // conversation's last caption into the new session's transcript.
         synchronized(lock) {
             builder.setLength(0)
             _pending.value = ""
+            _lines.value = emptyList()
         }
-        _lines.value = emptyList()
     }
 }

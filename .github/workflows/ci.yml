@@ -55,8 +55,21 @@ jobs:
             total=$((total + n))
           done
           echo "total tests executed: $total"
-          if [ "$total" -lt 20 ]; then
-            echo "::error::only $total tests ran; expected at least 20. Suites have been lost or skipped."
+          # The floor tracks the real count. It sat at 20 while the suite grew to
+          # 65, which meant two thirds of the tests could vanish and this gate —
+          # the gate whose entire job is to notice exactly that — would still go
+          # green. A floor far below reality is not a safety margin, it is a
+          # disabled check that reads as an enabled one.
+          #
+          # 86 against the current 95 leaves room to delete a genuinely obsolete
+          # test without a CI edit, and no room to lose a suite. Raise it when
+          # the count rises. (70/79, then 77/86, then this.) Raising the floor
+          # is part of adding tests, not a follow-up: the batch that added the
+          # redaction suite left it behind, which is exactly how a floor drifts
+          # far enough below reality to stop being a check at all.
+          MIN_TESTS=86
+          if [ "$total" -lt "$MIN_TESTS" ]; then
+            echo "::error::only $total tests ran; expected at least $MIN_TESTS. Suites have been lost or skipped."
             exit 1
           fi
 
