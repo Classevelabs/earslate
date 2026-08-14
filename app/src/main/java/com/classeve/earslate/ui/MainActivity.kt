@@ -483,6 +483,7 @@ private fun EarslateApp(
                 padding = padding,
                 initialMyLanguage = currentLanguage,
                 initialTheirLanguage = currentTheirs,
+                initialConversationMode = userSettings.conversationMode,
                 initialCaptionsEnabled = userSettings.captionsEnabled,
                 initialPreferEarbuds = userSettings.preferEarbuds,
                 initialExternalOnly = userSettings.externalOnly,
@@ -495,6 +496,9 @@ private fun EarslateApp(
                 },
                 onTheirLanguageChange = { lang ->
                     scope.launch { settingsRepo.setTheirLanguage(lang.bcp47) }
+                },
+                onConversationModeChange = { enabled ->
+                    scope.launch { settingsRepo.setConversationMode(enabled) }
                 },
                 onCaptionsEnabledChange = { enabled ->
                     scope.launch { settingsRepo.setCaptionsEnabled(enabled) }

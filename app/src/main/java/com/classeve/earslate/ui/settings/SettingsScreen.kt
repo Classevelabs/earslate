@@ -53,6 +53,7 @@ import com.classeve.earslate.ui.theme.EarslateTheme
 fun SettingsScreen(
     initialMyLanguage: TargetLanguage = TargetLanguage.EnglishUS,
     initialTheirLanguage: TargetLanguage = TargetLanguage.EnglishUS,
+    initialConversationMode: Boolean = false,
     initialCaptionsEnabled: Boolean = true,
     initialPreferEarbuds: Boolean = true,
     initialExternalOnly: Boolean = false,
@@ -62,6 +63,7 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onMyLanguageChange: (TargetLanguage) -> Unit = {},
     onTheirLanguageChange: (TargetLanguage) -> Unit = {},
+    onConversationModeChange: (Boolean) -> Unit = {},
     onCaptionsEnabledChange: (Boolean) -> Unit = {},
     onPreferEarbudsChange: (Boolean) -> Unit = {},
     onExternalOnlyChange: (Boolean) -> Unit = {},
@@ -90,6 +92,7 @@ fun SettingsScreen(
     // comes back IS the edit.
     var myLanguage by remember(initialMyLanguage) { mutableStateOf(initialMyLanguage) }
     var theirLanguage by remember(initialTheirLanguage) { mutableStateOf(initialTheirLanguage) }
+    var conversationMode by remember(initialConversationMode) { mutableStateOf(initialConversationMode) }
     var captionsEnabled by remember(initialCaptionsEnabled) { mutableStateOf(initialCaptionsEnabled) }
     var preferEarbuds by remember(initialPreferEarbuds) { mutableStateOf(initialPreferEarbuds) }
     var externalOnly by remember(initialExternalOnly) { mutableStateOf(initialExternalOnly) }
@@ -180,8 +183,8 @@ fun SettingsScreen(
 
             SectionHeader(
                 kicker = "Languages",
-                headline = "Conversation.",
-                support = "Both directions translate automatically — each person hears the other in their own language.",
+                headline = "Listening.",
+                support = "earslate works out what is being spoken and puts it in your language. Nothing to set up.",
             )
 
             FramedPanel {
@@ -191,11 +194,26 @@ fun SettingsScreen(
                     onClick = { showMyPicker = true },
                 )
                 Divider()
-                SettingsRow(
-                    label = "Their language",
-                    value = theirLanguage.displayName,
-                    onClick = { showTheirPicker = true },
+                ToggleRow(
+                    label = "Two-way conversation",
+                    helper = "Also translate what you say into their language, for a back-and-forth. Off, any language you hear arrives in yours.",
+                    value = conversationMode,
+                    onChange = {
+                        conversationMode = it
+                        onConversationModeChange(it)
+                    },
                 )
+                // Only meaningful in two-way mode: with one leg the model
+                // detects the source itself, so naming it would be a setting
+                // that changes nothing.
+                if (conversationMode) {
+                    Divider()
+                    SettingsRow(
+                        label = "Their language",
+                        value = theirLanguage.displayName,
+                        onClick = { showTheirPicker = true },
+                    )
+                }
             }
 
             SectionHeader(
