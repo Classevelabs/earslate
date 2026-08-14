@@ -469,6 +469,7 @@ private fun EarslateApp(
                 onStop = onStop,
                 onOpenSettings = { screen = Screen.SETTINGS },
                 onOpenAppSettings = onOpenAppSettings,
+                captionsEnabled = userSettings.captionsEnabled,
                 currentLanguage = currentLanguage,
                 currentTheirLanguage = currentTheirs,
                 onMyLanguageChange = { lang ->
@@ -544,6 +545,12 @@ private fun MainScreen(
     onOpenSettings: () -> Unit,
     /** Non-null only when the mic permission can no longer be requested. */
     onOpenAppSettings: (() -> Unit)? = null,
+    /**
+     * Whether the user wants captions. The panel was rendered unconditionally,
+     * so turning captions off left a permanent empty transcript pane with its
+     * placeholder — the setting appeared to do nothing at all.
+     */
+    captionsEnabled: Boolean = true,
     currentLanguage: TargetLanguage = TargetLanguage.EnglishUS,
     currentTheirLanguage: TargetLanguage = TargetLanguage.EnglishUS,
     onMyLanguageChange: (TargetLanguage) -> Unit = {},
@@ -674,13 +681,18 @@ private fun MainScreen(
                 }
             }
 
-            Spacer(Modifier.height(8.dp))
+            // Only when the user asked for captions. Rendering it regardless
+            // left a permanent empty transcript pane showing its placeholder,
+            // so the Captions toggle looked like it did nothing.
+            if (captionsEnabled) {
+                Spacer(Modifier.height(8.dp))
 
-            CaptionsView(
-                lines = captionLines,
-                pending = captionPending,
-                active = state.isActive,
-            )
+                CaptionsView(
+                    lines = captionLines,
+                    pending = captionPending,
+                    active = state.isActive,
+                )
+            }
 
             Spacer(Modifier.height(16.dp))
         }

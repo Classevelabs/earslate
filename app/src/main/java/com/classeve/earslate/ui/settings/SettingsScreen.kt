@@ -75,14 +75,28 @@ fun SettingsScreen(
     configuredKeySummary: String = "Not set up",
     padding: PaddingValues = PaddingValues(0.dp),
 ) {
-    var myLanguage by remember { mutableStateOf(initialMyLanguage) }
-    var theirLanguage by remember { mutableStateOf(initialTheirLanguage) }
-    var captionsEnabled by remember { mutableStateOf(initialCaptionsEnabled) }
-    var preferEarbuds by remember { mutableStateOf(initialPreferEarbuds) }
-    var externalOnly by remember { mutableStateOf(initialExternalOnly) }
-    var diagnosticsEnabled by remember { mutableStateOf(initialDiagnosticsEnabled) }
-    var persistentNotification by remember { mutableStateOf(initialPersistentNotification) }
-    var provider by remember { mutableStateOf(initialProvider) }
+    // Keyed on the incoming value, not remembered once.
+    //
+    // These are fed from the settings StateFlow, which is SEEDED WITH DEFAULTS
+    // until DataStore's first disk read lands. A bare remember{} captures that
+    // seed on the first composition and never looks again, so a screen opened
+    // quickly after a cold start — the ordinary case after process death —
+    // showed every row at its default: captions on, earbuds preferred, English.
+    // The rows are the user's own settings misreported back to them, which is
+    // worse than a spinner, because there is nothing to indicate it is wrong.
+    //
+    // Keying re-seeds each row when the real value arrives. A local edit is not
+    // lost to it: every onChange writes through immediately, so the value that
+    // comes back IS the edit.
+    var myLanguage by remember(initialMyLanguage) { mutableStateOf(initialMyLanguage) }
+    var theirLanguage by remember(initialTheirLanguage) { mutableStateOf(initialTheirLanguage) }
+    var captionsEnabled by remember(initialCaptionsEnabled) { mutableStateOf(initialCaptionsEnabled) }
+    var preferEarbuds by remember(initialPreferEarbuds) { mutableStateOf(initialPreferEarbuds) }
+    var externalOnly by remember(initialExternalOnly) { mutableStateOf(initialExternalOnly) }
+    var diagnosticsEnabled by remember(initialDiagnosticsEnabled) { mutableStateOf(initialDiagnosticsEnabled) }
+    var persistentNotification by
+        remember(initialPersistentNotification) { mutableStateOf(initialPersistentNotification) }
+    var provider by remember(initialProvider) { mutableStateOf(initialProvider) }
     var showMyPicker by remember { mutableStateOf(false) }
     var showTheirPicker by remember { mutableStateOf(false) }
 
