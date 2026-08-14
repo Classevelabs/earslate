@@ -658,7 +658,24 @@ class SessionCoordinator(
                 captionsStore.appendDelta(event.text)
             }
             is LiveEvent.TurnComplete -> {
+                // Ending a turn is an OWNERSHIP decision, exactly like the audio
+                // and caption paths above, and these three lines were the only
+                // ones that ignored it.
+                //
+                // Both legs hear the same microphone, so the leg that stayed
+                // silent finishes its turn too. Its turnComplete was disarming
+                // the shared jitter buffer while the OTHER leg was mid-sentence
+                // — the buffer treats an expected quiet as a reason to stop
+                // draining, so playback stalled until the cushion refilled —
+                // and it committed the caption line underneath the leg that was
+                // still writing it, then flicked PLAYING back to LISTENING.
+                //
+                // Skipped only when a DIFFERENT leg holds the stream. With no
+                // owner nothing is speaking, so there is nobody to cut off and
+                // the buffer should still learn that the quiet was expected.
+                val owner = synchronized(legLock) { speakingLeg }
                 releaseLeg(legCode)
+                if (owner != null && owner != legCode) return
                 // Tell the buffer this quiet is expected, so it does not pay for
                 // latency it does not need.
                 playbackEngine.notifyTurnEnd()
