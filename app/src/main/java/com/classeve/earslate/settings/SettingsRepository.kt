@@ -31,8 +31,26 @@ val Context.earslateDataStore: DataStore<Preferences> by preferencesDataStore(
 data class UserSettings(
     /** The device user's language. */
     val myLanguageBcp47: String = "en-US",
-    /** The other person's language. Defaults to English. */
+    /**
+     * The other person's language, used ONLY in conversation mode.
+     * Defaults to English.
+     */
     val theirLanguageBcp47: String = "en-US",
+    /**
+     * Off by default: listen, detect whatever is being spoken, and put it in
+     * my language. The translate model takes only a target language — it works
+     * out the source itself — so one leg aimed at my language already handles
+     * any speaker in any supported language with nothing to configure. That is
+     * the behaviour the product is for, so it is the behaviour you get without
+     * choosing anything.
+     *
+     * On, it opens the second leg as well and translates my speech into
+     * [theirLanguageBcp47], for the case where two people are talking to each
+     * other and each needs to hear the other. That is a real need, but it is
+     * the narrower one, and it requires knowing the other language up front —
+     * which is exactly the setup step the default avoids.
+     */
+    val conversationMode: Boolean = false,
     val externalOnly: Boolean = false,
     val captionsEnabled: Boolean = true,
     val preferEarbuds: Boolean = true,
@@ -52,6 +70,7 @@ class SettingsRepository(
         // existing install's chosen language survives the upgrade.
         val MY_LANGUAGE = stringPreferencesKey("target_language_bcp47")
         val THEIR_LANGUAGE = stringPreferencesKey("their_language_bcp47")
+        val CONVERSATION_MODE = booleanPreferencesKey("conversation_mode")
         val EXTERNAL_ONLY = booleanPreferencesKey("external_only")
         val CAPTIONS_ENABLED = booleanPreferencesKey("captions_enabled")
         val PREFER_EARBUDS = booleanPreferencesKey("prefer_earbuds")
@@ -66,6 +85,7 @@ class SettingsRepository(
         myLanguageBcp47 = prefs[Keys.MY_LANGUAGE] ?: defaults.myLanguageBcp47,
         theirLanguageBcp47 = prefs[Keys.THEIR_LANGUAGE] ?: defaults.theirLanguageBcp47,
         externalOnly = prefs[Keys.EXTERNAL_ONLY] ?: defaults.externalOnly,
+        conversationMode = prefs[Keys.CONVERSATION_MODE] ?: defaults.conversationMode,
         captionsEnabled = prefs[Keys.CAPTIONS_ENABLED] ?: defaults.captionsEnabled,
         preferEarbuds = prefs[Keys.PREFER_EARBUDS] ?: defaults.preferEarbuds,
         diagnosticsEnabled = prefs[Keys.DIAGNOSTICS_ENABLED] ?: defaults.diagnosticsEnabled,
@@ -109,6 +129,10 @@ class SettingsRepository(
 
     suspend fun setTheirLanguage(bcp47: String) {
         dataStore.edit { prefs -> prefs[Keys.THEIR_LANGUAGE] = bcp47 }
+    }
+
+    suspend fun setConversationMode(enabled: Boolean) {
+        dataStore.edit { prefs -> prefs[Keys.CONVERSATION_MODE] = enabled }
     }
 
     suspend fun setCaptionsEnabled(enabled: Boolean) {
@@ -187,7 +211,13 @@ private fun UserSettings.toTranslatorPolicy(): TranslatorPolicy {
         ?: TargetLanguage.EnglishUS
     return TranslatorPolicy(
         myLanguage = mine,
-        theirLanguage = theirs,
+        // Outside conversation mode the second leg is not just unnecessary, it
+        // is wrong: it would translate the other person's speech back into
+        // their own language and speak it aloud. Pointing both legs at my
+        // language is what runSession already collapses into a single leg, so
+        // this reuses that proven path rather than adding a second way to have
+        // one leg.
+        theirLanguage = if (conversationMode) theirs else mine,
         captionsEnabled = captionsEnabled,
         externalOnly = externalOnly,
         provider = provider,

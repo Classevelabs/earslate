@@ -4,6 +4,9 @@ import android.annotation.SuppressLint
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -50,7 +53,72 @@ class AndroidAudioCaptureEngine(
     private val frameMs: Int = 20,
     private val framesPerBatch: Int = 2,
     private val hasRecordAudioPermission: () -> Boolean = { true },
+    /**
+     * True when our own playback is reaching a loudspeaker, so the mic can hear
+     * it. Evaluated once per [start], because the route can change between
+     * sessions. Defaults to false: with no route information the safer choice
+     * is the clean, minimally-processed source.
+     */
+    private val echoCancellationNeeded: () -> Boolean = { false },
 ) : AudioCaptureEngine {
+
+    @Volatile private var echoCanceler: AcousticEchoCanceler? = null
+    @Volatile private var noiseSuppressor: NoiseSuppressor? = null
+    @Volatile private var gainControl: AutomaticGainControl? = null
+
+    /**
+     * Turn on the echo canceller and turn OFF the two effects that come with
+     * the communication source uninvited.
+     *
+     * Each is independent and each is best-effort: a device without the effect
+     * reports it unavailable, and a device that has it may still refuse to let
+     * an app toggle it. Failing to attach AEC costs echo suppression; failing
+     * to disable NS/AGC costs some recognition quality. Neither is worth losing
+     * the session over, so every step is contained.
+     */
+    private fun attachEchoCancellation(sessionId: Int) {
+        if (AcousticEchoCanceler.isAvailable()) {
+            runCatching {
+                AcousticEchoCanceler.create(sessionId)?.also {
+                    it.enabled = true
+                    echoCanceler = it
+                    Log.i(TAG, "AEC attached (enabled=${it.enabled})")
+                }
+            }.onFailure { Log.w(TAG, "AEC attach failed: ${it.message}") }
+        } else {
+            Log.i(TAG, "AEC unavailable on this device; relying on the mic gate")
+        }
+
+        if (NoiseSuppressor.isAvailable()) {
+            runCatching {
+                NoiseSuppressor.create(sessionId)?.also {
+                    it.enabled = false
+                    noiseSuppressor = it
+                    Log.i(TAG, "NS explicitly disabled (enabled=${it.enabled})")
+                }
+            }.onFailure { Log.w(TAG, "NS disable failed: ${it.message}") }
+        }
+
+        if (AutomaticGainControl.isAvailable()) {
+            runCatching {
+                AutomaticGainControl.create(sessionId)?.also {
+                    it.enabled = false
+                    gainControl = it
+                    Log.i(TAG, "AGC explicitly disabled (enabled=${it.enabled})")
+                }
+            }.onFailure { Log.w(TAG, "AGC disable failed: ${it.message}") }
+        }
+    }
+
+    /** Released alongside the AudioRecord, on the capture loop's own thread. */
+    private fun releaseEffects() {
+        runCatching { echoCanceler?.release() }
+        runCatching { noiseSuppressor?.release() }
+        runCatching { gainControl?.release() }
+        echoCanceler = null
+        noiseSuppressor = null
+        gainControl = null
+    }
 
     private val samplesPerFrame = (sampleRateHz * frameMs) / 1000
     private val bytesPerFrame = samplesPerFrame * 2
@@ -83,9 +151,35 @@ class AndroidAudioCaptureEngine(
         }
         val bufferBytes = maxOf(minBuffer * 4, bytesPerBatch * 4)
 
+        // Which source depends on whether our own playback can reach the mic.
+        //
+        // On headphones there is no acoustic path back, so VOICE_RECOGNITION is
+        // still right: minimally-processed audio, which is what the translate
+        // model wants.
+        //
+        // On the loudspeaker there IS a path back, and the half-duplex mic gate
+        // that used to cover it costs the thing the product is for — while the
+        // phone speaks, it is deaf, so the other person's next sentence is
+        // simply lost. VOICE_COMMUNICATION wires the hardware echo reference,
+        // which is what lets a call app keep its mic open while its speaker is
+        // playing.
+        //
+        // The earlier attempt at this was abandoned because speech recognition
+        // got worse, and the note blamed echo cancellation. It was not echo
+        // cancellation: switching source also switches on the telephony noise
+        // suppressor and automatic gain control, and THOSE are what chew up
+        // quiet and far-field speech. They are separable effects, so they are
+        // separated here — AEC on, NS and AGC explicitly off.
+        val wantEchoCancellation = echoCancellationNeeded()
+        val source = if (wantEchoCancellation) {
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION
+        } else {
+            MediaRecorder.AudioSource.VOICE_RECOGNITION
+        }
+
         val rec = try {
             AudioRecord(
-                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                source,
                 sampleRateHz,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,
@@ -102,9 +196,9 @@ class AndroidAudioCaptureEngine(
             return 0
         }
 
-        // Deliberately NO AcousticEchoCanceler / NoiseSuppressor: on-device they
-        // over-suppressed quiet/far speech and distorted the signal the model
-        // needs. Clean audio in → correct, fast translation out.
+        if (wantEchoCancellation) {
+            attachEchoCancellation(rec.audioSessionId)
+        }
 
         try {
             rec.startRecording()
@@ -171,6 +265,10 @@ class AndroidAudioCaptureEngine(
                 // returned before the object is freed, which removes the race
                 // rather than narrowing its window.
                 runCatching { rec.stop() }
+                // Effects are attached to this AudioRecord's session, so they
+                // are torn down here for the same reason the record is: this is
+                // the thread that can prove the read has returned.
+                releaseEffects()
                 runCatching { rec.release() }
             }
         }
