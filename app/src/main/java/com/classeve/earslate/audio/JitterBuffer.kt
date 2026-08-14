@@ -141,6 +141,31 @@ class JitterBuffer(
      * an underrun does **not** mean playback has stopped — the buffer stays
      * armed and returns audio as soon as any arrives.
      */
+    /**
+     * Take the next chunk for SHUTDOWN, ignoring the arm threshold.
+     *
+     * [drain] refuses while the buffer is disarmed, which is correct during a
+     * session — that gate is the cushion doing its job — and wrong at the end
+     * of one. The graceful stop loops `while (pendingBytes > 0)` over [drain],
+     * so a buffer that happened to be disarmed returned null on the first call
+     * and the loop broke with the whole tail still in it. Disarmed is the
+     * ordinary state right after a turn ends, which is exactly when someone
+     * reaches for STOP.
+     *
+     * So the last words were dropped by the code whose stated purpose is to let
+     * the last word finish — and silently, because pendingBytes was still
+     * positive and nothing checked.
+     *
+     * Deliberately does not touch the adaptation counters: nothing is being
+     * smoothed any more, and charging an underrun against a buffer that is
+     * about to be discarded would only distort the diagnostics.
+     */
+    fun drainForShutdown(): ByteArray? = synchronized(lock) {
+        val next = queue.removeFirstOrNull() ?: return null
+        accumulated -= next.size
+        next
+    }
+
     fun drain(): ByteArray? = synchronized(lock) {
         if (!draining) return null
         val next = queue.removeFirstOrNull()

@@ -445,4 +445,43 @@ class JitterBufferTest {
         b.enqueue(geminiChunk)
         assertNotNull(b.drain())
     }
+
+    /**
+     * The graceful stop must not lose the tail just because the cushion is
+     * disarmed — which is the buffer's ordinary state right after a turn ends,
+     * and therefore the state it is usually in when someone presses STOP.
+     */
+    @Test
+    fun `shutdown drain returns buffered audio while drain refuses`() {
+        val b = JitterBuffer(startupBytes = 1_000)
+        b.enqueue(ByteArray(200) { 7 })
+
+        // Below the arm threshold, so the session-time drain correctly refuses.
+        assertNull("drain must respect the cushion during a session", b.drain())
+        assertEquals(200, b.pendingBytes)
+
+        val tail = b.drainForShutdown()
+        assertNotNull("the tail must survive a graceful stop", tail)
+        assertArrayEquals(ByteArray(200) { 7 }, tail)
+        assertEquals(0, b.pendingBytes)
+        assertNull("nothing left after the tail is taken", b.drainForShutdown())
+    }
+
+    /**
+     * The exact loop the playback engine runs on a graceful stop. With drain()
+     * this emptied nothing at all.
+     */
+    @Test
+    fun `the graceful stop loop empties a disarmed buffer completely`() {
+        val b = JitterBuffer(startupBytes = 10_000)
+        repeat(4) { b.enqueue(ByteArray(500) { it.toByte() }) }
+        assertEquals(2_000, b.pendingBytes)
+
+        var played = 0
+        while (b.pendingBytes > 0) {
+            val chunk = b.drainForShutdown() ?: break
+            played += chunk.size
+        }
+        assertEquals("every buffered byte must reach the track", 2_000, played)
+    }
 }

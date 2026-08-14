@@ -23,7 +23,7 @@ Package `com.classeve.earslate` · **free, no billing, no accounts, no backend**
 > ⚠️ **The signing key changed on 2026-08-13 and this breaks the update path.**
 > Every build up to and including the 0.4.3 APK currently served from
 > classeve.com was signed with `earslate-release.keystore`, whose DN embedded
-> `O=ClassEve, L=REDACTED, ST=REDACTED` — the legal entity, a city
+> an `O=` beyond the brand plus `L=` and `ST=` fields — the legal entity, a city
 > and a state, all three forbidden by INTERNAL-RULES §2, all three present in
 > the raw bytes of every published APK. It went unnoticed for months because
 > `strings` and `keytool -printcert -jarfile` both report a dirty APK CLEAN

@@ -373,7 +373,12 @@ class AndroidAudioPlaybackEngine(
             if (graceful) {
                 withTimeoutOrNull(DRAIN_TIMEOUT_MS) {
                     while (departing.pendingBytes > 0) {
-                        val chunk = departing.drain() ?: break
+                        // drainForShutdown, not drain: drain() refuses while the
+                        // buffer is disarmed, which is its ordinary state right
+                        // after a turn ends — the moment someone reaches for
+                        // STOP — so this loop used to break immediately and
+                        // discard the very tail it exists to play out.
+                        val chunk = departing.drainForShutdown() ?: break
                         active.write(chunk, 0, chunk.size, AudioTrack.WRITE_BLOCKING)
                     }
                 }
