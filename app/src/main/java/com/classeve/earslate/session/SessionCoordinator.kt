@@ -141,6 +141,17 @@ class SessionCoordinator(
      */
     private val stagedCaptions = HashMap<String, StringBuilder>()
 
+    /**
+     * Per-leg: when its last non-silent audio arrived, and whether the output
+     * turn that audio belongs to was allowed to play. The decision is made once
+     * per leg turn — at the first chunk — and held until that leg's turn ends
+     * or it goes quiet for [LEG_HANDOVER_IDLE_MS], so a translation already
+     * playing is never cut off because the next person started talking.
+     * Guarded by legLock.
+     */
+    private val legLastAudioAt = HashMap<String, Long>()
+    private val legTurnAllowed = HashMap<String, Boolean>()
+
     // Arrival-jitter measurement — see recordArrival. Guarded by legLock.
     private val lastArrivalPerLeg = HashMap<String, Long>()
     private var arrivalCount: Long = 0L
@@ -177,8 +188,43 @@ class SessionCoordinator(
     /** The leg targeting my own language. Never retargeted; it is the one that listens. */
     @Volatile private var primaryCode: String? = null
 
-    /** Null when the user has pinned both languages by hand. */
+    /**
+     * Who is speaking, worked out from the listening leg's source transcript.
+     * Always built, even when the languages are pinned by hand — the manual
+     * setting decides where the outbound leg POINTS, not whether the app can
+     * tell whose voice it is hearing.
+     */
     @Volatile private var heardLanguages: HeardLanguageTracker? = null
+
+    /** True when the session may re-aim the outbound leg at what it hears. */
+    @Volatile private var followsTheirLanguage: Boolean = false
+
+    /**
+     * The other person's language as last heard, kept across reconnects within
+     * one session. Without it a network blip rebuilt the session from the
+     * policy's starting language — English — and the reply came out in the
+     * wrong language until the other person spoke again.
+     */
+    @Volatile private var lastHeardCode: String? = null
+
+    /**
+     * Whose voice the most recent utterance was, once detection resolved it.
+     *
+     * This is the fact the leg-muting rule runs on. Each translate leg is
+     * configured to stay silent when the input is already in its target
+     * language, but that is a MODEL behaviour, not a guarantee, and on a
+     * preview model it slips: the leg targeting your own language repeats your
+     * words back, or the leg targeting theirs repeats theirs. Either way you
+     * hear the same language you just heard, and the real translation — which
+     * arrived a moment later on the other leg — is refused by ownership and
+     * lost. The app already knows who is speaking; it should not need the
+     * model to agree.
+     *
+     * Reset to UNKNOWN when a new utterance begins, so a short reply that
+     * detection cannot place ("yes") is not judged by the previous speaker.
+     */
+    private enum class Speaker { UNKNOWN, ME, THEM }
+    @Volatile private var currentSpeaker: Speaker = Speaker.UNKNOWN
 
     /**
      * Set for the life of a session. Nulled in teardown so a transcript still in
@@ -203,6 +249,8 @@ class SessionCoordinator(
             stopRequested = false
             onHeardLanguageChange = null
             activeLegs = emptyList()
+            lastHeardCode = null
+            currentSpeaker = Speaker.UNKNOWN
             stateStore.setHeardLanguage(null)
             releaseLeg()
 
@@ -310,17 +358,26 @@ class SessionCoordinator(
         val outer: CoroutineScope = this
 
         val myCode = LiveSessionConfigFactory.translateCodeFor(policy.myLanguage.bcp47)
-        val theirCode = LiveSessionConfigFactory.translateCodeFor(policy.theirLanguage.bcp47)
-        primaryCode = myCode
-        // Manual pins both directions; automatic follows the room. Built per
-        // session rather than per app so a language learned in one conversation
-        // is not carried into the next one.
-        heardLanguages = if (policy.manualLanguages) {
-            null
+        // Automatic follows the room, and within a session it remembers what it
+        // heard across a reconnect. Manual pins the outbound direction; it still
+        // needs to know whose voice is whose, so the tracker is built either way.
+        followsTheirLanguage = !policy.manualLanguages
+        val theirBcp47 = if (followsTheirLanguage) {
+            lastHeardCode ?: policy.theirLanguage.bcp47
         } else {
-            HeardLanguageTracker(policy.myLanguage.bcp47, policy.theirLanguage.bcp47)
+            policy.theirLanguage.bcp47
         }
-        stateStore.setHeardLanguage(null)
+        val theirCode = LiveSessionConfigFactory.translateCodeFor(theirBcp47)
+        primaryCode = myCode
+        heardLanguages = HeardLanguageTracker(policy.myLanguage.bcp47, theirBcp47)
+        currentSpeaker = Speaker.UNKNOWN
+        stateStore.setHeardLanguage(
+            if (followsTheirLanguage) {
+                lastHeardCode?.let { code -> SupportedLanguages.firstOrNull { it.bcp47 == code } }
+            } else {
+                null
+            },
+        )
 
         stateStore.set(RuntimeState.BOOTSTRAPPING)
         val legs = try {
@@ -663,37 +720,49 @@ class SessionCoordinator(
         scope: CoroutineScope,
         policy: TranslatorPolicy,
         newCode: String,
+        attempt: Int = 1,
     ) {
         val target = LiveSessionConfigFactory.translateCodeFor(newCode)
-        retargetLock.withLock {
-            val my = primaryCode ?: return
-            if (target.equals(my, ignoreCase = true)) return
+        val done = retargetLock.withLock {
+            val my = primaryCode ?: return@withLock true
+            if (target.equals(my, ignoreCase = true)) return@withLock true
             val current = activeLegs
-            val primary = current.firstOrNull { it.targetCode.equals(my, ignoreCase = true) } ?: return
-            if (!canHoldTwoDirections(primary.bootstrap.provider)) return
+            val primary = current.firstOrNull { it.targetCode.equals(my, ignoreCase = true) }
+                ?: return@withLock true
+            if (!canHoldTwoDirections(primary.bootstrap.provider)) return@withLock true
             val outbound = current.firstOrNull { it !== primary }
-            if (outbound != null && outbound.targetCode.equals(target, ignoreCase = true)) return
+            if (outbound != null && outbound.targetCode.equals(target, ignoreCase = true)) return@withLock true
 
-            Log.i(TAG, "retargeting outbound ${outbound?.targetCode ?: "none"} → $target")
+            Log.i(TAG, "retargeting outbound ${outbound?.targetCode ?: "none"} → $target (attempt $attempt)")
             val replacement = try {
                 openLeg(primary.bootstrap.provider, target, policy.captionsEnabled)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (t: Throwable) {
                 Log.w(TAG, "retarget bootstrap failed: ${t.javaClass.simpleName}")
-                return
+                return@withLock false
             }
             val failure = bringUp(scope, listOf(replacement), policy.captionsEnabled)
             if (failure != null) {
                 Log.w(TAG, "retarget failed: ${failure.message}")
                 retire(replacement)
-                return
+                return@withLock false
             }
             setActiveLegs(listOf(primary, replacement))
             outbound?.let {
                 retire(it)
                 releaseLeg(it.targetCode)
             }
+            true
+        }
+        // A retarget is the reply's only route into their language, so one
+        // transient failure — a slow token mint, a dropped upgrade — should not
+        // strand the conversation in the wrong language until they speak again.
+        // One retry, after a pause, and only if this is still the language we
+        // want.
+        if (!done && attempt < RETARGET_ATTEMPTS && lastHeardCode == newCode) {
+            delay(RETARGET_RETRY_DELAY_MS)
+            retargetOutbound(scope, policy, newCode, attempt + 1)
         }
     }
 
@@ -756,10 +825,11 @@ class SessionCoordinator(
                 // PCM. Drop it so we don't gate the mic or flip to PLAYING for
                 // inaudible frames.
                 if (isSilent(event.pcm24k)) return
-                // Only the leg that owns this utterance may reach the shared
-                // jitter buffer. Without this, both legs' chunks interleave into
-                // one stream and play as two spliced voices. AUDIO is what claims
-                // the stream — see the caption branch for why captions may not.
+                // First, is this leg even allowed to speak right now? See
+                // [currentSpeaker]. Then, does it own the shared stream? Both
+                // must hold. AUDIO is what claims the stream — see the caption
+                // branch for why captions may not.
+                if (!mayLegSpeak(legCode)) return
                 if (!claimLeg(legCode)) return
                 if (shouldGateMic()) holdMicWhilePlaying()
                 playbackEngine.enqueue(event.pcm24k, event.sampleRateHz)
@@ -813,8 +883,11 @@ class SessionCoordinator(
                 // the buffer should still learn that the quiet was expected.
                 val owner = synchronized(legLock) {
                     // Whatever this leg staged and never earned is its echo of
-                    // someone else's words. Gone.
+                    // someone else's words. Gone. And its next audio is a new
+                    // turn, to be judged afresh.
                     stagedCaptions.remove(legCode)
+                    legLastAudioAt.remove(legCode)
+                    legTurnAllowed.remove(legCode)
                     speakingLeg
                 }
                 releaseLeg(legCode)
@@ -833,12 +906,23 @@ class SessionCoordinator(
                 // the tracker twice.
                 if (!legCode.equals(primaryCode, ignoreCase = true)) return
                 val tracker = heardLanguages ?: return
-                val changed = tracker.observe(event.text) ?: return
-                Log.i(TAG, "heard a new language: $changed")
-                stateStore.setHeardLanguage(
-                    SupportedLanguages.firstOrNull { it.bcp47 == changed },
-                )
-                onHeardLanguageChange?.invoke(changed)
+                // A fresh utterance is nobody's until it says enough to tell.
+                if (!tracker.turnStarted) currentSpeaker = Speaker.UNKNOWN
+                when (val heard = tracker.observe(event.text)) {
+                    null -> Unit
+                    HeardLanguageTracker.Heard.Me -> currentSpeaker = Speaker.ME
+                    is HeardLanguageTracker.Heard.Them -> {
+                        currentSpeaker = Speaker.THEM
+                        if (heard.changed && followsTheirLanguage) {
+                            Log.i(TAG, "heard a new language: ${heard.bcp47}")
+                            lastHeardCode = heard.bcp47
+                            stateStore.setHeardLanguage(
+                                SupportedLanguages.firstOrNull { it.bcp47 == heard.bcp47 },
+                            )
+                            onHeardLanguageChange?.invoke(heard.bcp47)
+                        }
+                    }
+                }
             }
             is LiveEvent.GoAway -> {
                 Log.i(TAG, "server GoAway — will reconnect")
@@ -866,6 +950,37 @@ class SessionCoordinator(
                 stateStore.set(RuntimeState.DEGRADED)
             }
         }
+    }
+
+    /**
+     * Whether [legCode] is allowed to speak for its current output turn.
+     *
+     * Decided ONCE per turn, at the first non-silent chunk, from who was heard
+     * speaking: the leg that translates INTO my language is muted while I am
+     * the one talking, and the leg that translates into theirs is muted while
+     * they are. Neither has any business speaking then — anything it produces
+     * is an echo in the language just heard. When detection has not resolved
+     * the utterance, both may speak and ownership sorts it out as before.
+     *
+     * The decision is held for the rest of that leg's turn (or until it goes
+     * quiet for [LEG_HANDOVER_IDLE_MS]) so a translation mid-flight is not
+     * silenced when the next person starts talking over it.
+     */
+    private fun mayLegSpeak(legCode: String): Boolean = synchronized(legLock) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val last = legLastAudioAt[legCode] ?: 0L
+        legLastAudioAt[legCode] = now
+        val newTurn = now - last > LEG_HANDOVER_IDLE_MS
+        if (!newTurn) return legTurnAllowed[legCode] ?: true
+        val isPrimary = legCode.equals(primaryCode, ignoreCase = true)
+        val allowed = when (currentSpeaker) {
+            Speaker.ME -> !isPrimary
+            Speaker.THEM -> isPrimary
+            Speaker.UNKNOWN -> true
+        }
+        legTurnAllowed[legCode] = allowed
+        if (!allowed) Log.i(TAG, "leg $legCode muted for this turn: speaker is $currentSpeaker")
+        allowed
     }
 
     /**
@@ -910,6 +1025,8 @@ class SessionCoordinator(
         if (legCode == null) {
             lastArrivalPerLeg.clear()
             stagedCaptions.clear()
+            legLastAudioAt.clear()
+            legTurnAllowed.clear()
         }
     }
 
@@ -1001,6 +1118,9 @@ class SessionCoordinator(
 
         /** How long a provider gets to acknowledge a setup frame. */
         private const val SETUP_TIMEOUT_MS = 7_000L
+
+        private const val RETARGET_ATTEMPTS = 2
+        private const val RETARGET_RETRY_DELAY_MS = 1_500L
 
         /**
          * How long an owning leg may go quiet before the other leg may take the
