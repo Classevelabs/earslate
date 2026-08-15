@@ -15,6 +15,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -28,6 +30,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.border
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -35,11 +39,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.foundation.selection.selectable
+import com.classeve.earslate.session.SupportedLanguages
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
@@ -146,6 +154,11 @@ fun OnboardingScreen(
                             language = selectedLanguage,
                             guessed = languageWasGuessed && !picked,
                             onPick = { showPicker = true },
+                            onSelect = { lang ->
+                                selectedLanguage = lang
+                                picked = true
+                                onLanguageChange(lang)
+                            },
                         )
                         SetupStep.HOW -> HowStep(language = selectedLanguage)
                         SetupStep.KEY -> KeyStep(alreadySetUp = alreadySetUp)
@@ -274,11 +287,13 @@ private fun WelcomeStep() {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun LanguageStep(
     language: TargetLanguage,
     guessed: Boolean,
     onPick: () -> Unit,
+    onSelect: (TargetLanguage) -> Unit,
 ) {
     SectionHeader(
         kicker = "Step 1 of 3",
@@ -287,55 +302,86 @@ private fun LanguageStep(
             "earslate cannot work out by listening — the other person's language is " +
             "detected on its own, so there is nothing to set for them.",
     )
-    FramedPanel {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .defaultMinSize(minHeight = 64.dp)
-                .background(color = EarslateTheme.colors.elev2, shape = EarslateTheme.shapes.lg)
-                .clickable(onClick = onPick, onClickLabel = "Change your language")
-                .padding(horizontal = 18.dp, vertical = 16.dp)
-                .semantics(mergeDescendants = true) {
-                    role = Role.Button
-                    contentDescription = "Your language: ${language.displayName}"
-                },
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column {
-                Text(
-                    text = language.displayName,
-                    style = EarslateTheme.textStyles.h3,
-                    color = EarslateTheme.colors.cream,
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = if (guessed) "From your phone's language — tap to change" else "Tap to change",
-                    style = EarslateTheme.textStyles.meta,
-                    color = EarslateTheme.colors.textTertiary,
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .background(
-                        color = EarslateTheme.colors.surfaceSoft,
-                        shape = EarslateTheme.shapes.pill,
-                    )
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-            ) {
-                Text(
-                    text = language.bcp47.uppercase(),
-                    style = EarslateTheme.textStyles.meta,
-                    color = EarslateTheme.colors.creamSoft,
-                )
-            }
+    // A field of soft pills, not a box with a value in it. The first draft put
+    // the choice in a hard rectangle with the name and a code chip, which read
+    // as a form to be filled rather than a thing to touch. The common
+    // languages sit here in the open; the rest are one tap away.
+    val shown = remember(language) {
+        val top = SupportedLanguages.take(SHOWN_PILLS).toMutableList()
+        if (top.none { it.bcp47 == language.bcp47 }) top[top.lastIndex] = language
+        top
+    }
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        for (option in shown) {
+            LanguagePill(
+                label = option.displayName,
+                selected = option.bcp47 == language.bcp47,
+                onClick = { onSelect(option) },
+            )
         }
+        LanguagePill(label = "More…", selected = false, onClick = onPick, quiet = true)
     }
     Text(
-        text = "You can change this later in Settings.",
+        text = if (guessed) {
+            "${language.displayName} is a guess from your phone's language. Tap another if that is wrong — you can change it later in Settings."
+        } else {
+            "You can change this later in Settings."
+        },
         style = EarslateTheme.textStyles.bodySmall,
         color = EarslateTheme.colors.textTertiary,
     )
+}
+
+private const val SHOWN_PILLS = 12
+
+@Composable
+private fun LanguagePill(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    quiet: Boolean = false,
+) {
+    val round = RoundedCornerShape(50)
+    val bg by animateColorAsState(
+        targetValue = when {
+            selected -> EarslateTheme.colors.ember
+            quiet -> EarslateTheme.colors.canvas
+            else -> EarslateTheme.colors.elev1
+        },
+        animationSpec = tween(MotionBaseMs, easing = PreciseEasing),
+        label = "pill-bg",
+    )
+    val fg by animateColorAsState(
+        targetValue = when {
+            selected -> EarslateTheme.colors.onEmber
+            quiet -> EarslateTheme.colors.textTertiary
+            else -> EarslateTheme.colors.textPrimary
+        },
+        animationSpec = tween(MotionBaseMs, easing = PreciseEasing),
+        label = "pill-fg",
+    )
+    Box(
+        modifier = Modifier
+            .defaultMinSize(minHeight = 44.dp)
+            .background(color = bg, shape = round)
+            .then(
+                if (quiet) Modifier.border(1.dp, EarslateTheme.colors.borderSubtle, round) else Modifier,
+            )
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .semantics { this.selected = selected }
+            .padding(horizontal = 18.dp, vertical = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            style = EarslateTheme.textStyles.body,
+            color = fg,
+        )
+    }
 }
 
 @Composable
