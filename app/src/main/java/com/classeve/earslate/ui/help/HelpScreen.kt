@@ -117,7 +117,11 @@ fun HelpScreen(
                 // broken app rather than as stale help.
                 HelpEntry(
                     title = "Two-way translation",
-                    body = "Always on, and both directions are decided by listening — foreign speech arrives in your language, and yours goes out in theirs. If you would rather fix the pair yourself, Settings → Advanced → Languages has the switch.",
+                    body = "Always on, and both directions are decided by listening — foreign speech arrives in your language, and yours goes out in theirs. If you would rather fix their side yourself, Settings → Advanced has the switch.",
+                )
+                HelpEntry(
+                    title = "Changing your own language",
+                    body = "Settings → Language, at the top. It is the only language earslate cannot work out on its own, so it is the only one it asks about.",
                 )
             }
 
