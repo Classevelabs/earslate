@@ -1,12 +1,20 @@
 package com.classeve.earslate.session
 
+import com.classeve.earslate.session.HeardLanguageTracker.Heard
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HeardLanguageTrackerTest {
 
     private fun tracker(mine: String = "en-US") = HeardLanguageTracker(mine)
+
+    private fun them(heard: Heard?): Heard.Them {
+        assertTrue("expected the other person, got $heard", heard is Heard.Them)
+        return heard as Heard.Them
+    }
 
     @Test
     fun `starts on english so an unrecognised speaker still has a target`() {
@@ -16,7 +24,9 @@ class HeardLanguageTrackerTest {
     @Test
     fun `the first foreign speaker switches it immediately`() {
         val t = tracker()
-        assertEquals("hi-IN", t.observe("आप कैसे हैं आज"))
+        val heard = them(t.observe("आप कैसे हैं आज"))
+        assertEquals("hi-IN", heard.bcp47)
+        assertTrue(heard.changed)
         assertEquals("hi-IN", t.current)
     }
 
@@ -29,9 +39,11 @@ class HeardLanguageTrackerTest {
     @Test
     fun `fragments accumulate across a turn until the language is clear`() {
         val t = tracker()
+        assertFalse(t.turnStarted)
         assertNull(t.observe("hola"))
+        assertTrue(t.turnStarted)
         assertNull(t.observe(" que"))
-        assertEquals("es-ES", t.observe(" tal estas hoy"))
+        assertEquals("es-ES", them(t.observe(" tal estas hoy")).bcp47)
     }
 
     @Test
@@ -39,25 +51,27 @@ class HeardLanguageTrackerTest {
         val t = tracker()
         t.observe("hola que")
         t.endTurn()
-        // "tal estas" alone is not three Spanish stopwords; if the previous
-        // turn's text had leaked, this would resolve.
+        assertFalse(t.turnStarted)
+        // "tal" alone is not three Spanish stopwords; if the previous turn's
+        // text had leaked, this would resolve.
         assertNull(t.observe(" tal"))
     }
 
     /**
-     * The microphone hears the device owner too. Treating that as "the other
-     * person" would aim our own outbound leg at our own language, which
-     * collapses the session to one direction and silences the reply.
+     * The microphone hears the device owner too, and the coordinator MUTES the
+     * leg that would echo them — so "this is me" is a real answer, not a
+     * silence. Mistaking it for the other person would aim our own outbound leg
+     * at our own language and collapse the session to one direction.
      */
     @Test
-    fun `my own speech is never mistaken for theirs`() {
+    fun `my own speech is reported as me, and moves nothing`() {
         val t = tracker()
-        assertNull(t.observe("how are you doing today with that"))
+        assertEquals(Heard.Me, t.observe("how are you doing today with that"))
         assertEquals("en-US", t.current)
     }
 
     @Test
-    fun `an unrecognisable utterance leaves the target where it was`() {
+    fun `an unrecognisable utterance says nothing and leaves the target where it was`() {
         val t = tracker()
         t.observe("आप कैसे हैं आज")
         t.endTurn()
@@ -74,24 +88,33 @@ class HeardLanguageTrackerTest {
     @Test
     fun `follows a change of language on the next turn`() {
         val t = tracker()
-        assertEquals("hi-IN", t.observe("आप कैसे हैं आज"))
+        assertEquals("hi-IN", them(t.observe("आप कैसे हैं आज")).bcp47)
         t.endTurn()
-        assertEquals("es-ES", t.observe("hola que tal estas hoy"))
+        val es = them(t.observe("hola que tal estas hoy"))
+        assertEquals("es-ES", es.bcp47)
+        assertTrue(es.changed)
         t.endTurn()
-        assertEquals("hi-IN", t.observe("मैं ठीक हूँ धन्यवाद आप"))
+        assertEquals("hi-IN", them(t.observe("मैं ठीक हूँ धन्यवाद आप")).bcp47)
     }
 
+    /**
+     * Staying in the same language is still "them speaking" — the coordinator
+     * needs that to mute the right leg — but it is not a change, so nothing is
+     * re-aimed and no socket is paid for.
+     */
     @Test
-    fun `staying in the same language reports no change`() {
+    fun `the same language again is them, unchanged`() {
         val t = tracker()
-        assertEquals("hi-IN", t.observe("आप कैसे हैं आज"))
+        assertTrue(them(t.observe("आप कैसे हैं आज")).changed)
         t.endTurn()
-        assertNull(t.observe("मैं ठीक हूँ धन्यवाद"))
+        val again = them(t.observe("मैं ठीक हूँ धन्यवाद"))
+        assertEquals("hi-IN", again.bcp47)
+        assertFalse(again.changed)
     }
 
     @Test
     fun `regional variants of my own language are still me`() {
         val t = HeardLanguageTracker("en-GB")
-        assertNull(t.observe("how are you doing today with that"))
+        assertEquals(Heard.Me, t.observe("how are you doing today with that"))
     }
 }
