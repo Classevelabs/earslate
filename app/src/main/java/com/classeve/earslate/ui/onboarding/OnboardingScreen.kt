@@ -208,9 +208,10 @@ fun OnboardingScreen(
                 FramedPanel {
                     OnboardingStep(
                         index = "01",
-                        title = "Choose your languages",
-                        body = "Set your language and the other person's language. Automatic " +
-                            "provider selection is ready by default and can be changed later.",
+                        title = "Nothing else to set",
+                        body = "earslate works out what the other person is speaking and " +
+                            "answers in it. Your provider is picked automatically from the " +
+                            "key you save, and both can be changed later in Settings.",
                     )
                     OnboardingStep(
                         index = "02",
@@ -280,7 +281,7 @@ fun OnboardingScreen(
                         onClick = onContinue,
                     )
                     Text(
-                        text = "Next: choose your languages and start listening.",
+                        text = "Next: save a provider key, then start listening.",
                         style = EarslateTheme.textStyles.bodySmall,
                         color = EarslateTheme.colors.textTertiary,
                         modifier = Modifier.fillMaxWidth(),

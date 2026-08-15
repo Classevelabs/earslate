@@ -16,8 +16,18 @@ package com.classeve.earslate.session
 data class TranslatorPolicy(
     /** The device user's language. Incoming foreign speech is translated INTO this. */
     val myLanguage: TargetLanguage,
-    /** The other person's language. My speech is translated INTO this. Defaults to English. */
+    /**
+     * Where my own speech goes. With [manualLanguages] off this is only the
+     * starting point — English, per the product rule that an unrecognised
+     * speaker is treated as English — and the session moves it to whatever the
+     * other person is actually heard speaking.
+     */
     val theirLanguage: TargetLanguage = TargetLanguage.EnglishUS,
+    /**
+     * Off by default. On, [theirLanguage] is the user's own choice and the
+     * session must not overwrite it no matter what it hears.
+     */
+    val manualLanguages: Boolean = false,
     val captionsEnabled: Boolean = true,
     /**
      * Mute my own voice from translation. Off by default. On speaker routes the

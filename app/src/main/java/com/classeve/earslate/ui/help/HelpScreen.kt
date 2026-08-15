@@ -60,7 +60,11 @@ fun HelpScreen(
                 )
                 HelpEntry(
                     title = "Automatic detection",
-                    body = "The translator automatically detects the language being spoken and translates it into your chosen language in real-time.",
+                    body = "The translator works out which language is being spoken and puts it in yours as it happens. There is nothing to choose.",
+                )
+                HelpEntry(
+                    title = "Speaking back",
+                    body = "What you say goes out in the language the other person was last heard speaking. Until something has been recognised, that is English.",
                 )
                 HelpEntry(
                     title = "Audio output",
@@ -68,7 +72,7 @@ fun HelpScreen(
                 )
                 HelpEntry(
                     title = "Captions",
-                    body = "Enable captions in Settings to see translated text alongside the audio. Useful in noisy environments.",
+                    body = "Translated text appears under the button as it is spoken. Useful in noisy places, and always on.",
                 )
             }
 
@@ -113,7 +117,7 @@ fun HelpScreen(
                 // broken app rather than as stale help.
                 HelpEntry(
                     title = "Two-way translation",
-                    body = "Always on — there is nothing to switch. Set both languages in Settings: foreign speech arrives in your language, and your speech goes out in theirs. When both are the same, only one direction runs.",
+                    body = "Always on, and both directions are decided by listening — foreign speech arrives in your language, and yours goes out in theirs. If you would rather fix the pair yourself, Settings → Advanced → Languages has the switch.",
                 )
             }
 
