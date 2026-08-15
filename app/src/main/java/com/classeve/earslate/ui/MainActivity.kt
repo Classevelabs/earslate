@@ -367,6 +367,8 @@ private fun EarslateApp(
     var hasKey by remember { mutableStateOf(providerKeys.hasAnyKey()) }
 
     val firstLaunch = remember { !OnboardingPrefs.isCompleted(context) }
+    var languageChosen by remember { mutableStateOf(OnboardingPrefs.isLanguageChosen(context)) }
+    var everStarted by remember { mutableStateOf(OnboardingPrefs.hasEverStarted(context)) }
     val initialScreen = remember {
         when {
             firstLaunch -> Screen.ONBOARDING
@@ -427,8 +429,17 @@ private fun EarslateApp(
             Screen.ONBOARDING -> OnboardingScreen(
                 padding = padding,
                 initialLanguage = currentLanguage,
+                alreadySetUp = hasKey,
+                languageWasGuessed = !languageChosen,
                 onLanguageChange = { lang ->
                     scope.launch { settingsRepo.setMyLanguage(lang.bcp47) }
+                    // Pressing Continue past a language you were shown is an
+                    // answer, so this marks the question answered either way.
+                    // Without it a locale guess and a deliberate choice are the
+                    // same stored value, and setup could not tell the user which
+                    // one they were looking at.
+                    OnboardingPrefs.markLanguageChosen(context)
+                    languageChosen = true
                 },
                 onContinue = {
                     OnboardingPrefs.markCompleted(context)
@@ -436,7 +447,11 @@ private fun EarslateApp(
                     // A first run always needs a key before the main screen is
                     // of any use.
                     screen = if (hasKey) Screen.MAIN else Screen.KEY_SETUP
-                    onRequestQsTile()
+                    // The Quick Settings prompt used to fire here, which threw a
+                    // system dialog at someone who did not yet have a key and so
+                    // could not have used the tile it was offering. It now waits
+                    // until setup has actually produced a working app.
+                    if (hasKey) onRequestQsTile()
                 },
             )
             Screen.KEY_SETUP -> ApiKeySetupScreen(
@@ -450,8 +465,13 @@ private fun EarslateApp(
                     null
                 },
                 onDone = {
+                    val firstKey = !hasKey
                     hasKey = providerKeys.hasAnyKey()
                     screen = Screen.MAIN
+                    // Setup is only genuinely finished here — this is where the
+                    // app first becomes able to do anything — so this is where
+                    // the tile is worth offering.
+                    if (firstKey && hasKey) onRequestQsTile()
                 },
                 // Removing a key changes whether the app has one at all, and
                 // hasKey was only recomputed on navigation — so deleting the
@@ -461,11 +481,18 @@ private fun EarslateApp(
             )
             Screen.MAIN -> MainScreen(
                 padding = padding,
-                onStart = onStart,
+                onStart = {
+                    OnboardingPrefs.markStarted(context)
+                    everStarted = true
+                    onStart()
+                },
                 onStop = onStop,
                 onOpenSettings = { screen = Screen.SETTINGS },
                 onOpenAppSettings = onOpenAppSettings,
                 currentLanguage = currentLanguage,
+                showFirstRunHint = !everStarted,
+                hasKey = hasKey,
+                onFinishSetup = { screen = Screen.KEY_SETUP },
             )
             Screen.SETTINGS -> SettingsScreen(
                 padding = padding,
@@ -478,6 +505,8 @@ private fun EarslateApp(
                 onBack = { screen = Screen.MAIN },
                 onMyLanguageChange = { lang ->
                     scope.launch { settingsRepo.setMyLanguage(lang.bcp47) }
+                    OnboardingPrefs.markLanguageChosen(context)
+                    languageChosen = true
                 },
                 onTheirLanguageChange = { lang ->
                     scope.launch { settingsRepo.setTheirLanguage(lang.bcp47) }
@@ -521,6 +550,17 @@ private fun MainScreen(
     /** Non-null only when the mic permission can no longer be requested. */
     onOpenAppSettings: (() -> Unit)? = null,
     currentLanguage: TargetLanguage = TargetLanguage.EnglishUS,
+    /** Until a session has been started once, say plainly how to start one. */
+    showFirstRunHint: Boolean = false,
+    /**
+     * False means no provider key is stored, so a session cannot open at all.
+     * Removing the last key in Settings drops you back here with a START button
+     * that can only fail at bootstrap, several seconds later, with a message
+     * about the translation service — for a problem that is neither the
+     * service's nor a mystery.
+     */
+    hasKey: Boolean = true,
+    onFinishSetup: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val deviceMonitor = remember(context) { EarslateRuntime.deviceMonitor(context) }
@@ -583,6 +623,22 @@ private fun MainScreen(
             // decided it was hearing, because that decision is what their own
             // speech is being sent back in.
             AnimatedVisibility(
+                visible = !hasKey,
+                enter = expandVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeIn(tween(MotionBaseMs)),
+                exit = shrinkVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeOut(tween(MotionBaseMs)),
+            ) {
+                MissingKeyCard(onFinishSetup = onFinishSetup)
+            }
+
+            AnimatedVisibility(
+                visible = hasKey && showFirstRunHint && !state.isActive,
+                enter = expandVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeIn(tween(MotionBaseMs)),
+                exit = shrinkVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeOut(tween(MotionBaseMs)),
+            ) {
+                FirstRunHint(language = currentLanguage)
+            }
+
+            AnimatedVisibility(
                 visible = heard != null,
                 enter = expandVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeIn(tween(MotionBaseMs)),
                 exit = shrinkVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeOut(tween(MotionBaseMs)),
@@ -594,6 +650,7 @@ private fun MainScreen(
                 state = state,
                 onStart = onStart,
                 onStop = onStop,
+                enabled = hasKey,
             )
 
             AnimatedVisibility(
@@ -671,6 +728,80 @@ private fun TopBar(onOpenSettings: () -> Unit) {
     }
 }
 
+/**
+ * Shown until the first session is started, then never again.
+ *
+ * Landing on a screen with one button and a status pill leaves the user to
+ * guess what happens when they press it — and this app opens a microphone and
+ * streams audio, which is not a good thing to be surprised by. Three lines,
+ * gone the moment they are no longer news.
+ */
+@Composable
+private fun MissingKeyCard(onFinishSetup: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(color = EarslateTheme.colors.elev1, shape = EarslateTheme.shapes.lg)
+            .padding(horizontal = 18.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(
+            text = "SETUP UNFINISHED",
+            style = EarslateTheme.textStyles.meta,
+            color = EarslateTheme.colors.ember,
+        )
+        Text(
+            text = "earslate runs on your own provider key, and there isn't one saved. " +
+                "Adding it takes about a minute.",
+            style = EarslateTheme.textStyles.body,
+            color = EarslateTheme.colors.textSecondary,
+        )
+        Box(
+            modifier = Modifier
+                .defaultMinSize(minHeight = 48.dp)
+                .clip(EarslateTheme.shapes.pill)
+                .background(EarslateTheme.colors.ember)
+                .clickable(
+                    onClick = onFinishSetup,
+                    onClickLabel = "Add a provider key",
+                    role = Role.Button,
+                )
+                .padding(horizontal = 20.dp, vertical = 14.dp),
+        ) {
+            Text(
+                text = "ADD A KEY",
+                style = EarslateTheme.textStyles.meta.copy(fontWeight = FontWeight.SemiBold),
+                color = EarslateTheme.colors.onEmber,
+            )
+        }
+    }
+}
+
+@Composable
+private fun FirstRunHint(language: TargetLanguage) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(color = EarslateTheme.colors.elev1, shape = EarslateTheme.shapes.lg)
+            .padding(horizontal = 18.dp, vertical = 16.dp)
+            .semantics(mergeDescendants = true) {},
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            text = "FIRST TIME",
+            style = EarslateTheme.textStyles.meta,
+            color = EarslateTheme.colors.ember,
+        )
+        Text(
+            text = "Earbuds in, then tap START. Everything spoken around you arrives in " +
+                "${language.displayName}, and what you say goes back out in whatever they " +
+                "were last speaking.",
+            style = EarslateTheme.textStyles.body,
+            color = EarslateTheme.colors.textSecondary,
+        )
+    }
+}
+
 @Composable
 private fun HeardLanguageRow(theirs: TargetLanguage, mine: TargetLanguage) {
     Row(
@@ -714,6 +845,7 @@ private fun PrimaryButton(
     state: RuntimeState,
     onStart: () -> Unit,
     onStop: () -> Unit,
+    enabled: Boolean = true,
 ) {
     val isActive = state.isActive
     val labelRes = if (isActive) R.string.action_stop else R.string.action_start
@@ -746,6 +878,7 @@ private fun PrimaryButton(
 
     Button(
         onClick = { if (isActive) onStop() else onStart() },
+        enabled = enabled || isActive,
         interactionSource = interactionSource,
         colors = ButtonDefaults.buttonColors(
             containerColor = container,

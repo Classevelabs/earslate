@@ -181,9 +181,25 @@ fun SettingsScreen(
             BackRow(onBack = onBack)
 
             SectionHeader(
+                kicker = "Language",
+                headline = "The one you speak.",
+                support = "Everything said around you arrives in this. Theirs is worked out " +
+                    "by listening, so there is nothing to set for them.",
+            )
+
+            FramedPanel {
+                SettingsRow(
+                    label = "Your language",
+                    value = myLanguage.displayName,
+                    onClick = { showMyPicker = true },
+                    onClickLabel = "Change your language",
+                )
+            }
+
+            SectionHeader(
                 kicker = "Microphone",
                 headline = "While it speaks.",
-                support = "The only thing that cannot be worked out by listening.",
+                support = "What the mic does while the translator is talking.",
             )
 
             FramedPanel {
@@ -260,19 +276,12 @@ fun SettingsScreen(
 
             SectionHeader(
                 kicker = "Advanced",
-                headline = "Languages.",
+                headline = "Pin their language.",
                 support = "earslate hears which language is being spoken and answers in it. " +
-                    "Turn this on only if you want to fix both sides yourself.",
+                    "Turn this on only if you want to fix that side yourself.",
             )
 
             FramedPanel {
-                SettingsRow(
-                    label = "Your language",
-                    value = myLanguage.displayName,
-                    onClick = { showMyPicker = true },
-                    onClickLabel = "Change your language",
-                )
-                Divider()
                 ToggleRow(
                     label = "Choose languages manually",
                     helper = "Off, the other side follows whoever is speaking, and starts on English " +
