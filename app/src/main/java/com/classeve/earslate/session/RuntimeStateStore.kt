@@ -30,8 +30,20 @@ class RuntimeStateStore {
         _state.value = next
     }
 
+    /**
+     * True when the user corrected the language by hand, so the session has
+     * stopped following what it hears. Shown so a correction is visibly
+     * sticky rather than something that might silently revert.
+     */
+    private val _theirLanguagePinned = MutableStateFlow(false)
+    val theirLanguagePinned: StateFlow<Boolean> = _theirLanguagePinned.asStateFlow()
+
     fun setHeardLanguage(language: TargetLanguage?) {
         _heardLanguage.value = language
+    }
+
+    fun setTheirLanguagePinned(pinned: Boolean) {
+        _theirLanguagePinned.value = pinned
     }
 
     fun setError(error: RuntimeError?) {

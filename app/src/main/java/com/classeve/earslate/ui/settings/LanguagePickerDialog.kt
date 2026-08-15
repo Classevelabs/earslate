@@ -32,6 +32,13 @@ fun LanguagePickerDialog(
     currentLanguage: TargetLanguage,
     onSelect: (TargetLanguage) -> Unit,
     onDismiss: () -> Unit,
+    title: String = "Target language",
+    /**
+     * Offered when the caller has something to go back TO — picking a language
+     * by hand stops the session following what it hears, and there has to be a
+     * way to undo that without restarting.
+     */
+    onAutomatic: (() -> Unit)? = null,
 ) {
     var query by remember { mutableStateOf("") }
 
@@ -51,13 +58,38 @@ fun LanguagePickerDialog(
         shape = EarslateTheme.shapes.xl,
         title = {
             Text(
-                text = "Target language",
+                text = title,
                 style = EarslateTheme.textStyles.h2,
                 color = EarslateTheme.colors.textPrimary,
             )
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (onAutomatic != null) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                color = EarslateTheme.colors.elev2,
+                                shape = EarslateTheme.shapes.md,
+                            )
+                            .clickable(onClick = onAutomatic)
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Detect automatically",
+                            style = EarslateTheme.textStyles.body,
+                            color = EarslateTheme.colors.textPrimary,
+                        )
+                        Text(
+                            text = "AUTO",
+                            style = EarslateTheme.textStyles.meta,
+                            color = EarslateTheme.colors.ember,
+                        )
+                    }
+                }
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },

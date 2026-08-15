@@ -36,6 +36,16 @@ interface AudioPlaybackEngine {
     fun stop(graceful: Boolean = true)
 
     /**
+     * Drop everything buffered but not yet played.
+     *
+     * Used when the session works out that what is queued should never have
+     * been produced — the wrong translate leg spoke into the gap before the
+     * speaker was identified. Without this the queued echo plays out in full
+     * before the correct translation is heard, which is the whole complaint.
+     */
+    fun discardPending()
+
+    /**
      * The provider has finished speaking. Tells the jitter buffer that running dry
      * next is expected, so end-of-turn silence is not mistaken for a network
      * stutter and charged as extra latency.
@@ -274,6 +284,14 @@ class AndroidAudioPlaybackEngine(
 
     override fun notifyTurnEnd() {
         buffer.markTurnEnd()
+    }
+
+    override fun discardPending() {
+        // The AudioTrack's own queue is deliberately left alone: flushing it
+        // needs a pause/flush/play cycle that clicks, and it holds only a few
+        // tens of milliseconds. The jitter buffer is where an unwanted
+        // utterance actually piles up.
+        buffer.clear()
     }
 
     override fun enqueue(pcm: ByteArray, sampleRateHz: Int) {
