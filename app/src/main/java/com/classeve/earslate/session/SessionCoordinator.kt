@@ -84,8 +84,6 @@ class SessionCoordinator(
     val events: SharedFlow<LiveEvent> = _events.asSharedFlow()
 
     @Volatile private var lifecycleJob: Job? = null
-    @Volatile private var sessionStartElapsed: Long = 0L
-    @Volatile private var firstAudioSeen: Boolean = false
     @Volatile private var wasSocketDeath: Boolean = false
 
     /**
@@ -135,6 +133,13 @@ class SessionCoordinator(
     private val legLock = Any()
     private var speakingLeg: String? = null
     private var lastLegOutputElapsed: Long = 0L
+
+    /**
+     * Caption text from legs that do not currently own the stream, keyed by
+     * leg. Flushed into the shared caption line if that leg's audio claims;
+     * discarded at that leg's turn end if it never does. Guarded by legLock.
+     */
+    private val stagedCaptions = HashMap<String, StringBuilder>()
 
     // Arrival-jitter measurement — see recordArrival. Guarded by legLock.
     private val lastArrivalPerLeg = HashMap<String, Long>()
@@ -265,8 +270,6 @@ class SessionCoordinator(
 
     private suspend fun reconnectLoop(policy: TranslatorPolicy) {
         while (true) {
-            sessionStartElapsed = android.os.SystemClock.elapsedRealtime()
-            firstAudioSeen = false
             wasSocketDeath = false
             deliberateTeardown = false
 
@@ -296,7 +299,6 @@ class SessionCoordinator(
                 return
             }
 
-            stateStore.updateMetrics { it.copy(reconnectCount = it.reconnectCount + 1) }
             stateStore.set(RuntimeState.RECONNECTING)
             val delayMs = reconnectManager.nextDelayMs()
             Log.i(TAG, "reconnect attempt ${reconnectManager.attemptNumber} in ${delayMs}ms")
@@ -752,49 +754,51 @@ class SessionCoordinator(
                 recordArrival(legCode, event.pcm24k.size)
                 // The translate model streams filler/anti-repeat silence as zero
                 // PCM. Drop it so we don't gate the mic or flip to PLAYING for
-                // inaudible frames. (Keeping the two legs from interleaving is
-                // now claimLeg's job, not this threshold's.)
+                // inaudible frames.
                 if (isSilent(event.pcm24k)) return
                 // Only the leg that owns this utterance may reach the shared
                 // jitter buffer. Without this, both legs' chunks interleave into
-                // one stream and play as two spliced voices.
+                // one stream and play as two spliced voices. AUDIO is what claims
+                // the stream — see the caption branch for why captions may not.
                 if (!claimLeg(legCode)) return
-                if (!firstAudioSeen) {
-                    firstAudioSeen = true
-                    val elapsed = android.os.SystemClock.elapsedRealtime() - sessionStartElapsed
-                    stateStore.updateMetrics { it.copy(timeToFirstAudioMs = elapsed) }
-                }
-                if (shouldGateMic()) {
-                    // Debounce the gate on the ACTUAL audio stream: each non-silent
-                    // chunk holds the mic muted and pushes the re-open out. The mic
-                    // re-opens only after audio has stopped flowing for the cooldown
-                    // (which also covers the jitter-buffer drain), so the translated
-                    // speech can't feed back into the mic on speaker.
-                    playbackGateActive = true
-                    gateCooldownJob?.cancel()
-                    val cooldownMs = if (deviceMonitor.route.value == AudioRoute.SPEAKER) 500L else 200L
-                    gateCooldownJob = scope.launch {
-                        delay(cooldownMs)
-                        playbackGateActive = false
-                    }
-                }
+                if (shouldGateMic()) holdMicWhilePlaying()
                 playbackEngine.enqueue(event.pcm24k, event.sampleRateHz)
                 if (stateStore.state.value == RuntimeState.LISTENING) {
                     stateStore.set(RuntimeState.PLAYING)
                 }
             }
             is LiveEvent.CaptionDelta -> {
-                // Same ownership rule as audio. Both legs transcribe the same mic
-                // audio into different languages, and CaptionsStore is a single
-                // shared StringBuilder — unowned deltas interleave two languages
-                // into one caption line.
-                if (!claimLeg(legCode)) return
-                captionsStore.appendDelta(event.text)
+                // Captions may NOT claim the stream. Only audio may.
+                //
+                // Both legs hear the same microphone. The leg whose target the
+                // speaker is already using stays silent — zero PCM, which the
+                // audio branch drops — but it still emits a transcript of what it
+                // heard, as caption text. When captions could claim, that silent
+                // leg's echo of your own words took ownership for the handover
+                // window, the OTHER leg's real voice arrived, was refused, and
+                // was thrown away — captions on screen and nothing in your ear.
+                // Its captions then landed on the same line as the echo, which
+                // is what read as garbage.
+                //
+                // So a caption from a leg that does not own the stream is held
+                // for that leg, flushed if its audio ever claims, and discarded
+                // at its turn end if it never does.
+                val ownsStream = synchronized(legLock) {
+                    if (speakingLeg == legCode) {
+                        true
+                    } else {
+                        stagedCaptions.getOrPut(legCode) { StringBuilder() }.append(event.text)
+                        false
+                    }
+                }
+                if (ownsStream) captionsStore.appendDelta(event.text)
             }
             is LiveEvent.TurnComplete -> {
+                // The listening leg's turn is also the other person's utterance,
+                // and the accumulated transcript it was detected from ends here.
+                if (legCode.equals(primaryCode, ignoreCase = true)) heardLanguages?.endTurn()
                 // Ending a turn is an OWNERSHIP decision, exactly like the audio
-                // and caption paths above, and these three lines were the only
-                // ones that ignored it.
+                // and caption paths above.
                 //
                 // Both legs hear the same microphone, so the leg that stayed
                 // silent finishes its turn too. Its turnComplete was disarming
@@ -807,7 +811,12 @@ class SessionCoordinator(
                 // Skipped only when a DIFFERENT leg holds the stream. With no
                 // owner nothing is speaking, so there is nobody to cut off and
                 // the buffer should still learn that the quiet was expected.
-                val owner = synchronized(legLock) { speakingLeg }
+                val owner = synchronized(legLock) {
+                    // Whatever this leg staged and never earned is its echo of
+                    // someone else's words. Gone.
+                    stagedCaptions.remove(legCode)
+                    speakingLeg
+                }
                 releaseLeg(legCode)
                 if (owner != null && owner != legCode) return
                 // Tell the buffer this quiet is expected, so it does not pay for
@@ -820,9 +829,8 @@ class SessionCoordinator(
             }
             is LiveEvent.SourceTranscript -> {
                 // Only the listening leg. Both legs transcribe the same
-                // microphone, so counting them both would feed every utterance
-                // to the tracker twice and make its two-in-a-row confirmation
-                // rule pass on a single sentence.
+                // microphone, so counting them both would feed every fragment to
+                // the tracker twice.
                 if (!legCode.equals(primaryCode, ignoreCase = true)) return
                 val tracker = heardLanguages ?: return
                 val changed = tracker.observe(event.text) ?: return
@@ -832,7 +840,6 @@ class SessionCoordinator(
                 )
                 onHeardLanguageChange?.invoke(changed)
             }
-            is LiveEvent.ResumptionHandle -> Unit // resumption disabled for the translate model
             is LiveEvent.GoAway -> {
                 Log.i(TAG, "server GoAway — will reconnect")
                 stateStore.set(RuntimeState.RECONNECTING)
@@ -870,17 +877,28 @@ class SessionCoordinator(
      * `turnComplete`, and without an idle handover a silent owner would hold the
      * stream for the rest of the session.
      */
-    private fun claimLeg(legCode: String): Boolean = synchronized(legLock) {
-        val now = android.os.SystemClock.elapsedRealtime()
-        val owner = speakingLeg
-        val mayTake = owner == null ||
-            owner == legCode ||
-            now - lastLegOutputElapsed > LEG_HANDOVER_IDLE_MS
-        if (!mayTake) return false
-        if (owner != legCode) Log.i(TAG, "playback owner → $legCode")
-        speakingLeg = legCode
-        lastLegOutputElapsed = now
-        true
+    private fun claimLeg(legCode: String): Boolean {
+        val flush: String?
+        synchronized(legLock) {
+            val now = android.os.SystemClock.elapsedRealtime()
+            val owner = speakingLeg
+            val mayTake = owner == null ||
+                owner == legCode ||
+                now - lastLegOutputElapsed > LEG_HANDOVER_IDLE_MS
+            if (!mayTake) return false
+            if (owner != legCode) Log.i(TAG, "playback owner → $legCode")
+            speakingLeg = legCode
+            lastLegOutputElapsed = now
+            // The captions this leg produced before its audio arrived belong to
+            // the utterance it is now speaking. Everybody else's staged text is
+            // an echo of the same microphone in the wrong language.
+            flush = stagedCaptions.remove(legCode)?.toString()
+            stagedCaptions.clear()
+        }
+        // Outside the lock: CaptionsStore has its own, and holding two is how
+        // deadlocks are made.
+        if (!flush.isNullOrEmpty()) captionsStore.appendDelta(flush)
+        return true
     }
 
     /** Release the stream. [legCode] null releases unconditionally (session teardown). */
@@ -889,7 +907,10 @@ class SessionCoordinator(
             speakingLeg = null
             lastLegOutputElapsed = 0L
         }
-        if (legCode == null) lastArrivalPerLeg.clear()
+        if (legCode == null) {
+            lastArrivalPerLeg.clear()
+            stagedCaptions.clear()
+        }
     }
 
     /**
@@ -935,6 +956,38 @@ class SessionCoordinator(
         return deviceMonitor.route.value == AudioRoute.SPEAKER
     }
 
+    /**
+     * Keep the mic shut until the phone has actually finished SPEAKING.
+     *
+     * This used to be a fixed delay from the last chunk's ARRIVAL: 500 ms on
+     * speaker. But arrival is not playback. The jitter buffer holds 180–600 ms
+     * on top of arrival and the AudioTrack holds more, so the mic routinely
+     * reopened while the translation was still coming out of the speaker. The
+     * model then heard the tail of its own voice, took it for the other person,
+     * and translated it again — a second, wrong utterance stitched to the end
+     * of the real one. That is a large part of what sounded like nonsense.
+     *
+     * Now: wait the debounce, then wait for the playback buffer to drain, then a
+     * short allowance for the track's own buffer and the room. Bounded, so a
+     * wedged buffer can never leave the microphone dead.
+     */
+    private fun holdMicWhilePlaying() {
+        playbackGateActive = true
+        gateCooldownJob?.cancel()
+        val speaker = deviceMonitor.route.value == AudioRoute.SPEAKER
+        gateCooldownJob = scope.launch {
+            delay(if (speaker) GATE_DEBOUNCE_SPEAKER_MS else GATE_DEBOUNCE_EARBUD_MS)
+            val deadline = android.os.SystemClock.elapsedRealtime() + GATE_DRAIN_CEILING_MS
+            while (playbackEngine.snapshot().bufferedMs > 0 &&
+                android.os.SystemClock.elapsedRealtime() < deadline
+            ) {
+                delay(GATE_POLL_MS)
+            }
+            delay(if (speaker) GATE_TAIL_SPEAKER_MS else GATE_TAIL_EARBUD_MS)
+            playbackGateActive = false
+        }
+    }
+
     private suspend fun waitForSocketOpen(socket: LiveSocketClient): Boolean {
         val result = withTimeoutOrNull(5_000) {
             socket.state.first { it == LiveSocketState.OPEN }
@@ -958,6 +1011,17 @@ class SessionCoordinator(
 
         /** Chunks between arrival-jitter log lines. ~5 s at a 100 ms cadence. */
         private const val ARRIVAL_LOG_EVERY = 50L
+
+        // The mic gate. Debounce covers the gap between chunks of one utterance;
+        // the tail covers the AudioTrack's own buffer and the room's decay after
+        // the jitter buffer reads empty. Speaker gets more of both because the
+        // path back into the mic is acoustic, not electrical.
+        private const val GATE_DEBOUNCE_SPEAKER_MS = 350L
+        private const val GATE_DEBOUNCE_EARBUD_MS = 150L
+        private const val GATE_TAIL_SPEAKER_MS = 250L
+        private const val GATE_TAIL_EARBUD_MS = 80L
+        private const val GATE_POLL_MS = 25L
+        private const val GATE_DRAIN_CEILING_MS = 2_000L
 
         /** Output PCM peak below this (model emits zero-PCM silence; peak≈1) is treated as silence. */
         private const val SILENCE_PEAK = 48

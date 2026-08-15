@@ -21,6 +21,30 @@ class HeardLanguageTrackerTest {
     }
 
     /**
+     * The transcript arrives a word or two at a time. No single fragment of
+     * "hola que tal estas hoy" names a language on its own — "que" is Spanish,
+     * French and Portuguese — but the turn as a whole does. Detecting on each
+     * fragment separately is why Latin-script languages were never recognised.
+     */
+    @Test
+    fun `fragments accumulate across a turn until the language is clear`() {
+        val t = tracker()
+        assertNull(t.observe("hola"))
+        assertNull(t.observe(" que"))
+        assertEquals("es-ES", t.observe(" tal estas hoy"))
+    }
+
+    @Test
+    fun `a new turn starts from nothing`() {
+        val t = tracker()
+        t.observe("hola que")
+        t.endTurn()
+        // "tal estas" alone is not three Spanish stopwords; if the previous
+        // turn's text had leaked, this would resolve.
+        assertNull(t.observe(" tal"))
+    }
+
+    /**
      * The microphone hears the device owner too. Treating that as "the other
      * person" would aim our own outbound leg at our own language, which
      * collapses the session to one direction and silences the reply.
@@ -36,38 +60,32 @@ class HeardLanguageTrackerTest {
     fun `an unrecognisable utterance leaves the target where it was`() {
         val t = tracker()
         t.observe("आप कैसे हैं आज")
+        t.endTurn()
         assertNull(t.observe("mm"))
         assertEquals("hi-IN", t.current)
     }
 
     /**
-     * Changing costs a socket teardown and a fresh credential on the user's own
-     * key, so after the first switch a second agreeing utterance is required.
+     * A second language entering the conversation is followed as soon as it is
+     * clear — not confirmed twice, not remembered as the first one. Someone who
+     * switches from Hindi to Spanish mid-conversation expects the reply to
+     * switch with them.
      */
     @Test
-    fun `a later change needs confirming before it is paid for`() {
+    fun `follows a change of language on the next turn`() {
         val t = tracker()
-        t.observe("आप कैसे हैं आज")
-        assertNull(t.observe("hola que tal estas hoy"))
-        assertEquals("hi-IN", t.current)
-        assertEquals("es-ES", t.observe("gracias por una de las cosas"))
-        assertEquals("es-ES", t.current)
-    }
-
-    @Test
-    fun `a one-off misread does not drag the conversation with it`() {
-        val t = tracker()
-        t.observe("आप कैसे हैं आज")
-        assertNull(t.observe("hola que tal estas hoy"))
-        assertNull(t.observe("आप कैसे हैं आज"))
-        assertNull(t.observe("bonjour comment vous allez aujourd hui"))
-        assertEquals("hi-IN", t.current)
+        assertEquals("hi-IN", t.observe("आप कैसे हैं आज"))
+        t.endTurn()
+        assertEquals("es-ES", t.observe("hola que tal estas hoy"))
+        t.endTurn()
+        assertEquals("hi-IN", t.observe("मैं ठीक हूँ धन्यवाद आप"))
     }
 
     @Test
     fun `staying in the same language reports no change`() {
         val t = tracker()
         assertEquals("hi-IN", t.observe("आप कैसे हैं आज"))
+        t.endTurn()
         assertNull(t.observe("मैं ठीक हूँ धन्यवाद"))
     }
 

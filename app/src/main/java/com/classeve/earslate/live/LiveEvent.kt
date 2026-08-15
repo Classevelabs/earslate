@@ -45,9 +45,6 @@ sealed interface LiveEvent {
      */
     data object TurnComplete : LiveEvent
 
-    /** Session resumption handle for the next reconnect attempt. */
-    data class ResumptionHandle(val handle: String) : LiveEvent
-
     /** Graceful server shutdown hint — start reconnection immediately. */
     data object GoAway : LiveEvent
 

@@ -10,6 +10,15 @@ package com.classeve.earslate.session
  * Starts at English because that is what the product promises when it has not
  * heard anything it recognises yet — never at "unknown", which would leave the
  * outbound direction with no target at all.
+ *
+ * The transcript arrives as fragments — a word or two at a time — and a
+ * fragment is not enough to name a language: "que" is Spanish, French and
+ * Portuguese. So the fragments are accumulated for the length of one turn and
+ * detection runs on everything heard so far. The first version ran it per
+ * fragment, which meant Latin-script languages were almost never recognised
+ * at all, and a "confirm it twice" rule on top of that meant a second language
+ * entering the conversation was never followed. Both are gone: the whole turn
+ * is the evidence, and a confident answer is acted on.
  */
 class HeardLanguageTracker(
     private val myLanguageBcp47: String,
@@ -19,41 +28,26 @@ class HeardLanguageTracker(
     var current: String = initial
         private set
 
-    /** True until a foreign language has actually been heard. */
-    private var settled = false
-    private var candidate: String? = null
+    private val turn = StringBuilder()
 
     /**
+     * Feed one transcript fragment from the current turn.
+     *
      * @return the new language when it has changed, null otherwise. A null is
      *   the common case and means "carry on"; it is NOT a fallback signal.
      */
-    fun observe(transcript: String): String? {
-        val detected = LanguageDetector.detect(transcript) ?: return null
+    fun observe(fragment: String): String? {
+        turn.append(fragment)
+        val detected = LanguageDetector.detect(turn.toString()) ?: return null
         if (sameLanguage(detected, myLanguageBcp47)) return null
-        if (sameLanguage(detected, current)) {
-            settled = true
-            candidate = null
-            return null
-        }
-
-        // The first foreign speaker switches us immediately — waiting for a
-        // second utterance would mean their opening sentence comes back in the
-        // wrong language, which is the whole complaint. After that, changing
-        // costs a socket teardown and a fresh credential, so a second agreeing
-        // utterance is required before we pay for it.
-        if (!settled) {
-            settled = true
-            candidate = null
-            current = detected
-            return detected
-        }
-        if (candidate != detected) {
-            candidate = detected
-            return null
-        }
-        candidate = null
+        if (sameLanguage(detected, current)) return null
         current = detected
         return detected
+    }
+
+    /** The speaker has finished. What comes next is a new utterance. */
+    fun endTurn() {
+        turn.setLength(0)
     }
 
     /** Regional variants are the same target on the wire, so treat them as equal. */
