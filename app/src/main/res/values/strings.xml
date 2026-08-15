@@ -7,8 +7,6 @@
     <string name="hero_headline">Live speech\ntranslator.</string>
     <string name="hero_body">Listen continuously. Translate nearby speech into %1$s. Hear it back through earbuds or speaker.</string>
     <string name="label_settings">SETTINGS</string>
-    <string name="label_captions">CAPTIONS</string>
-    <string name="captions_empty">Translated speech will stream here when a session is active.</string>
 
     <!-- Status labels -->
     <string name="status_idle">Idle</string>
@@ -32,11 +30,6 @@
     <!-- Actions -->
     <string name="action_start">Start listening</string>
     <string name="action_stop">Stop</string>
-    <string name="action_back">BACK</string>
-    <string name="action_retry">RETRY</string>
-    <string name="action_dismiss">DISMISS</string>
-    <string name="action_continue">Continue</string>
-    <string name="action_cancel">Cancel</string>
 
     <!-- Audio-egress prominent disclosure (Google Play User Data policy) -->
     <string name="audio_disclosure_title">How your audio is used</string>
@@ -46,57 +39,15 @@
     <string name="audio_disclosure_privacy">Privacy policy</string>
 
     <!-- Settings screen -->
-    <string name="settings_kicker">Settings</string>
-    <string name="settings_headline">Runtime controls.</string>
-    <string name="settings_support">Only the settings that materially change how the translator behaves.</string>
-    <string name="settings_target_language">Target language</string>
-    <string name="settings_captions">Captions</string>
-    <string name="settings_captions_helper">Stream translated text alongside audio.</string>
-    <string name="settings_prefer_earbuds">Prefer earbuds</string>
-    <string name="settings_prefer_earbuds_helper">Warn when falling back to speaker mode — speaker + mic creates echo.</string>
-    <string name="settings_help_kicker">Help</string>
-    <string name="settings_onboarding_headline">Onboarding.</string>
-    <string name="settings_onboarding_support">Re-read the walkthrough if you forgot how any of this works.</string>
-    <string name="settings_view_onboarding">View onboarding</string>
-    <string name="settings_view_onboarding_value">Start</string>
-    <string name="settings_advanced_kicker">Advanced</string>
-    <string name="settings_diagnostics_headline">Diagnostics.</string>
-    <string name="settings_diagnostics_support">Runtime metrics and session traces. Off by default.</string>
-    <string name="settings_enable_diagnostics">Enable diagnostics</string>
-    <string name="settings_enable_diagnostics_helper">Collects time-to-first-audio, reconnects, underruns. Never leaves the device.</string>
-    <string name="settings_open_diagnostics">Open diagnostics</string>
-    <string name="settings_open_diagnostics_value">View session</string>
-    <string name="settings_search_languages">Search languages…</string>
 
     <!-- Language picker -->
-    <string name="language_picker_title">Target language</string>
 
     <!-- Diagnostics -->
-    <string name="diagnostics_kicker">Diagnostics</string>
-    <string name="diagnostics_headline">Current session.</string>
-    <string name="diagnostics_support">Everything here stays on the device. Nothing is logged externally.</string>
-    <string name="diagnostics_state">State</string>
-    <string name="diagnostics_ttfa">Time to first audio</string>
-    <string name="diagnostics_reconnects">Reconnects</string>
-    <string name="diagnostics_resume_successes">Resume successes</string>
-    <string name="diagnostics_underruns">Playback underruns</string>
-    <string name="diagnostics_last_send">Last send batch</string>
-    <string name="diagnostics_ms_format">%1$d ms</string>
-    <string name="diagnostics_no_data">—</string>
 
     <!-- Error banners -->
-    <string name="error_setup_required">SETUP REQUIRED</string>
-    <string name="error_bootstrap_failed">BOOTSTRAP FAILED</string>
-    <string name="error_connect_failed">CONNECT FAILED</string>
-    <string name="error_permission_needed">PERMISSION NEEDED</string>
-    <string name="error_generic">ERROR</string>
 
     <!-- Notification -->
     <string name="notification_channel_name">Translator runtime</string>
     <string name="notification_channel_description">Keeps the translator active while the screen is off.</string>
     <string name="notification_action_stop">Stop</string>
-    <string name="notification_action_mute">Mute</string>
-    <string name="notification_idle_controls">Ready · %1$s · Tap to start</string>
-    <string name="settings_persistent_notification">Notification controls</string>
-    <string name="settings_persistent_notification_helper">Keep a start/stop toggle in the notification shade even when the translator is idle.</string>
 </resources>
