@@ -21,8 +21,21 @@ class RuntimeStateStore {
     private val _lastError = MutableStateFlow<RuntimeError?>(null)
     val lastError: StateFlow<RuntimeError?> = _lastError.asStateFlow()
 
+    /**
+     * The language the other side is currently being heard in, once something
+     * has actually been recognised. Null until then, and null is shown as
+     * nothing rather than as "English" — claiming a detection we have not made
+     * is worse than saying we are still listening.
+     */
+    private val _heardLanguage = MutableStateFlow<TargetLanguage?>(null)
+    val heardLanguage: StateFlow<TargetLanguage?> = _heardLanguage.asStateFlow()
+
     fun set(next: RuntimeState) {
         _state.value = next
+    }
+
+    fun setHeardLanguage(language: TargetLanguage?) {
+        _heardLanguage.value = language
     }
 
     fun updateMetrics(block: (RuntimeSnapshot) -> RuntimeSnapshot) {

@@ -56,7 +56,6 @@ import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -94,13 +93,11 @@ import com.classeve.earslate.settings.OnboardingPrefs
 import com.classeve.earslate.settings.SettingsRepository
 import com.classeve.earslate.ui.captions.CaptionsView
 import com.classeve.earslate.ui.components.ErrorBanner
-import com.classeve.earslate.ui.diagnostics.DiagnosticsScreen
 import com.classeve.earslate.ui.help.HelpScreen
 import com.classeve.earslate.security.KeyProvider
 import com.classeve.earslate.security.ProviderKeyStore
 import com.classeve.earslate.ui.onboarding.ApiKeySetupScreen
 import com.classeve.earslate.ui.onboarding.OnboardingScreen
-import com.classeve.earslate.ui.settings.LanguagePickerDialog
 import com.classeve.earslate.ui.settings.SettingsScreen
 import com.classeve.earslate.ui.components.ListeningIndicator
 import com.classeve.earslate.ui.theme.EarslateTheme
@@ -339,7 +336,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { ONBOARDING, KEY_SETUP, MAIN, SETTINGS, DIAGNOSTICS, HELP }
+private enum class Screen { ONBOARDING, KEY_SETUP, MAIN, SETTINGS, HELP }
 
 /** Short description of which keys are saved, for the Settings row. */
 private fun keySummary(keys: ProviderKeyStore): String {
@@ -398,7 +395,6 @@ private fun EarslateApp(
             !(screen == Screen.KEY_SETUP && !hasKey),
     ) {
         screen = when (screen) {
-            Screen.DIAGNOSTICS -> Screen.SETTINGS
             Screen.HELP -> Screen.SETTINGS
             Screen.KEY_SETUP -> Screen.SETTINGS
             Screen.ONBOARDING -> Screen.SETTINGS
@@ -469,25 +465,14 @@ private fun EarslateApp(
                 onStop = onStop,
                 onOpenSettings = { screen = Screen.SETTINGS },
                 onOpenAppSettings = onOpenAppSettings,
-                captionsEnabled = userSettings.captionsEnabled,
                 currentLanguage = currentLanguage,
-                currentTheirLanguage = currentTheirs,
-                onMyLanguageChange = { lang ->
-                    scope.launch { settingsRepo.setMyLanguage(lang.bcp47) }
-                },
-                onTheirLanguageChange = { lang ->
-                    scope.launch { settingsRepo.setTheirLanguage(lang.bcp47) }
-                },
             )
             Screen.SETTINGS -> SettingsScreen(
                 padding = padding,
                 initialMyLanguage = currentLanguage,
                 initialTheirLanguage = currentTheirs,
-                initialConversationMode = userSettings.conversationMode,
-                initialCaptionsEnabled = userSettings.captionsEnabled,
-                initialPreferEarbuds = userSettings.preferEarbuds,
+                initialManualLanguages = userSettings.manualLanguages,
                 initialExternalOnly = userSettings.externalOnly,
-                initialDiagnosticsEnabled = userSettings.diagnosticsEnabled,
                 initialPersistentNotification = userSettings.persistentNotification,
                 initialProvider = userSettings.provider,
                 onBack = { screen = Screen.MAIN },
@@ -497,20 +482,11 @@ private fun EarslateApp(
                 onTheirLanguageChange = { lang ->
                     scope.launch { settingsRepo.setTheirLanguage(lang.bcp47) }
                 },
-                onConversationModeChange = { enabled ->
-                    scope.launch { settingsRepo.setConversationMode(enabled) }
-                },
-                onCaptionsEnabledChange = { enabled ->
-                    scope.launch { settingsRepo.setCaptionsEnabled(enabled) }
-                },
-                onPreferEarbudsChange = { enabled ->
-                    scope.launch { settingsRepo.setPreferEarbuds(enabled) }
+                onManualLanguagesChange = { enabled ->
+                    scope.launch { settingsRepo.setManualLanguages(enabled) }
                 },
                 onExternalOnlyChange = { enabled ->
                     scope.launch { settingsRepo.setExternalOnly(enabled) }
-                },
-                onDiagnosticsEnabledChange = { enabled ->
-                    scope.launch { settingsRepo.setDiagnosticsEnabled(enabled) }
                 },
                 onPersistentNotificationChange = { enabled ->
                     scope.launch { settingsRepo.setPersistentNotification(enabled) }
@@ -523,15 +499,10 @@ private fun EarslateApp(
                 onProviderChange = { provider ->
                     scope.launch { settingsRepo.setProvider(provider) }
                 },
-                onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
                 onOpenOnboarding = { screen = Screen.ONBOARDING },
                 onOpenHelp = { screen = Screen.HELP },
                 onOpenKeySetup = { screen = Screen.KEY_SETUP },
                 configuredKeySummary = keySummary(providerKeys),
-            )
-            Screen.DIAGNOSTICS -> DiagnosticsScreen(
-                padding = padding,
-                onBack = { screen = Screen.SETTINGS },
             )
             Screen.HELP -> HelpScreen(
                 padding = padding,
@@ -549,16 +520,7 @@ private fun MainScreen(
     onOpenSettings: () -> Unit,
     /** Non-null only when the mic permission can no longer be requested. */
     onOpenAppSettings: (() -> Unit)? = null,
-    /**
-     * Whether the user wants captions. The panel was rendered unconditionally,
-     * so turning captions off left a permanent empty transcript pane with its
-     * placeholder — the setting appeared to do nothing at all.
-     */
-    captionsEnabled: Boolean = true,
     currentLanguage: TargetLanguage = TargetLanguage.EnglishUS,
-    currentTheirLanguage: TargetLanguage = TargetLanguage.EnglishUS,
-    onMyLanguageChange: (TargetLanguage) -> Unit = {},
-    onTheirLanguageChange: (TargetLanguage) -> Unit = {},
 ) {
     val context = LocalContext.current
     val deviceMonitor = remember(context) { EarslateRuntime.deviceMonitor(context) }
@@ -568,23 +530,7 @@ private fun MainScreen(
     val captionLines by EarslateRuntime.captionsStore.lines.collectAsState()
     val captionPending by EarslateRuntime.captionsStore.pending.collectAsState()
     val lastError by EarslateRuntime.stateStore.lastError.collectAsState()
-
-    var showMyPicker by remember { mutableStateOf(false) }
-    var showTheirPicker by remember { mutableStateOf(false) }
-    if (showMyPicker) {
-        LanguagePickerDialog(
-            currentLanguage = currentLanguage,
-            onSelect = { onMyLanguageChange(it); showMyPicker = false },
-            onDismiss = { showMyPicker = false },
-        )
-    }
-    if (showTheirPicker) {
-        LanguagePickerDialog(
-            currentLanguage = currentTheirLanguage,
-            onSelect = { onTheirLanguageChange(it); showTheirPicker = false },
-            onDismiss = { showTheirPicker = false },
-        )
-    }
+    val heard by EarslateRuntime.stateStore.heardLanguage.collectAsState()
 
     Box(
         modifier = Modifier
@@ -632,30 +578,17 @@ private fun MainScreen(
                 SpeakerEchoNotice()
             }
 
-            // A session is built from the policy it started with — the policy
-            // is immutable and rebuilding the session is how it changes — so a
-            // language picked mid-session does not reach the running one. The
-            // chips stay usable, because preparing the next session is a real
-            // thing to want; what they stop doing is pretending.
-            if (state.isActive) {
-                Text(
-                    text = "Language changes apply to the next session.",
-                    style = EarslateTheme.textStyles.bodySmall,
-                    color = EarslateTheme.colors.textTertiary,
-                    modifier = Modifier.padding(bottom = 6.dp),
-                )
+            // Not a control — a readout. There is nothing to pick here any
+            // more, but the user still deserves to know which language the app
+            // decided it was hearing, because that decision is what their own
+            // speech is being sent back in.
+            AnimatedVisibility(
+                visible = heard != null,
+                enter = expandVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeIn(tween(MotionBaseMs)),
+                exit = shrinkVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeOut(tween(MotionBaseMs)),
+            ) {
+                heard?.let { HeardLanguageRow(theirs = it, mine = currentLanguage) }
             }
-
-            LanguageBar(
-                mine = currentLanguage,
-                theirs = currentTheirLanguage,
-                onPickMine = { showMyPicker = true },
-                onPickTheirs = { showTheirPicker = true },
-                onSwap = {
-                    onMyLanguageChange(currentTheirLanguage)
-                    onTheirLanguageChange(currentLanguage)
-                },
-            )
 
             PrimaryButton(
                 state = state,
@@ -685,18 +618,13 @@ private fun MainScreen(
                 }
             }
 
-            // Only when the user asked for captions. Rendering it regardless
-            // left a permanent empty transcript pane showing its placeholder,
-            // so the Captions toggle looked like it did nothing.
-            if (captionsEnabled) {
-                Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(8.dp))
 
-                CaptionsView(
-                    lines = captionLines,
-                    pending = captionPending,
-                    active = state.isActive,
-                )
-            }
+            CaptionsView(
+                lines = captionLines,
+                pending = captionPending,
+                active = state.isActive,
+            )
 
             Spacer(Modifier.height(16.dp))
         }
@@ -744,77 +672,37 @@ private fun TopBar(onOpenSettings: () -> Unit) {
 }
 
 @Composable
-private fun LanguageBar(
-    mine: TargetLanguage,
-    theirs: TargetLanguage,
-    onPickMine: () -> Unit,
-    onPickTheirs: () -> Unit,
-    onSwap: () -> Unit = {},
-) {
+private fun HeardLanguageRow(theirs: TargetLanguage, mine: TargetLanguage) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(color = EarslateTheme.colors.elev1, shape = EarslateTheme.shapes.lg)
+            .padding(horizontal = 16.dp, vertical = 14.dp)
+            .semantics(mergeDescendants = true) {
+                contentDescription =
+                    "Hearing ${theirs.displayName}, translating to ${mine.displayName}"
+            },
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        LangChip(
-            roleLabel = "YOU",
-            lang = mine,
-            a11yLabel = "Your language: ${mine.displayName}",
-            onClickLabel = "Change your language",
-            modifier = Modifier.weight(1f),
-            onClick = onPickMine,
-        )
-        IconButton(
-            onClick = onSwap,
-            modifier = Modifier.size(48.dp),
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.SwapHoriz,
-                contentDescription = "Swap languages",
-                tint = EarslateTheme.colors.textTertiary,
-            )
-        }
-        LangChip(
-            roleLabel = "THEM",
-            lang = theirs,
-            a11yLabel = "Their language: ${theirs.displayName}",
-            onClickLabel = "Change their language",
-            modifier = Modifier.weight(1f),
-            onClick = onPickTheirs,
-        )
-    }
-}
-
-@Composable
-private fun LangChip(
-    roleLabel: String,
-    lang: TargetLanguage,
-    a11yLabel: String,
-    onClickLabel: String,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    Column(
-        modifier = modifier
-            .defaultMinSize(minHeight = 56.dp)
-            .clip(EarslateTheme.shapes.lg)
-            .background(EarslateTheme.colors.elev1)
-            .clickable(
-                onClick = onClick,
-                onClickLabel = onClickLabel,
-                role = Role.Button,
-            )
-            .semantics { contentDescription = a11yLabel }
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-    ) {
         Text(
-            text = roleLabel,
+            text = "HEARING",
             style = EarslateTheme.textStyles.meta,
             color = EarslateTheme.colors.textTertiary,
         )
         Text(
-            text = lang.displayName,
+            text = theirs.displayName,
+            style = EarslateTheme.textStyles.body,
+            color = EarslateTheme.colors.textPrimary,
+        )
+        Icon(
+            imageVector = Icons.Rounded.SwapHoriz,
+            contentDescription = null,
+            tint = EarslateTheme.colors.ember,
+            modifier = Modifier.size(18.dp),
+        )
+        Text(
+            text = mine.displayName,
             style = EarslateTheme.textStyles.body,
             color = EarslateTheme.colors.textPrimary,
         )

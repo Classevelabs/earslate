@@ -55,8 +55,8 @@ android {
         // entity, city and state into every APK), BLUETOOTH_CONNECT removed,
         // two audio-teardown races fixed. That certificate change is why an
         // install signed by the old key cannot take these as an update.
-        versionCode = 21
-        versionName = "0.4.6"
+        versionCode = 22
+        versionName = "0.4.7"
 
         vectorDrawables.useSupportLibrary = true
 
@@ -182,12 +182,13 @@ val forbiddenIdentityStrings = listOf(
 /**
  * Fails the build if a release APK carries the legal entity, a city, or a state.
  *
- * This exists because the check did not, and the omission shipped. Up to
- * 0.4.3 the release keystore's DN was
- *   CN=Earslate, OU=ClassEve, O=ClassEve Private Limited, L=Barnala, ST=Punjab, C=IN
- * so every published APK — including the one served from classeve.com — had the
- * registered company name, the city and the state in its bytes, against
- * INTERNAL-RULES §2.
+ * This exists because the check did not, and the omission shipped. Up to 0.4.3
+ * the release keystore's DN carried OU, O, L and ST attributes well beyond the
+ * brand name, so every published APK — including the one served from
+ * classeve.com — had them in its bytes, against INTERNAL-RULES §2. Those
+ * attribute values are written down exactly once, in
+ * [forbiddenIdentityStrings]; restating them here would only add a second copy
+ * to scrub.
  *
  * It survived because the obvious checks all report CLEAN on a dirty APK: the
  * DN is DER-encoded inside the v2 signing block, and these builds carry no v1
@@ -195,10 +196,11 @@ val forbiddenIdentityStrings = listOf(
  * has no JAR signature to read.
  *
  * Two assertions, because either alone has a hole:
- *  1. The signer DN must equal [ALLOWED_DN] EXACTLY. Checking the DN rather
- *     than grepping for city names is what makes this precise — "Punjab" is
- *     also the stem of "Punjabi", and the day that language is added to
- *     SupportedLanguages a substring scan would fail an innocent build.
+ *  1. The signer DN must equal [brandCertificateDn] EXACTLY. Checking the DN
+ *     rather than grepping for place names is what makes this precise: a bare
+ *     state word is also the prefix of a language name, and the day that
+ *     language is added to SupportedLanguages a substring scan would fail an
+ *     innocent build.
  *  2. A raw-byte scan for entity strings that can never be legitimate,
  *     catching a leak that arrives through some path other than the
  *     certificate.

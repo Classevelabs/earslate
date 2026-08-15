@@ -57,6 +57,9 @@ object LiveMessageParser {
             content.outputTranscription?.let { t ->
                 if (t.text.isNotBlank()) events += LiveEvent.CaptionDelta(t.text)
             }
+            content.inputTranscription?.let { t ->
+                if (t.text.isNotBlank()) events += LiveEvent.SourceTranscript(t.text)
+            }
             if (content.turnComplete == true) {
                 events += LiveEvent.TurnComplete
             }
