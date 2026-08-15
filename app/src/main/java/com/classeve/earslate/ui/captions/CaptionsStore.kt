@@ -33,6 +33,20 @@ class CaptionsStore(
         }
     }
 
+    /**
+     * Throw away the line being built, keeping everything already committed.
+     *
+     * The session uses this when the leg that was writing turns out to have
+     * been answering the wrong speaker — its text is an echo, and committing it
+     * would leave the wrong language sitting in the transcript for good.
+     */
+    fun clearPending() {
+        synchronized(lock) {
+            builder.setLength(0)
+            _pending.value = ""
+        }
+    }
+
     fun commitLine() {
         synchronized(lock) {
             val committed = builder.toString().trim()

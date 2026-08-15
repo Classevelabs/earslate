@@ -98,6 +98,7 @@ import com.classeve.earslate.security.KeyProvider
 import com.classeve.earslate.security.ProviderKeyStore
 import com.classeve.earslate.ui.onboarding.ApiKeySetupScreen
 import com.classeve.earslate.ui.onboarding.OnboardingScreen
+import com.classeve.earslate.ui.settings.LanguagePickerDialog
 import com.classeve.earslate.ui.settings.SettingsScreen
 import com.classeve.earslate.ui.components.ListeningIndicator
 import com.classeve.earslate.ui.theme.EarslateTheme
@@ -493,6 +494,15 @@ private fun EarslateApp(
                 showFirstRunHint = !everStarted,
                 hasKey = hasKey,
                 onFinishSetup = { screen = Screen.KEY_SETUP },
+                // Correcting a wrong detection has to work on the live session.
+                // Until now the only remedy was STOP and START, which throws
+                // away the conversation to fix a label.
+                onCorrectHeardLanguage = { lang ->
+                    EarslateRuntime.sessionCoordinator(context).setLanguages(their = lang)
+                },
+                onResumeAutoDetect = {
+                    EarslateRuntime.sessionCoordinator(context).setLanguages(follow = true)
+                },
             )
             Screen.SETTINGS -> SettingsScreen(
                 padding = padding,
@@ -507,12 +517,23 @@ private fun EarslateApp(
                     scope.launch { settingsRepo.setMyLanguage(lang.bcp47) }
                     OnboardingPrefs.markLanguageChosen(context)
                     languageChosen = true
+                    // A running session was built from the old policy and had
+                    // no way to learn about this, so changing a language while
+                    // translating did nothing until the next STOP/START.
+                    EarslateRuntime.sessionCoordinator(context).setLanguages(my = lang)
                 },
                 onTheirLanguageChange = { lang ->
                     scope.launch { settingsRepo.setTheirLanguage(lang.bcp47) }
+                    EarslateRuntime.sessionCoordinator(context).setLanguages(their = lang)
                 },
                 onManualLanguagesChange = { enabled ->
                     scope.launch { settingsRepo.setManualLanguages(enabled) }
+                    val coordinator = EarslateRuntime.sessionCoordinator(context)
+                    if (enabled) {
+                        coordinator.setLanguages(their = currentTheirs)
+                    } else {
+                        coordinator.setLanguages(follow = true)
+                    }
                 },
                 onExternalOnlyChange = { enabled ->
                     scope.launch { settingsRepo.setExternalOnly(enabled) }
@@ -561,6 +582,8 @@ private fun MainScreen(
      */
     hasKey: Boolean = true,
     onFinishSetup: () -> Unit = {},
+    onCorrectHeardLanguage: (TargetLanguage) -> Unit = {},
+    onResumeAutoDetect: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val deviceMonitor = remember(context) { EarslateRuntime.deviceMonitor(context) }
@@ -571,6 +594,22 @@ private fun MainScreen(
     val captionPending by EarslateRuntime.captionsStore.pending.collectAsState()
     val lastError by EarslateRuntime.stateStore.lastError.collectAsState()
     val heard by EarslateRuntime.stateStore.heardLanguage.collectAsState()
+    val heardPinned by EarslateRuntime.stateStore.theirLanguagePinned.collectAsState()
+    var showCorrection by remember { mutableStateOf(false) }
+
+    if (showCorrection) {
+        LanguagePickerDialog(
+            currentLanguage = heard ?: TargetLanguage.EnglishUS,
+            title = "They are speaking",
+            onSelect = { onCorrectHeardLanguage(it); showCorrection = false },
+            onAutomatic = if (heardPinned) {
+                { onResumeAutoDetect(); showCorrection = false }
+            } else {
+                null
+            },
+            onDismiss = { showCorrection = false },
+        )
+    }
 
     Box(
         modifier = Modifier
@@ -643,7 +682,14 @@ private fun MainScreen(
                 enter = expandVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeIn(tween(MotionBaseMs)),
                 exit = shrinkVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeOut(tween(MotionBaseMs)),
             ) {
-                heard?.let { HeardLanguageRow(theirs = it, mine = currentLanguage) }
+                heard?.let {
+                    HeardLanguageRow(
+                        theirs = it,
+                        mine = currentLanguage,
+                        pinned = heardPinned,
+                        onCorrect = { showCorrection = true },
+                    )
+                }
             }
 
             PrimaryButton(
@@ -802,22 +848,46 @@ private fun FirstRunHint(language: TargetLanguage) {
     }
 }
 
+/**
+ * What the session decided the other person is speaking — and a way to say it
+ * is wrong.
+ *
+ * It used to be read-only. Detection is not perfect, and when it missed there
+ * was no remedy but STOP and START, which throws away the conversation to fix a
+ * label. Tapping now corrects it on the live session, and a hand correction
+ * sticks: the room cannot immediately overrule it, or it would not be a
+ * correction at all.
+ */
 @Composable
-private fun HeardLanguageRow(theirs: TargetLanguage, mine: TargetLanguage) {
+private fun HeardLanguageRow(
+    theirs: TargetLanguage,
+    mine: TargetLanguage,
+    pinned: Boolean,
+    onCorrect: () -> Unit,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(color = EarslateTheme.colors.elev1, shape = EarslateTheme.shapes.lg)
+            .clip(EarslateTheme.shapes.lg)
+            .clickable(
+                onClick = onCorrect,
+                onClickLabel = "Correct the detected language",
+                role = Role.Button,
+            )
             .padding(horizontal = 16.dp, vertical = 14.dp)
             .semantics(mergeDescendants = true) {
-                contentDescription =
-                    "Hearing ${theirs.displayName}, translating to ${mine.displayName}"
+                contentDescription = if (pinned) {
+                    "Set to ${theirs.displayName}, translating to ${mine.displayName}. Tap to change."
+                } else {
+                    "Hearing ${theirs.displayName}, translating to ${mine.displayName}. Tap to correct."
+                }
             },
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = "HEARING",
+            text = if (pinned) "SET TO" else "HEARING",
             style = EarslateTheme.textStyles.meta,
             color = EarslateTheme.colors.textTertiary,
         )
@@ -836,6 +906,12 @@ private fun HeardLanguageRow(theirs: TargetLanguage, mine: TargetLanguage) {
             text = mine.displayName,
             style = EarslateTheme.textStyles.body,
             color = EarslateTheme.colors.textPrimary,
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            text = if (pinned) "CHANGE" else "WRONG?",
+            style = EarslateTheme.textStyles.meta,
+            color = EarslateTheme.colors.ember,
         )
     }
 }
