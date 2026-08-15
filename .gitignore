@@ -21,3 +21,9 @@ AGENTS.md
 .codex-screenshots/
 GEMINI.md
 CONTEXT.md
+
+# Internal Play Console handoff notes. Deleted from the public mirror once
+# already as a leak, then re-added and re-expanded, because nothing stopped it:
+# the mirror exclusion was a manual delete, not a rule. One ordinary push of
+# main republished it. Keep it on disk, out of the index.
+play-store-assets/PLAY_STORE_HANDOFF.md

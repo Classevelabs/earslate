@@ -135,7 +135,7 @@ fun HelpScreen(
             FramedPanel {
                 HelpEntry(
                     title = "No translation happening",
-                    body = "Check that microphone permission is granted. Make sure someone is speaking a language different from your target language. The translator stays silent when it hears your own language.",
+                    body = "Check that microphone permission is granted, and that someone is speaking a language other than yours. Your own speech is never repeated back to you — it goes out in the language the other person was last heard speaking, so until somebody else has been heard there is nothing for it to go out in.",
                 )
                 // This had the mechanism backwards. On SPEAKER the mic is always
                 // muted while the translator talks \u2014 shouldGateMic() returns

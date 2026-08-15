@@ -16,8 +16,13 @@ import org.junit.Test
  */
 class ProviderMessageTest {
 
-    private val geminiKey = "AIzaSyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY"
-    private val openAiKey = "sk-proj-4eC39HqLyjWDarjtT1zdp7dcSomeMoreEntropyHere"
+    // Shaped like the real thing so the redactor is exercised properly, but
+    // built from an obvious filler run rather than a plausible key. The
+    // previous literal was a valid-looking Google key, which trips secret
+    // scanners on every clone of the public mirror and reads, to anyone
+    // glancing at the file, like a credential somebody committed by mistake.
+    private val geminiKey = "AIza" + "EXAMPLENOTAREALKEY".repeat(2) + "000"
+    private val openAiKey = "sk-proj-" + "EXAMPLENOTAREALKEY".repeat(2) + "000"
 
     @Test
     fun `the diagnosis survives untouched`() {
