@@ -43,18 +43,4 @@ class RuntimeStateTest {
         assertEquals(RuntimeState.IDLE, store.state.value)
     }
 
-    @Test
-    fun `metrics default to zero and null`() {
-        val store = RuntimeStateStore()
-        val s = store.metrics.value
-        assertEquals(0, s.reconnectCount)
-        assertEquals(null, s.timeToFirstAudioMs)
-    }
-
-    @Test
-    fun `metrics update applies transform`() {
-        val store = RuntimeStateStore()
-        store.updateMetrics { it.copy(reconnectCount = 5) }
-        assertEquals(5, store.metrics.value.reconnectCount)
-    }
 }

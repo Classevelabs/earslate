@@ -53,14 +53,11 @@ internal data class ClientSetupPayload(
     val inputAudioTranscription: JsonObject? = null,
     val outputAudioTranscription: JsonObject? = null,
     val systemInstruction: Content? = null,
-    val sessionResumption: SessionResumptionHandle? = null,
-    val contextWindowCompression: ContextWindowCompression? = null,
 )
 
 @Serializable
 internal data class GenerationConfig(
     val responseModalities: List<String>? = null,
-    val speechConfig: SpeechConfig? = null,
     val temperature: Double? = null,
     // gemini-3.5-live-translate-preview is a purpose-built speech-to-speech
     // translator. It is driven by this STRUCTURED config (target language +
@@ -91,21 +88,6 @@ internal data class TranslationConfig(
 )
 
 @Serializable
-internal data class SpeechConfig(
-    val voiceConfig: VoiceConfig? = null,
-)
-
-@Serializable
-internal data class VoiceConfig(
-    val prebuiltVoiceConfig: PrebuiltVoiceConfig? = null,
-)
-
-@Serializable
-internal data class PrebuiltVoiceConfig(
-    val voiceName: String,
-)
-
-@Serializable
 internal data class Content(
     // Defaulted, not required. A required field here means a `modelTurn` that
     // arrives without `parts` throws, and a throw in the parser discards the
@@ -127,16 +109,6 @@ internal data class InlineData(
     // cost us one field, never the entire frame.
     val mimeType: String = "",
     val data: String = "",
-)
-
-@Serializable
-internal data class SessionResumptionHandle(
-    val handle: String? = null,
-)
-
-@Serializable
-internal data class ContextWindowCompression(
-    val slidingWindow: JsonObject? = null,
 )
 
 @Serializable
@@ -169,7 +141,6 @@ internal data class AudioBlob(
 internal data class ServerFrame(
     val setupComplete: JsonObject? = null,
     val serverContent: ServerContent? = null,
-    val sessionResumptionUpdate: SessionResumptionUpdate? = null,
     val goAway: GoAway? = null,
     @SerialName("usageMetadata")
     val usageMetadata: JsonObject? = null,
@@ -201,12 +172,6 @@ internal data class Transcription(
      */
     val text: String = "",
     val finished: Boolean? = null,
-)
-
-@Serializable
-internal data class SessionResumptionUpdate(
-    val newHandle: String? = null,
-    val resumable: Boolean? = null,
 )
 
 @Serializable

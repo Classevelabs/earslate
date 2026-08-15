@@ -3,7 +3,6 @@ package com.classeve.earslate.session
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 
 /**
  * Single source of truth for runtime state. UI reads via [state]; the
@@ -14,9 +13,6 @@ import kotlinx.coroutines.flow.update
 class RuntimeStateStore {
     private val _state = MutableStateFlow(RuntimeState.IDLE)
     val state: StateFlow<RuntimeState> = _state.asStateFlow()
-
-    private val _metrics = MutableStateFlow(RuntimeSnapshot())
-    val metrics: StateFlow<RuntimeSnapshot> = _metrics.asStateFlow()
 
     private val _lastError = MutableStateFlow<RuntimeError?>(null)
     val lastError: StateFlow<RuntimeError?> = _lastError.asStateFlow()
@@ -38,10 +34,6 @@ class RuntimeStateStore {
         _heardLanguage.value = language
     }
 
-    fun updateMetrics(block: (RuntimeSnapshot) -> RuntimeSnapshot) {
-        _metrics.update(block)
-    }
-
     fun setError(error: RuntimeError?) {
         _lastError.value = error
     }
@@ -50,19 +42,6 @@ class RuntimeStateStore {
         _lastError.value = null
     }
 }
-
-/**
- * Lightweight per-session snapshot exposed to the diagnostics screen. Never
- * serialized, never sent to a server.
- *
- * Only fields the coordinator actually writes belong here — a diagnostics row
- * wired to a counter nothing increments reads as "0 problems" when the truth is
- * "not measured".
- */
-data class RuntimeSnapshot(
-    val reconnectCount: Int = 0,
-    val timeToFirstAudioMs: Long? = null,
-)
 
 /**
  * User-facing runtime error. Populated by the coordinator when something

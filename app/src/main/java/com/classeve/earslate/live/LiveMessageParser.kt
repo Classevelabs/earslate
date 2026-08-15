@@ -65,12 +65,6 @@ object LiveMessageParser {
             }
         }
 
-        server.sessionResumptionUpdate?.newHandle?.let { handle ->
-            if (handle.isNotBlank()) {
-                events += LiveEvent.ResumptionHandle(handle)
-            }
-        }
-
         if (server.goAway != null) {
             events += LiveEvent.GoAway
         }
