@@ -45,32 +45,34 @@ import com.classeve.earslate.ui.components.SectionHeader
 import com.classeve.earslate.ui.theme.EarslateTheme
 
 /**
- * Settings — ClassEve brand v6. earslate is a bidirectional conversation
- * translator with NO modes: the only translation settings are the two
- * languages. Flat rows inside framed dock-planes, ember boxy toggles.
+ * Settings — ClassEve brand v6. Flat rows inside framed dock-planes, ember boxy
+ * toggles.
+ *
+ * earslate decides both languages by listening, so there is nothing here to
+ * configure for the thing the app actually does. What remains is the handful of
+ * choices that cannot be worked out from the room: how the microphone behaves
+ * while the translator is talking, whether the shade keeps a control, and whose
+ * API key pays for the session.
+ *
+ * The language pickers are last and behind a switch on purpose. They were the
+ * first thing on the main screen and they were a setup step in front of a
+ * product whose whole point is not having one.
  */
 @Composable
 fun SettingsScreen(
     initialMyLanguage: TargetLanguage = TargetLanguage.EnglishUS,
     initialTheirLanguage: TargetLanguage = TargetLanguage.EnglishUS,
-    initialConversationMode: Boolean = false,
-    initialCaptionsEnabled: Boolean = true,
-    initialPreferEarbuds: Boolean = true,
+    initialManualLanguages: Boolean = false,
     initialExternalOnly: Boolean = false,
-    initialDiagnosticsEnabled: Boolean = false,
     initialPersistentNotification: Boolean = false,
     initialProvider: TranslationProvider = TranslationProvider.AUTOMATIC,
     onBack: () -> Unit,
     onMyLanguageChange: (TargetLanguage) -> Unit = {},
     onTheirLanguageChange: (TargetLanguage) -> Unit = {},
-    onConversationModeChange: (Boolean) -> Unit = {},
-    onCaptionsEnabledChange: (Boolean) -> Unit = {},
-    onPreferEarbudsChange: (Boolean) -> Unit = {},
+    onManualLanguagesChange: (Boolean) -> Unit = {},
     onExternalOnlyChange: (Boolean) -> Unit = {},
-    onDiagnosticsEnabledChange: (Boolean) -> Unit = {},
     onPersistentNotificationChange: (Boolean) -> Unit = {},
     onProviderChange: (TranslationProvider) -> Unit = {},
-    onOpenDiagnostics: () -> Unit = {},
     onOpenOnboarding: () -> Unit = {},
     onOpenHelp: () -> Unit = {},
     onOpenKeySetup: () -> Unit = {},
@@ -92,11 +94,8 @@ fun SettingsScreen(
     // comes back IS the edit.
     var myLanguage by remember(initialMyLanguage) { mutableStateOf(initialMyLanguage) }
     var theirLanguage by remember(initialTheirLanguage) { mutableStateOf(initialTheirLanguage) }
-    var conversationMode by remember(initialConversationMode) { mutableStateOf(initialConversationMode) }
-    var captionsEnabled by remember(initialCaptionsEnabled) { mutableStateOf(initialCaptionsEnabled) }
-    var preferEarbuds by remember(initialPreferEarbuds) { mutableStateOf(initialPreferEarbuds) }
+    var manualLanguages by remember(initialManualLanguages) { mutableStateOf(initialManualLanguages) }
     var externalOnly by remember(initialExternalOnly) { mutableStateOf(initialExternalOnly) }
-    var diagnosticsEnabled by remember(initialDiagnosticsEnabled) { mutableStateOf(initialDiagnosticsEnabled) }
     var persistentNotification by
         remember(initialPersistentNotification) { mutableStateOf(initialPersistentNotification) }
     var provider by remember(initialProvider) { mutableStateOf(initialProvider) }
@@ -182,67 +181,12 @@ fun SettingsScreen(
             BackRow(onBack = onBack)
 
             SectionHeader(
-                kicker = "Languages",
-                headline = "Listening.",
-                support = "earslate works out what is being spoken and puts it in your language. Nothing to set up.",
+                kicker = "Microphone",
+                headline = "While it speaks.",
+                support = "The only thing that cannot be worked out by listening.",
             )
 
             FramedPanel {
-                SettingsRow(
-                    label = "Your language",
-                    value = myLanguage.displayName,
-                    onClick = { showMyPicker = true },
-                )
-                Divider()
-                ToggleRow(
-                    label = "Two-way conversation",
-                    helper = "Also translate what you say into their language, for a back-and-forth. Off, any language you hear arrives in yours.",
-                    value = conversationMode,
-                    onChange = {
-                        conversationMode = it
-                        onConversationModeChange(it)
-                    },
-                )
-                // Only meaningful in two-way mode: with one leg the model
-                // detects the source itself, so naming it would be a setting
-                // that changes nothing.
-                if (conversationMode) {
-                    Divider()
-                    SettingsRow(
-                        label = "Their language",
-                        value = theirLanguage.displayName,
-                        onClick = { showTheirPicker = true },
-                    )
-                }
-            }
-
-            SectionHeader(
-                kicker = "Output",
-                headline = "Playback.",
-                support = "Controls for how translated audio and text are delivered.",
-            )
-
-            FramedPanel {
-                ToggleRow(
-                    label = "Captions",
-                    helper = "Stream translated text alongside audio.",
-                    value = captionsEnabled,
-                    onChange = {
-                        captionsEnabled = it
-                        onCaptionsEnabledChange(it)
-                    },
-                )
-                Divider()
-                ToggleRow(
-                    label = "Prefer earbuds",
-                    helper = "Warn when falling back to speaker mode — speaker + mic creates echo.",
-                    value = preferEarbuds,
-                    onChange = {
-                        preferEarbuds = it
-                        onPreferEarbudsChange(it)
-                    },
-                )
-                Divider()
                 // The runtime has honoured this since the half-duplex gate was
                 // written (SessionCoordinator.shouldGateMic) and the in-app help
                 // told users to enable it, but no control ever existed to set
@@ -316,31 +260,41 @@ fun SettingsScreen(
 
             SectionHeader(
                 kicker = "Advanced",
-                headline = "Diagnostics.",
-                support = "Runtime metrics and session traces. Off by default.",
+                headline = "Languages.",
+                support = "earslate hears which language is being spoken and answers in it. " +
+                    "Turn this on only if you want to fix both sides yourself.",
             )
 
             FramedPanel {
+                SettingsRow(
+                    label = "Your language",
+                    value = myLanguage.displayName,
+                    onClick = { showMyPicker = true },
+                    onClickLabel = "Change your language",
+                )
+                Divider()
                 ToggleRow(
-                    label = "Enable diagnostics",
-                    helper = "Collects time-to-first-audio, reconnects, underruns. Never leaves the device.",
-                    value = diagnosticsEnabled,
+                    label = "Choose languages manually",
+                    helper = "Off, the other side follows whoever is speaking, and starts on English " +
+                        "until something is recognised. On, it stays where you put it.",
+                    value = manualLanguages,
                     onChange = {
-                        diagnosticsEnabled = it
-                        onDiagnosticsEnabledChange(it)
+                        manualLanguages = it
+                        onManualLanguagesChange(it)
                     },
                 )
                 AnimatedVisibility(
-                    visible = diagnosticsEnabled,
+                    visible = manualLanguages,
                     enter = expandVertically(tween(220)) + fadeIn(tween(220)),
                     exit = shrinkVertically(tween(220)) + fadeOut(tween(220)),
                 ) {
                     Column {
                         Divider()
                         SettingsRow(
-                            label = "Open diagnostics",
-                            value = "View session",
-                            onClick = onOpenDiagnostics,
+                            label = "Their language",
+                            value = theirLanguage.displayName,
+                            onClick = { showTheirPicker = true },
+                            onClickLabel = "Change their language",
                         )
                     }
                 }

@@ -34,6 +34,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 
@@ -141,13 +143,45 @@ class SessionCoordinator(
     private var arrivalMaxGapMs: Long = 0L
     private var arrivalBytes: Long = 0L
 
-    private data class Leg(
+    private class Leg(
         val targetCode: String,
         val bootstrap: SessionBootstrap,
         val protocol: TranslationLiveProtocol,
         val socket: LiveSocketClient,
         val setupReady: CompletableDeferred<Unit> = CompletableDeferred(),
-    )
+    ) {
+        var pumpJob: Job? = null
+        var watchJob: Job? = null
+
+        /**
+         * Set when this leg is being REPLACED rather than lost. Its socket close
+         * must not read as a network death, for the same reason
+         * [deliberateTeardown] exists — otherwise every language change would
+         * trip a full session reconnect.
+         */
+        @Volatile var retired: Boolean = false
+    }
+
+    /**
+     * The legs currently receiving microphone audio. Replaced wholesale rather
+     * than mutated, so the capture callback — which runs on the audio thread and
+     * must not take a lock — always reads one consistent list.
+     */
+    @Volatile private var activeLegs: List<Leg> = emptyList()
+
+    /** The leg targeting my own language. Never retargeted; it is the one that listens. */
+    @Volatile private var primaryCode: String? = null
+
+    /** Null when the user has pinned both languages by hand. */
+    @Volatile private var heardLanguages: HeardLanguageTracker? = null
+
+    /**
+     * Set for the life of a session. Nulled in teardown so a transcript still in
+     * flight cannot start a retarget against a session that has ended.
+     */
+    @Volatile private var onHeardLanguageChange: ((String) -> Unit)? = null
+
+    private val retargetLock = Mutex()
 
     fun start(policy: TranslatorPolicy) {
         synchronized(this) {
@@ -162,6 +196,9 @@ class SessionCoordinator(
             playbackGateActive = false
             gateCooldownJob?.cancel()
             stopRequested = false
+            onHeardLanguageChange = null
+            activeLegs = emptyList()
+            stateStore.setHeardLanguage(null)
             releaseLeg()
 
             lifecycleJob = scope.launch {
@@ -188,6 +225,7 @@ class SessionCoordinator(
                     if (stateStore.state.value != RuntimeState.IDLE) {
                         stateStore.set(RuntimeState.IDLE)
                     }
+                    stateStore.setHeardLanguage(null)
                     releaseLeg()
                 }
             }
@@ -269,35 +307,30 @@ class SessionCoordinator(
     private suspend fun runSession(policy: TranslatorPolicy): Unit = coroutineScope {
         val outer: CoroutineScope = this
 
-        // Build the translate legs. One per distinct language direction.
         val myCode = LiveSessionConfigFactory.translateCodeFor(policy.myLanguage.bcp47)
         val theirCode = LiveSessionConfigFactory.translateCodeFor(policy.theirLanguage.bcp47)
+        primaryCode = myCode
+        // Manual pins both directions; automatic follows the room. Built per
+        // session rather than per app so a language learned in one conversation
+        // is not carried into the next one.
+        heardLanguages = if (policy.manualLanguages) {
+            null
+        } else {
+            HeardLanguageTracker(policy.myLanguage.bcp47, policy.theirLanguage.bcp47)
+        }
+        stateStore.setHeardLanguage(null)
+
         stateStore.set(RuntimeState.BOOTSTRAPPING)
         val legs = try {
-            // captionsEnabled travels with the credential, not only with the
-            // setup frame below: the Gemini token locks the session config, so
-            // minting for one config and asking for another is a contradiction
-            // the client cannot win.
-            val primary = bootstrapRepository.bootstrap(
-                policy.provider, myCode, policy.captionsEnabled,
-            )
-            val specs = mutableListOf(myCode to primary)
-            // Gemini's echoTargetLanguage=false supports two simultaneous
-            // directions safely. OpenAI's dedicated translation session has
-            // one output language and no echo-suppression control, so opening
-            // two sockets would produce overlapping audio. Keep its core
-            // listening path single-target instead of shipping broken output.
+            val primary = openLeg(policy.provider, myCode, policy.captionsEnabled)
+            val opened = mutableListOf(primary)
             if (
-                primary.provider == TranslationProvider.GEMINI &&
+                canHoldTwoDirections(primary.bootstrap.provider) &&
                 !theirCode.equals(myCode, ignoreCase = true)
             ) {
-                specs += theirCode to bootstrapRepository.bootstrap(
-                    primary.provider, theirCode, policy.captionsEnabled,
-                )
+                opened += openLeg(primary.bootstrap.provider, theirCode, policy.captionsEnabled)
             }
-            specs.map { (targetCode, bootstrap) ->
-                Leg(targetCode, bootstrap, TranslationLiveProtocols.forProvider(bootstrap.provider), socketFactory())
-            }
+            opened
         } catch (cancelled: CancellationException) {
             // A stop is not a failure. This catch was `Throwable` alone, and
             // bootstrap is two suspending network calls, so stopping while the
@@ -318,117 +351,23 @@ class SessionCoordinator(
             stateStore.set(RuntimeState.IDLE)
             return@coroutineScope
         }
+        setActiveLegs(legs)
         Log.i(
             TAG,
             "session legs: ${legs.joinToString { "${it.targetCode}:${it.bootstrap.provider.wireValue}" }}",
         )
 
         stateStore.set(RuntimeState.CONNECTING)
-        // Start frame collectors before connecting. OpenAI can emit its first
-        // session event immediately after the upgrade; SharedFlow has no replay.
-        for (leg in legs) launch {
-            pumpFrames(leg) { message ->
-                abortSession(outer, legs, RuntimeError(RuntimeError.Kind.PROVIDER_ERROR, message))
-            }
-        }
-        for (leg in legs) {
-            try {
-                leg.socket.connect(
-                    leg.bootstrap.webSocketUrl,
-                    leg.protocol.headers(leg.bootstrap),
-                )
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (t: Throwable) {
-                Log.e(TAG, "socket connect failed: ${t.message}")
-                // abortSession also closes every leg, which matters here for the
-                // reason the old comment gave: this return sits BEFORE the
-                // try/finally that owns cleanup, so a leg that connected before
-                // this one failed would otherwise be left open with no owner.
-                abortSession(
-                    outer,
-                    legs,
-                    RuntimeError(
-                        kind = RuntimeError.Kind.CONNECT_FAILED,
-                        message = "Could not reach the selected translation provider.",
-                    ),
-                )
-                return@coroutineScope
-            }
+        val failure = bringUp(outer, legs, policy.captionsEnabled)
+        if (failure != null) {
+            abortSession(outer, legs, failure)
+            return@coroutineScope
         }
 
-        // Per-leg socket-death watcher.
-        for (leg in legs) {
-            launch {
-                val death = leg.socket.state.first {
-                    it == LiveSocketState.CLOSED || it == LiveSocketState.FAILED
-                }
-                // A socket we closed ourselves is not a death. See
-                // [deliberateTeardown] — this single check is what stops a
-                // diagnosed, terminal failure from being retried four times and
-                // then reported as a network fault.
-                if (deliberateTeardown) {
-                    Log.i(TAG, "leg ${leg.targetCode} socket $death — expected, session is ending")
-                    return@launch
-                }
-                Log.i(TAG, "leg ${leg.targetCode} socket $death — tripping reconnect")
-                wasSocketDeath = true
-                outer.cancel(CancellationException("socket $death"))
-            }
-        }
-
-        // All legs must reach OPEN.
-        for (leg in legs) {
-            if (!waitForSocketOpen(leg.socket)) {
-                Log.w(TAG, "leg ${leg.targetCode} did not reach OPEN in 5s")
-                // This branch used to be the only failure in runSession that set
-                // IDLE with no error beside it, so a slow or captive-portal
-                // network showed the pill going CONNECTING and then simply
-                // stopping, with an empty banner. The actionable fact is the
-                // timeout itself, and now it is said.
-                abortSession(
-                    outer,
-                    legs,
-                    RuntimeError(
-                        kind = RuntimeError.Kind.CONNECT_FAILED,
-                        message = "The translation provider took too long to accept the connection.",
-                    ),
-                )
-                return@coroutineScope
-            }
-        }
-
-        // Send each leg its own translate setup (its target language).
-        for (leg in legs) {
-            val setupFrame = leg.protocol.setupFrame(
-                bootstrap = leg.bootstrap,
-                targetLanguageCode = leg.targetCode,
-                captionsEnabled = policy.captionsEnabled,
-            )
-            val sent = leg.socket.sendText(setupFrame)
-            Log.i(TAG, "setup sent=$sent target=${leg.targetCode}")
-            if (!sent) {
-                abortSession(
-                    outer,
-                    legs,
-                    RuntimeError(RuntimeError.Kind.CONNECT_FAILED, "Could not configure the translation session."),
-                )
-                return@coroutineScope
-            }
-        }
-
-        // Do not open the microphone until every provider has acknowledged the
-        // session configuration. This prevents silently dropping the first words.
-        for (leg in legs) {
-            val ready = withTimeoutOrNull(7_000) { leg.setupReady.await(); true } ?: false
-            if (!ready) {
-                abortSession(
-                    outer,
-                    legs,
-                    RuntimeError(RuntimeError.Kind.CONNECT_FAILED, "The translation provider did not become ready."),
-                )
-                return@coroutineScope
-            }
+        // Automatic mode: when the listening leg reports hearing a language that
+        // is not mine, point the outbound direction at it.
+        onHeardLanguageChange = { code ->
+            outer.launch { retargetOutbound(outer, policy, code) }
         }
 
         // Clean, recognition-grade audio path: stay in MODE_NORMAL (NOT call
@@ -451,8 +390,12 @@ class SessionCoordinator(
                 onBatch = { frame ->
                     runCatching {
                         if (!playbackGateActive) {
-                            // Same audio to every leg; encode once.
-                            for (leg in legs) {
+                            // activeLegs, not the list built at startup: the
+                            // outbound leg is replaced whenever the other person
+                            // turns out to be speaking something else, and a
+                            // captured `legs` would keep feeding the socket that
+                            // replacement already closed.
+                            for (leg in activeLegs) {
                                 leg.socket.sendText(leg.protocol.audioFrame(frame))
                             }
                         }
@@ -478,7 +421,7 @@ class SessionCoordinator(
                 // recorder, and the user was told to check their connection.
                 abortSession(
                     outer,
-                    legs,
+                    activeLegs,
                     RuntimeError(
                         kind = RuntimeError.Kind.UNKNOWN,
                         message = "Could not open the microphone. Another app may be using it.",
@@ -494,14 +437,18 @@ class SessionCoordinator(
         } finally {
             playbackGateActive = false
             gateCooldownJob?.cancel()
+            onHeardLanguageChange = null
             runCatching { captureEngine.stop() }
             runCatching { playbackEngine.stop(graceful = true) }
             withContext(NonCancellable) {
-                for (leg in legs) {
+                // Whatever is live NOW. A leg replaced mid-session is already
+                // closed; the one that replaced it is not in `legs`.
+                val open = activeLegs
+                for (leg in open) {
                     leg.protocol.gracefulCloseFrame()?.let { leg.socket.sendText(it) }
                 }
-                if (legs.any { it.protocol.gracefulCloseFrame() != null }) delay(250)
-                for (leg in legs) runCatching { leg.socket.close() }
+                if (open.any { it.protocol.gracefulCloseFrame() != null }) delay(250)
+                for (leg in open) runCatching { leg.socket.close() }
             }
             runCatching { audioManager.abandonAudioFocusRequest(audioFocusRequest) }
             // IDLE only when nothing more is coming.
@@ -567,6 +514,193 @@ class SessionCoordinator(
         // times out at 5s here against OkHttp's 10s connect timeout, and a
         // microphone held by a phone call does it too.
         session.cancel(CancellationException("session aborted: ${error.message}"))
+    }
+
+    /**
+     * Mint a credential and build the leg around it. Nothing is connected yet.
+     *
+     * captionsEnabled travels with the credential, not only with the setup frame:
+     * the Gemini token LOCKS the session config, so minting for one config and
+     * asking for another is a contradiction the client cannot win.
+     */
+    private suspend fun openLeg(
+        provider: TranslationProvider,
+        targetCode: String,
+        captionsEnabled: Boolean,
+    ): Leg {
+        val bootstrap = bootstrapRepository.bootstrap(provider, targetCode, captionsEnabled)
+        return Leg(
+            targetCode = targetCode,
+            bootstrap = bootstrap,
+            protocol = TranslationLiveProtocols.forProvider(bootstrap.provider),
+            socket = socketFactory(),
+        )
+    }
+
+    /**
+     * Gemini's `echoTargetLanguage=false` lets two sockets share one microphone
+     * safely — each stays silent unless the speech is going its way. OpenAI's
+     * translation session has one output language and no echo suppression, so a
+     * second socket would just talk over the first.
+     */
+    private fun canHoldTwoDirections(provider: TranslationProvider): Boolean =
+        provider == TranslationProvider.GEMINI
+
+    /**
+     * Connect, configure and confirm a set of legs. Phase by phase across the
+     * whole set rather than leg by leg, so two directions come up in parallel
+     * instead of one waiting on the other's round trips.
+     *
+     * @return null on success, or the error that stopped it. The caller decides
+     *   whether that ends the session — it does at startup, and does not when a
+     *   language change fails and the existing legs are still working.
+     */
+    private suspend fun bringUp(
+        scope: CoroutineScope,
+        legs: List<Leg>,
+        captionsEnabled: Boolean,
+    ): RuntimeError? {
+        // Collectors first. OpenAI can emit its first session event immediately
+        // after the upgrade, and SharedFlow has no replay.
+        for (leg in legs) {
+            leg.pumpJob = scope.launch {
+                pumpFrames(leg) { message ->
+                    abortSession(scope, activeLegs, RuntimeError(RuntimeError.Kind.PROVIDER_ERROR, message))
+                }
+            }
+        }
+        for (leg in legs) {
+            try {
+                leg.socket.connect(leg.bootstrap.webSocketUrl, leg.protocol.headers(leg.bootstrap))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                Log.e(TAG, "socket connect failed: ${t.message}")
+                return RuntimeError(
+                    kind = RuntimeError.Kind.CONNECT_FAILED,
+                    message = "Could not reach the selected translation provider.",
+                )
+            }
+        }
+        for (leg in legs) {
+            leg.watchJob = scope.launch {
+                val death = leg.socket.state.first {
+                    it == LiveSocketState.CLOSED || it == LiveSocketState.FAILED
+                }
+                // A socket we closed ourselves is not a death — whether because
+                // the session is ending or because this leg was replaced by one
+                // aimed at a different language. See [deliberateTeardown]; this
+                // check is what stops a diagnosed failure being retried four
+                // times and then reported as a network fault.
+                if (deliberateTeardown || leg.retired) {
+                    Log.i(TAG, "leg ${leg.targetCode} socket $death — expected")
+                    return@launch
+                }
+                Log.i(TAG, "leg ${leg.targetCode} socket $death — tripping reconnect")
+                wasSocketDeath = true
+                scope.cancel(CancellationException("socket $death"))
+            }
+        }
+        for (leg in legs) {
+            if (!waitForSocketOpen(leg.socket)) {
+                Log.w(TAG, "leg ${leg.targetCode} did not reach OPEN in 5s")
+                // A slow or captive-portal network used to show the pill going
+                // CONNECTING and then simply stopping, with an empty banner. The
+                // timeout itself is the actionable fact.
+                return RuntimeError(
+                    kind = RuntimeError.Kind.CONNECT_FAILED,
+                    message = "The translation provider took too long to accept the connection.",
+                )
+            }
+        }
+        for (leg in legs) {
+            val sent = leg.socket.sendText(
+                leg.protocol.setupFrame(
+                    bootstrap = leg.bootstrap,
+                    targetLanguageCode = leg.targetCode,
+                    captionsEnabled = captionsEnabled,
+                ),
+            )
+            Log.i(TAG, "setup sent=$sent target=${leg.targetCode}")
+            if (!sent) {
+                return RuntimeError(
+                    RuntimeError.Kind.CONNECT_FAILED,
+                    "Could not configure the translation session.",
+                )
+            }
+        }
+        // The microphone does not open until every provider has acknowledged its
+        // configuration, or the first words are dropped on the floor.
+        for (leg in legs) {
+            val ready = withTimeoutOrNull(SETUP_TIMEOUT_MS) { leg.setupReady.await(); true } ?: false
+            if (!ready) {
+                return RuntimeError(
+                    RuntimeError.Kind.CONNECT_FAILED,
+                    "The translation provider did not become ready.",
+                )
+            }
+        }
+        return null
+    }
+
+    private fun setActiveLegs(legs: List<Leg>) {
+        activeLegs = legs.toList()
+    }
+
+    /**
+     * Aim the outbound direction at [newCode] — the language the other person
+     * has actually been heard speaking.
+     *
+     * The Gemini credential locks the target language into the session, so this
+     * cannot be a config update; it is a new socket. The new leg is brought all
+     * the way up BEFORE the old one is touched, so a failure here costs nothing
+     * — the conversation carries on in the language it was already using — and
+     * there is no window where our own speech has nowhere to go.
+     */
+    private suspend fun retargetOutbound(
+        scope: CoroutineScope,
+        policy: TranslatorPolicy,
+        newCode: String,
+    ) {
+        val target = LiveSessionConfigFactory.translateCodeFor(newCode)
+        retargetLock.withLock {
+            val my = primaryCode ?: return
+            if (target.equals(my, ignoreCase = true)) return
+            val current = activeLegs
+            val primary = current.firstOrNull { it.targetCode.equals(my, ignoreCase = true) } ?: return
+            if (!canHoldTwoDirections(primary.bootstrap.provider)) return
+            val outbound = current.firstOrNull { it !== primary }
+            if (outbound != null && outbound.targetCode.equals(target, ignoreCase = true)) return
+
+            Log.i(TAG, "retargeting outbound ${outbound?.targetCode ?: "none"} → $target")
+            val replacement = try {
+                openLeg(primary.bootstrap.provider, target, policy.captionsEnabled)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                Log.w(TAG, "retarget bootstrap failed: ${t.javaClass.simpleName}")
+                return
+            }
+            val failure = bringUp(scope, listOf(replacement), policy.captionsEnabled)
+            if (failure != null) {
+                Log.w(TAG, "retarget failed: ${failure.message}")
+                retire(replacement)
+                return
+            }
+            setActiveLegs(listOf(primary, replacement))
+            outbound?.let {
+                retire(it)
+                releaseLeg(it.targetCode)
+            }
+        }
+    }
+
+    /** Close a leg we are replacing, without it reading as a socket death. */
+    private fun retire(leg: Leg) {
+        leg.retired = true
+        leg.watchJob?.cancel()
+        leg.pumpJob?.cancel()
+        runCatching { leg.socket.close() }
     }
 
     private fun willReconnect(): Boolean =
@@ -684,6 +818,20 @@ class SessionCoordinator(
                     stateStore.set(RuntimeState.LISTENING)
                 }
             }
+            is LiveEvent.SourceTranscript -> {
+                // Only the listening leg. Both legs transcribe the same
+                // microphone, so counting them both would feed every utterance
+                // to the tracker twice and make its two-in-a-row confirmation
+                // rule pass on a single sentence.
+                if (!legCode.equals(primaryCode, ignoreCase = true)) return
+                val tracker = heardLanguages ?: return
+                val changed = tracker.observe(event.text) ?: return
+                Log.i(TAG, "heard a new language: $changed")
+                stateStore.setHeardLanguage(
+                    SupportedLanguages.firstOrNull { it.bcp47 == changed },
+                )
+                onHeardLanguageChange?.invoke(changed)
+            }
             is LiveEvent.ResumptionHandle -> Unit // resumption disabled for the translate model
             is LiveEvent.GoAway -> {
                 Log.i(TAG, "server GoAway — will reconnect")
@@ -797,6 +945,9 @@ class SessionCoordinator(
     companion object {
         private const val TAG = "SessionCoord"
         private const val MAX_RECONNECT_ATTEMPTS = 4
+
+        /** How long a provider gets to acknowledge a setup frame. */
+        private const val SETUP_TIMEOUT_MS = 7_000L
 
         /**
          * How long an owning leg may go quiet before the other leg may take the

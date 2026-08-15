@@ -29,6 +29,17 @@ sealed interface LiveEvent {
     data class CaptionDelta(val text: String) : LiveEvent
 
     /**
+     * Transcript of what the microphone HEARD, before translation — the source
+     * side, not the output.
+     *
+     * The translate model detects the source language for itself and never says
+     * which one it picked, so this text is the only place that information
+     * exists. [com.classeve.earslate.session.HeardLanguageTracker] reads it to
+     * work out which language to send our own speech back in.
+     */
+    data class SourceTranscript(val text: String) : LiveEvent
+
+    /**
      * End-of-turn marker from the model. Used to flush jitter buffer, commit
      * final caption line, and reset VAD counters.
      */

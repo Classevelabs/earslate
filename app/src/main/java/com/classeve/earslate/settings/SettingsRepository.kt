@@ -29,32 +29,22 @@ val Context.earslateDataStore: DataStore<Preferences> by preferencesDataStore(
  * the only two settings that shape translation are the two languages.
  */
 data class UserSettings(
-    /** The device user's language. */
+    /** The device user's language. Seeded from the device locale on first run. */
     val myLanguageBcp47: String = "en-US",
-    /**
-     * The other person's language, used ONLY in conversation mode.
-     * Defaults to English.
-     */
+    /** Honoured only when [manualLanguages] is on. Otherwise the session learns it. */
     val theirLanguageBcp47: String = "en-US",
     /**
-     * Off by default: listen, detect whatever is being spoken, and put it in
-     * my language. The translate model takes only a target language — it works
-     * out the source itself — so one leg aimed at my language already handles
-     * any speaker in any supported language with nothing to configure. That is
-     * the behaviour the product is for, so it is the behaviour you get without
-     * choosing anything.
+     * Off by default, and off is the product: earslate listens, works out what
+     * is being spoken, and speaks back in it. Both languages are then decided
+     * by what the microphone hears, and there is nothing to set up.
      *
-     * On, it opens the second leg as well and translates my speech into
-     * [theirLanguageBcp47], for the case where two people are talking to each
-     * other and each needs to hear the other. That is a real need, but it is
-     * the narrower one, and it requires knowing the other language up front —
-     * which is exactly the setup step the default avoids.
+     * On, the two languages come from the pickers instead and the session stops
+     * following the conversation. It exists for the case where someone knows
+     * exactly which pair they want and does not want it moving — which is the
+     * narrow case, which is why it is buried and why it is off.
      */
-    val conversationMode: Boolean = false,
+    val manualLanguages: Boolean = false,
     val externalOnly: Boolean = false,
-    val captionsEnabled: Boolean = true,
-    val preferEarbuds: Boolean = true,
-    val diagnosticsEnabled: Boolean = false,
     val persistentNotification: Boolean = false,
     val provider: TranslationProvider = TranslationProvider.AUTOMATIC,
 )
@@ -70,11 +60,11 @@ class SettingsRepository(
         // existing install's chosen language survives the upgrade.
         val MY_LANGUAGE = stringPreferencesKey("target_language_bcp47")
         val THEIR_LANGUAGE = stringPreferencesKey("their_language_bcp47")
-        val CONVERSATION_MODE = booleanPreferencesKey("conversation_mode")
+        // A NEW key, not the old "conversation_mode". Anyone who had that on is
+        // opted into automatic detection rather than into a manual pair they
+        // chose for a feature that no longer works the way it did.
+        val MANUAL_LANGUAGES = booleanPreferencesKey("manual_languages")
         val EXTERNAL_ONLY = booleanPreferencesKey("external_only")
-        val CAPTIONS_ENABLED = booleanPreferencesKey("captions_enabled")
-        val PREFER_EARBUDS = booleanPreferencesKey("prefer_earbuds")
-        val DIAGNOSTICS_ENABLED = booleanPreferencesKey("diagnostics_enabled")
         val PERSISTENT_NOTIFICATION = booleanPreferencesKey("persistent_notification")
         val PROVIDER = stringPreferencesKey("translation_provider")
     }
@@ -85,10 +75,7 @@ class SettingsRepository(
         myLanguageBcp47 = prefs[Keys.MY_LANGUAGE] ?: defaults.myLanguageBcp47,
         theirLanguageBcp47 = prefs[Keys.THEIR_LANGUAGE] ?: defaults.theirLanguageBcp47,
         externalOnly = prefs[Keys.EXTERNAL_ONLY] ?: defaults.externalOnly,
-        conversationMode = prefs[Keys.CONVERSATION_MODE] ?: defaults.conversationMode,
-        captionsEnabled = prefs[Keys.CAPTIONS_ENABLED] ?: defaults.captionsEnabled,
-        preferEarbuds = prefs[Keys.PREFER_EARBUDS] ?: defaults.preferEarbuds,
-        diagnosticsEnabled = prefs[Keys.DIAGNOSTICS_ENABLED] ?: defaults.diagnosticsEnabled,
+        manualLanguages = prefs[Keys.MANUAL_LANGUAGES] ?: defaults.manualLanguages,
         persistentNotification = prefs[Keys.PERSISTENT_NOTIFICATION] ?: defaults.persistentNotification,
         provider = TranslationProvider.fromWireValue(prefs[Keys.PROVIDER]),
     )
@@ -131,20 +118,8 @@ class SettingsRepository(
         dataStore.edit { prefs -> prefs[Keys.THEIR_LANGUAGE] = bcp47 }
     }
 
-    suspend fun setConversationMode(enabled: Boolean) {
-        dataStore.edit { prefs -> prefs[Keys.CONVERSATION_MODE] = enabled }
-    }
-
-    suspend fun setCaptionsEnabled(enabled: Boolean) {
-        dataStore.edit { prefs -> prefs[Keys.CAPTIONS_ENABLED] = enabled }
-    }
-
-    suspend fun setPreferEarbuds(enabled: Boolean) {
-        dataStore.edit { prefs -> prefs[Keys.PREFER_EARBUDS] = enabled }
-    }
-
-    suspend fun setDiagnosticsEnabled(enabled: Boolean) {
-        dataStore.edit { prefs -> prefs[Keys.DIAGNOSTICS_ENABLED] = enabled }
+    suspend fun setManualLanguages(enabled: Boolean) {
+        dataStore.edit { prefs -> prefs[Keys.MANUAL_LANGUAGES] = enabled }
     }
 
     suspend fun setExternalOnly(enabled: Boolean) {
@@ -211,14 +186,17 @@ private fun UserSettings.toTranslatorPolicy(): TranslatorPolicy {
         ?: TargetLanguage.EnglishUS
     return TranslatorPolicy(
         myLanguage = mine,
-        // Outside conversation mode the second leg is not just unnecessary, it
-        // is wrong: it would translate the other person's speech back into
-        // their own language and speak it aloud. Pointing both legs at my
-        // language is what runSession already collapses into a single leg, so
-        // this reuses that proven path rather than adding a second way to have
-        // one leg.
-        theirLanguage = if (conversationMode) theirs else mine,
-        captionsEnabled = captionsEnabled,
+        // Automatic starts on English and moves: English is what an
+        // unrecognised speaker is treated as, and it is also the pair that
+        // collapses to a single leg for an English-speaking user, so the second
+        // socket is not opened until there is actually a second language to
+        // aim it at.
+        theirLanguage = if (manualLanguages) theirs else TargetLanguage.EnglishUS,
+        manualLanguages = manualLanguages,
+        // Not a setting. The source transcript this turns on is what the
+        // automatic language detection reads, so switching it off would switch
+        // off the product's main behaviour to save nothing.
+        captionsEnabled = true,
         externalOnly = externalOnly,
         provider = provider,
     )
