@@ -1,3 +1,4 @@
+import java.util.Base64
 import java.util.Properties
 
 plugins {
@@ -173,7 +174,7 @@ tasks.matching { it.name == "preReleaseBuild" }.configureEach {
  * gate is unchanged; only its source form is.
  */
 fun identityNeedle(encoded: String): String =
-    String(java.util.Base64.getDecoder().decode(encoded))
+    String(Base64.getDecoder().decode(encoded))
 
 val brandCertificateDn = identityNeedle("Q049RWFyc2xhdGUsIE89Q2xhc3NFdmUsIEM9SU4=")
 
