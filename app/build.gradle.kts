@@ -1,3 +1,4 @@
+import java.util.Base64
 import java.util.Properties
 
 plugins {
@@ -164,20 +165,30 @@ tasks.matching { it.name == "preReleaseBuild" }.configureEach {
  * Both the APK gate and the bundle gate read these. They were nearly written
  * out twice, which is the same mistake as any other duplicated contract: the
  * copies drift, each has its own passing check, and neither notices.
+ *
+ * Base64, and not for secrecy — the certificate DN is readable in any signed
+ * artifact, so this hides nothing from anyone holding an APK. It keeps the
+ * plaintext out of the repository, which is a different problem: a scrubber
+ * that lists its needles in cleartext is a public index of exactly what the
+ * project removes, findable by searching this host for any one of them. The
+ * gate is unchanged; only its source form is.
  */
-val brandCertificateDn = "CN=Earslate, O=ClassEve, C=IN"
+fun identityNeedle(encoded: String): String =
+    String(Base64.getDecoder().decode(encoded))
+
+val brandCertificateDn = identityNeedle("Q049RWFyc2xhdGUsIE89Q2xhc3NFdmUsIEM9SU4=")
 
 /**
  * Strings that are never legitimate in a shipped artifact. Deliberately NOT
  * bare city/state words — see [verifyReleaseIdentity]'s KDoc.
  */
 val forbiddenIdentityStrings = listOf(
-    "REDACTED",
-    "Pvt Ltd",
-    "Pvt. Ltd",
-    "REDACTED",
-    "Bengaluru",
-)
+    "UHJpdmF0ZSBMaW1pdGVk",
+    "UHZ0IEx0ZA==",
+    "UHZ0LiBMdGQ=",
+    "QmFybmFsYQ==",
+    "QmVuZ2FsdXJ1",
+).map(::identityNeedle)
 
 /**
  * Fails the build if a release APK carries the legal entity, a city, or a state.
