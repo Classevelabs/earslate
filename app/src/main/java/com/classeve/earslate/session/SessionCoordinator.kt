@@ -142,28 +142,17 @@ class SessionCoordinator(
     private val stagedCaptions = HashMap<String, StringBuilder>()
 
     /**
-     * Per-leg: when its last non-silent audio arrived, and whether the output
-     * turn that audio belongs to was allowed to play. The decision is made once
-     * per leg turn — at the first chunk — and held until that leg's turn ends
-     * or it goes quiet for [LEG_HANDOVER_IDLE_MS], so a translation already
-     * playing is never cut off because the next person started talking.
-     * Guarded by legLock.
-     */
-    private val legLastAudioAt = HashMap<String, Long>()
-    private val legTurnAllowed = HashMap<String, TurnDecision>()
-
-    /**
-     * Whether a leg may speak for its current output turn, and whether that was
-     * decided from a KNOWN speaker.
+     * The echo-suppression rule and its per-leg turn bookkeeping: when each
+     * leg's last non-silent audio arrived, and whether the output turn that
+     * audio belongs to was allowed to play. The decision is made once per leg
+     * turn — at the first chunk — and held until that leg's turn ends or it
+     * goes quiet for [LEG_HANDOVER_IDLE_MS], so a translation already playing
+     * is never cut off because the next person started talking.
      *
-     * The distinction is the whole fix. A decision taken while the speaker was
-     * still unknown is a guess, and guessing "yes" is what let the wrong leg
-     * start an echo, take ownership of the shared stream, and lock out the real
-     * translation arriving two hundred milliseconds later. A guess is therefore
-     * re-examined on every chunk until the transcript resolves who is talking;
-     * only then does it stick for the rest of the turn.
+     * Guarded by legLock: [LegTurnGate] does not lock for itself, precisely so
+     * this stays the one lock over this state. See its KDoc.
      */
-    private class TurnDecision(val allowed: Boolean, val definite: Boolean)
+    private val legTurns = LegTurnGate(LEG_HANDOVER_IDLE_MS)
 
     /** True when the current stream owner earned it from a known speaker. */
     private var speakingLegDefinite: Boolean = false
@@ -235,21 +224,9 @@ class SessionCoordinator(
 
     /**
      * Whose voice the most recent utterance was, once detection resolved it.
-     *
-     * This is the fact the leg-muting rule runs on. Each translate leg is
-     * configured to stay silent when the input is already in its target
-     * language, but that is a MODEL behaviour, not a guarantee, and on a
-     * preview model it slips: the leg targeting your own language repeats your
-     * words back, or the leg targeting theirs repeats theirs. Either way you
-     * hear the same language you just heard, and the real translation — which
-     * arrived a moment later on the other leg — is refused by ownership and
-     * lost. The app already knows who is speaking; it should not need the
-     * model to agree.
-     *
-     * Reset to UNKNOWN when a new utterance begins, so a short reply that
-     * detection cannot place ("yes") is not judged by the previous speaker.
+     * This is the fact the leg-muting rule runs on — see [Speaker], which
+     * carries the why, and [LegTurnGate], which applies it.
      */
-    private enum class Speaker { UNKNOWN, ME, THEM }
     @Volatile private var currentSpeaker: Speaker = Speaker.UNKNOWN
 
     /**
@@ -824,7 +801,7 @@ class SessionCoordinator(
                 lastHeardCode ?: policy.theirLanguage.bcp47,
             )
             currentSpeaker = Speaker.UNKNOWN
-            synchronized(legLock) { legTurnAllowed.clear() }
+            synchronized(legLock) { legTurns.clearDecisions() }
             setActiveLegs(listOfNotNull(replacement, outbound.takeIf { !collides }))
             retire(oldPrimary)
             releaseLeg(oldPrimary.targetCode)
@@ -1015,8 +992,7 @@ class SessionCoordinator(
                     // someone else's words. Gone. And its next audio is a new
                     // turn, to be judged afresh.
                     stagedCaptions.remove(legCode)
-                    legLastAudioAt.remove(legCode)
-                    legTurnAllowed.remove(legCode)
+                    legTurns.endTurn(legCode)
                     speakingLeg
                 }
                 releaseLeg(legCode)
@@ -1038,7 +1014,7 @@ class SessionCoordinator(
                 // A fresh utterance is nobody's until it says enough to tell.
                 if (!tracker.turnStarted) {
                     currentSpeaker = Speaker.UNKNOWN
-                    synchronized(legLock) { legTurnAllowed.clear() }
+                    synchronized(legLock) { legTurns.clearDecisions() }
                 }
                 when (val heard = tracker.observe(event.text)) {
                     null -> Unit
@@ -1099,32 +1075,20 @@ class SessionCoordinator(
      * silenced when the next person starts talking over it.
      */
     private fun mayLegSpeak(legCode: String): Boolean = synchronized(legLock) {
-        val now = android.os.SystemClock.elapsedRealtime()
-        val last = legLastAudioAt[legCode] ?: 0L
-        legLastAudioAt[legCode] = now
-        val newTurn = now - last > LEG_HANDOVER_IDLE_MS
-        val standing = legTurnAllowed[legCode]
-        // A decision only sticks for the turn once it was made from a KNOWN
-        // speaker. While the speaker is unknown every chunk is judged again, so
-        // the moment the transcript resolves, a leg that was guessing goes
-        // quiet on its very next chunk instead of finishing the echo.
-        if (!newTurn && standing != null && standing.definite) return standing.allowed
-        val isPrimary = legCode.equals(primaryCode, ignoreCase = true)
+        // The rule itself lives in [LegTurnGate] so it can be tested against
+        // real inputs; this supplies the three things only a live session
+        // knows — the clock, which leg is primary, and who is talking.
         val speaker = currentSpeaker
-        val allowed = when (speaker) {
-            // The invariant, stated as roles: never speak the language you just
-            // heard. The leg aimed at my language has no business talking while
-            // I am the one talking, and vice versa.
-            Speaker.ME -> !isPrimary
-            Speaker.THEM -> isPrimary
-            // Nobody identified yet. Allowed, but on sufferance — see above.
-            Speaker.UNKNOWN -> true
-        }
-        legTurnAllowed[legCode] = TurnDecision(allowed, speaker != Speaker.UNKNOWN)
-        if (!allowed && standing?.allowed != false) {
+        val verdict = legTurns.decide(
+            legCode = legCode,
+            primaryCode = primaryCode,
+            speaker = speaker,
+            now = android.os.SystemClock.elapsedRealtime(),
+        )
+        if (verdict.newlyMuted) {
             Log.i(TAG, "leg $legCode muted for this turn: speaker is $speaker")
         }
-        allowed
+        verdict.allowed
     }
 
     /**
@@ -1135,7 +1099,7 @@ class SessionCoordinator(
         if (currentSpeaker == speaker) return
         currentSpeaker = speaker
         val ownerWasGuessing = synchronized(legLock) {
-            legTurnAllowed.entries.removeAll { !it.value.definite }
+            legTurns.discardGuesses()
             speakingLeg != null && !speakingLegDefinite
         }
         // The queued audio belongs to a leg that claimed the stream without
@@ -1145,12 +1109,7 @@ class SessionCoordinator(
         if (ownerWasGuessing) {
             val stillAllowed = synchronized(legLock) {
                 val owner = speakingLeg ?: return@synchronized true
-                val isPrimary = owner.equals(primaryCode, ignoreCase = true)
-                when (speaker) {
-                    Speaker.ME -> !isPrimary
-                    Speaker.THEM -> isPrimary
-                    Speaker.UNKNOWN -> true
-                }
+                LegTurnGate.mayRoleSpeak(owner, primaryCode, speaker)
             }
             if (!stillAllowed) {
                 Log.i(TAG, "discarding audio queued by a leg that guessed wrong")
@@ -1175,7 +1134,7 @@ class SessionCoordinator(
         synchronized(legLock) {
             val now = android.os.SystemClock.elapsedRealtime()
             val owner = speakingLeg
-            val definite = legTurnAllowed[legCode]?.definite == true
+            val definite = legTurns.isDefinite(legCode)
             val mayTake = owner == null ||
                 owner == legCode ||
                 now - lastLegOutputElapsed > LEG_HANDOVER_IDLE_MS ||
@@ -1211,8 +1170,7 @@ class SessionCoordinator(
         if (legCode == null) {
             lastArrivalPerLeg.clear()
             stagedCaptions.clear()
-            legLastAudioAt.clear()
-            legTurnAllowed.clear()
+            legTurns.reset()
         }
     }
 
@@ -1312,8 +1270,13 @@ class SessionCoordinator(
          * How long an owning leg may go quiet before the other leg may take the
          * stream. Longer than any within-utterance pause the model produces, short
          * enough that a reply in the other direction is never left waiting.
+         *
+         * `internal` rather than private so `EchoSuppressionTest` can pin the
+         * turn boundary against THIS value rather than against a copy of the
+         * number — same reason as [isSilent] below. A test carrying its own
+         * `700L` would keep passing after this constant moved.
          */
-        private const val LEG_HANDOVER_IDLE_MS = 700L
+        internal const val LEG_HANDOVER_IDLE_MS = 700L
 
         /** Chunks between arrival-jitter log lines. ~5 s at a 100 ms cadence. */
         private const val ARRIVAL_LOG_EVERY = 50L
