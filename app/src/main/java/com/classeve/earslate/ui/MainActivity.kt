@@ -552,7 +552,18 @@ private fun EarslateApp(
                 onOpenOnboarding = { screen = Screen.ONBOARDING },
                 onOpenHelp = { screen = Screen.HELP },
                 onOpenKeySetup = { screen = Screen.KEY_SETUP },
-                configuredKeySummary = keySummary(providerKeys),
+                // keySummary() is not a lookup — ProviderKeyStore.has() is a
+                // full AES-GCM decrypt through AndroidKeyStore per provider, so
+                // this is two TEE (or StrongBox) round-trips plus the prefs
+                // read. Un-remembered it ran inside EVERY recomposition of this
+                // branch, and `userSettings` is collected as state right here,
+                // so every toggle on the Settings screen paid for it inside the
+                // frame. Recompute when this screen is entered or when the set
+                // of saved keys changes — which is what the summary is about —
+                // not on every frame.
+                configuredKeySummary = remember(current, hasKey) {
+                    keySummary(providerKeys)
+                },
             )
             Screen.HELP -> HelpScreen(
                 padding = padding,

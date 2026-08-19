@@ -1332,15 +1332,32 @@ class SessionCoordinator(
         /** Output PCM peak below this (model emits zero-PCM silence; peak≈1) is treated as silence. */
         private const val SILENCE_PEAK = 48
 
-        /** True when the 16-bit PCM frame is (near-)silent — peak amplitude under [SILENCE_PEAK]. */
-        private fun isSilent(pcm: ByteArray): Boolean {
+        /**
+         * True when the 16-bit PCM frame is (near-)silent — peak amplitude
+         * under [SILENCE_PEAK].
+         *
+         * `internal` rather than private so `SilenceDetectionTest` can pin it:
+         * it is the gate that decides whether a leg may claim the shared
+         * playback stream, and it was silently wrong for every negative sample.
+         */
+        internal fun isSilent(pcm: ByteArray): Boolean {
             var i = 0
             var peak = 0
             while (i < pcm.size - 1) {
+                // Mask BOTH bytes, then let `toShort()` carry the sign. The
+                // high byte used to be read as a signed Byte, so `hi shl 8`
+                // was already sign-extended and the manual
+                // "if the sign bit is set, subtract 0x10000" correction that
+                // followed fired a second time: FE FF (the sample -2) came out
+                // as -65538. Every negative sample therefore cleared the
+                // threshold and the gate answered "audible" for silence —
+                // including the model's own peak-1 filler, which is the exact
+                // frame it exists to drop. Same idiom as
+                // TranslationLiveProtocol.Pcm16Resampler.sample; keep them
+                // identical.
                 val lo = pcm[i].toInt() and 0xff
-                val hi = pcm[i + 1].toInt()
-                var s = (hi shl 8) or lo
-                if (s and 0x8000 != 0) s -= 0x10000
+                val hi = pcm[i + 1].toInt() and 0xff
+                val s = ((hi shl 8) or lo).toShort().toInt()
                 val a = if (s < 0) -s else s
                 if (a > peak) {
                     peak = a
