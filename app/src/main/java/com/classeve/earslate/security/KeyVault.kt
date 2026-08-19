@@ -17,6 +17,49 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
+ * What the app is allowed to ask about a stored secret — and, just as
+ * importantly, at what price.
+ *
+ * The two reads cost wildly different amounts and answer different questions,
+ * so they are named separately rather than left as one convenient method that
+ * callers reach for without knowing what it does. [contains] is a
+ * `SharedPreferences` lookup. [get] is an AES-GCM decrypt through
+ * AndroidKeyStore, which on most devices means a TEE — or StrongBox — round
+ * trip. Composition calls one of these on every frame it recomposes; only one
+ * of them belongs there.
+ *
+ * It is an interface for a second reason: [KeyVault] cannot be constructed off
+ * a device, so with the decision logic wired directly to it, "which providers
+ * are set up" and "what happens when a stored key will not decrypt" had no JVM
+ * test at all. Now they do.
+ */
+interface SecretStore {
+
+    /** Cheap. Is a ciphertext stored under [name]? No keystore round trip. */
+    fun contains(name: String): Boolean
+
+    /** Expensive. The plaintext, or null when absent **or unreadable**. */
+    fun get(name: String): String?
+
+    /**
+     * Seals [secret] under [name]. Fails closed — an implementation that cannot
+     * make the write secure must raise rather than store anything.
+     */
+    fun put(name: String, secret: String)
+
+    fun remove(name: String)
+
+    /**
+     * True when the platform destroyed the encryption key, which happens when
+     * device credentials are removed. Everything stored is unreadable and must
+     * be entered again.
+     */
+    val wasResetByKeystore: Boolean
+
+    fun acknowledgeKeystoreReset()
+}
+
+/**
  * Hardware-backed secret storage for the user's provider API keys.
  *
  * This deliberately does **not** use `androidx.security:security-crypto`
@@ -42,19 +85,24 @@ import javax.crypto.spec.GCMParameterSpec
  * expected to tell the user — a write that cannot be made secure must not look
  * like it succeeded.
  *
- * **Reads degrade instead.** [get] answers null when the vault is unreachable,
- * because to a caller that is the same fact as "nothing is stored": either way
- * there is no key to use, and the app has a correct path for that. This is a
- * deliberate asymmetry, and it is not symmetry for its own sake — it is what
- * stops a broken keystore from crashing the app during composition. Nothing is
- * deleted on that path; the ciphertext is left alone to decrypt another day.
+ * **Reads degrade instead.** [get] answers null when the vault is unreachable
+ * rather than raising, because a read that fails closed was crashing the app on
+ * launch. Nothing is deleted on that path; the ciphertext is left alone to
+ * decrypt another day.
+ *
+ * That null used to be read as "nothing is stored", which is a *different*
+ * fact and no longer stated anywhere: [contains] answers what is stored, [get]
+ * answers what is readable, and the gap between them — ciphertext that exists
+ * and cannot be decrypted — is a state the app now names to the user instead of
+ * silently rounding down to "you never added a key". See `ProviderKeyStore.has`
+ * and `LocalKeyBootstrapRepository.bootstrap`.
  *
  * The one case we heal automatically is [KeyPermanentlyInvalidatedException] —
  * the OS destroys the key when device credentials are removed, and the only
  * recovery is a new key, which means previously stored secrets are unreadable
  * and must be re-entered. That is reported honestly rather than crashing.
  */
-class KeyVault(context: Context) {
+class KeyVault(context: Context) : SecretStore {
 
     /** Raised when secure storage is genuinely unusable. Never swallowed. */
     class VaultUnavailable(message: String, cause: Throwable? = null) :
@@ -70,10 +118,10 @@ class KeyVault(context: Context) {
      * uses this to explain why a key it had is suddenly gone.
      */
     @Volatile
-    var wasResetByKeystore: Boolean = false
+    override var wasResetByKeystore: Boolean = false
         private set
 
-    fun put(name: String, secret: String) {
+    override fun put(name: String, secret: String) {
         if (secret.isEmpty()) {
             remove(name)
             return
@@ -91,7 +139,7 @@ class KeyVault(context: Context) {
             .apply()
     }
 
-    fun get(name: String): String? {
+    override fun get(name: String): String? {
         val stored = prefs.getString(name, null) ?: return null
         val packed = try {
             Base64.decode(stored, Base64.NO_WRAP)
@@ -128,17 +176,17 @@ class KeyVault(context: Context) {
             //
             // VaultUnavailable is a RuntimeException, so neither catch above
             // sees it, and secretKey() raises it whenever AndroidKeyStore will
-            // not load or open. MainActivity calls providerKeys.hasAnyKey()
-            // during composition, which lands here for any user who already has
-            // a key stored — so a device whose keystore breaks got an immediate
-            // crash loop and no explanation at all.
+            // not load or open. MainActivity called providerKeys.hasAnyKey()
+            // during composition, which landed here for any user who already
+            // had a key stored — so a device whose keystore breaks got an
+            // immediate crash loop and no explanation at all. That call no
+            // longer decrypts, but this must still not raise: every other
+            // caller of get() is somewhere a crash is just as unwelcome.
             //
-            // To a caller, "the vault is unreachable" and "no key is stored" are
-            // the same fact: there is no key available to use. The app already
-            // has a correct, well-trodden path for the second one — it shows key
-            // setup. Taking that path ends somewhere honest, because the SAVE at
-            // the end of it still fails loudly with the real reason. Crashing
-            // ends nowhere.
+            // Answering null and leaving the entry alone is the honest degrade.
+            // It does NOT mean "no key is stored" — contains() still says one
+            // is, and the session bootstrap turns that combination into a
+            // message naming the real problem.
             //
             // The entry is deliberately NOT removed: the ciphertext is fine and
             // may well decrypt on the next boot. Nothing is destroyed on the
@@ -148,9 +196,9 @@ class KeyVault(context: Context) {
         }
     }
 
-    fun contains(name: String): Boolean = prefs.contains(name)
+    override fun contains(name: String): Boolean = prefs.contains(name)
 
-    fun remove(name: String) {
+    override fun remove(name: String) {
         prefs.edit().remove(name).apply()
     }
 
@@ -158,7 +206,7 @@ class KeyVault(context: Context) {
         prefs.edit().clear().apply()
     }
 
-    fun acknowledgeKeystoreReset() {
+    override fun acknowledgeKeystoreReset() {
         wasResetByKeystore = false
     }
 

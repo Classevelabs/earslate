@@ -114,13 +114,46 @@ enum class KeyProvider(
  * The user's provider keys. Thin, deliberately: it owns *which* keys exist and
  * nothing about how they are encrypted — that is [KeyVault]'s job.
  */
-class ProviderKeyStore(context: Context) {
+class ProviderKeyStore(private val vault: SecretStore) {
 
-    private val vault = KeyVault(context)
+    /** How the app builds one: over the platform keystore. */
+    constructor(context: Context) : this(KeyVault(context))
 
+    /**
+     * The key itself, decrypted. Null when no key is stored **or** when the
+     * stored one cannot be read — see [has] for why those are not the same
+     * thing, and who is responsible for telling them apart.
+     */
     fun key(of: KeyProvider): String? = vault.get(of.vaultEntry)?.takeIf { it.isNotBlank() }
 
-    fun has(of: KeyProvider): Boolean = key(of) != null
+    /**
+     * Is a key **stored** for [of]? Deliberately not "is a key usable".
+     *
+     * This is a `SharedPreferences.contains` and nothing else. It used to be
+     * `key(of) != null` — a full AES-GCM decrypt through AndroidKeyStore, which
+     * on most devices is a TEE or StrongBox round trip. `MainActivity` calls
+     * [hasAnyKey] during composition, so that ran inside a frame, once per
+     * provider, to answer a question that is really about which entries exist
+     * in a preferences file. [KeyVault.contains] was written for exactly this
+     * and had no callers at all.
+     *
+     * **The trade, stated because it is real and not free.** A keystore that
+     * has been invalidated — device credentials removed, biometrics
+     * re-enrolled — leaves ciphertext that exists and can never be decrypted
+     * again. This answers "present" for that key. So `has()` is not, and must
+     * never be treated as, a promise that a session can start.
+     *
+     * That is only safe because the path which actually USES the key says so
+     * out loud: `LocalKeyBootstrapRepository.bootstrap` picks a provider with
+     * this cheap check and then calls [key], and a null there — which can now
+     * only mean "stored but unreadable" — raises a `BootstrapException` naming
+     * that, which `SessionCoordinator` carries into `RuntimeError` and
+     * `ErrorBanner` renders verbatim. `LocalKeyBootstrapRepositoryTest` pins
+     * it. Delete that branch and this must go back to decrypting, or a user
+     * with an invalidated keystore gets a START button that fails with "no key
+     * is set up" while Settings shows their key sitting right there.
+     */
+    fun has(of: KeyProvider): Boolean = vault.contains(of.vaultEntry)
 
     fun save(of: KeyProvider, key: String) {
         vault.put(of.vaultEntry, key.trim())

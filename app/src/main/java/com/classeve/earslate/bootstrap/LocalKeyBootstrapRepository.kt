@@ -28,7 +28,18 @@ class LocalKeyBootstrapRepository(
     ): SessionBootstrap {
         val chosen = keys.resolve(provider)
             ?: throw missingKey(provider)
-        val apiKey = keys.key(chosen) ?: throw missingKey(provider)
+        // resolve() answers from the cheap "is a key stored" check, so reaching
+        // this line means the ciphertext EXISTS. A null now therefore means it
+        // could not be DECRYPTED — an invalidated keystore, a tampered or
+        // truncated entry, or secure storage that will not open — and never
+        // "no key was set up".
+        //
+        // Deliberately NOT re-reading keys.has(chosen) to choose the message.
+        // Reading the key is what discovers an invalidated keystore, and
+        // KeyVault clears the store when it finds one, so a second has() here
+        // would answer false and hand the user the "you never added a key"
+        // message for a key they can see listed in Settings.
+        val apiKey = keys.key(chosen) ?: throw unreadableKey(chosen)
 
         return try {
             minter.mint(chosen, apiKey, targetLanguageCode, captionsEnabled)
@@ -49,6 +60,29 @@ class LocalKeyBootstrapRepository(
             }
         }
     }
+
+    /**
+     * A key that is on the device and cannot be read.
+     *
+     * The remedy is the same whatever destroyed it — enter it again — but the
+     * user has to be TOLD, because every other surface still shows the provider
+     * as set up. Reporting this as "no key is set up" is the dead end this
+     * exists to prevent: it contradicts what Settings shows, and it is the one
+     * failure mode created by answering "is a key present?" from the
+     * preferences file instead of by decrypting. See `ProviderKeyStore.has`.
+     *
+     * Every cause ends somewhere coherent from here. A destroyed keystore key
+     * clears the store on the way through, so the next visit to key setup also
+     * explains itself via `wasResetByKeystore`. A single corrupt entry is
+     * dropped by `KeyVault.get`, so the following attempt simply uses the other
+     * provider. Secure storage that is merely unavailable keeps its ciphertext
+     * and may well work on the next boot — which is why nothing is deleted here
+     * and the user is asked rather than told their key is gone.
+     */
+    private fun unreadableKey(chosen: KeyProvider): BootstrapException = BootstrapException(
+        "Your saved ${chosen.displayName} key can't be read on this device any more — " +
+            "secure storage changed since it was saved. Open Settings and enter the key again.",
+    )
 
     private fun missingKey(requested: TranslationProvider): BootstrapException {
         val named = KeyProvider.forProvider(requested)

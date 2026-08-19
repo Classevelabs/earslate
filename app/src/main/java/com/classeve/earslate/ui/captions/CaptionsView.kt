@@ -18,6 +18,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -86,9 +87,26 @@ fun CaptionsView(
         } else {
             val listState = rememberLazyListState()
 
-            LaunchedEffect(lines.size) {
-                if (lines.isNotEmpty()) {
-                    listState.animateScrollToItem(lines.lastIndex)
+            // ONE list, used for both rendering and scrolling. The two used to
+            // be computed separately and disagreed: the column emitted
+            // `lines.size + 1` items whenever a partial line was in flight,
+            // while the effect scrolled to `lines.lastIndex`.
+            val rows = remember(lines, pending) { captionRows(lines, pending) }
+            val target = captionScrollTarget(rows)
+
+            // Keyed on the ROWS, not on their count.
+            //
+            // `LaunchedEffect(lines.size)` missed the two cases that matter
+            // most. The live partial row grows without the count changing, so
+            // the translation appeared below the fold while the user watched
+            // it being typed. And CaptionsStore keeps a `takeLast(48)` rolling
+            // window, so once 48 lines have committed the count never changes
+            // again — a size-keyed effect simply stopped firing for the rest of
+            // the session.
+            LaunchedEffect(rows) {
+                val lastLaidOut = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+                if (shouldFollowCaptions(lastVisibleIndex = lastLaidOut, targetIndex = target)) {
+                    listState.animateScrollToItem(target)
                 }
             }
 
@@ -100,11 +118,25 @@ fun CaptionsView(
                         .heightIn(max = 320.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    itemsIndexed(lines, key = { index, _ -> index }) { _, line ->
+                    // Keys stay POSITIONAL, deliberately. A caption is a plain
+                    // string with no stable id of its own, and duplicates are
+                    // routine in conversation — "yes", "okay", "mm" — so keying
+                    // on content would hand the LazyColumn duplicate keys and
+                    // crash it. Positional keys over a rolling window are the
+                    // lesser problem, and the one already shipped. Give
+                    // CaptionsStore a per-line id and this can improve; until
+                    // then, leave it.
+                    itemsIndexed(rows, key = { index, _ -> index }) { _, row ->
                         Text(
-                            text = line,
+                            text = row.text,
                             style = EarslateTheme.textStyles.body,
-                            color = EarslateTheme.colors.textPrimary,
+                            // The line still being spoken stays muted, so a
+                            // partial is never mistaken for settled text.
+                            color = if (row.live) {
+                                EarslateTheme.colors.textSecondary
+                            } else {
+                                EarslateTheme.colors.textPrimary
+                            },
                             modifier = Modifier.animateItem(
                                 fadeInSpec = tween(
                                     durationMillis = MotionBaseMs,
@@ -116,15 +148,6 @@ fun CaptionsView(
                                 ),
                             ),
                         )
-                    }
-                    if (pending.isNotEmpty()) {
-                        item {
-                            Text(
-                                text = pending,
-                                style = EarslateTheme.textStyles.body,
-                                color = EarslateTheme.colors.textSecondary,
-                            )
-                        }
                     }
                 }
             }

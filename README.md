@@ -50,8 +50,9 @@ It is excluded from cloud backup and from device-to-device transfer, never
 logged, and never rendered back to the screen in full.
 
 If you remove your device credentials, Android destroys the keystore key. The
-saved key becomes unreadable and earslate asks for it again — that is the
-platform behaving correctly, not data loss.
+saved key becomes unreadable; the next time earslate needs it, it says so and
+asks you to enter it again — that is the platform behaving correctly, not data
+loss.
 
 ## Build
 
