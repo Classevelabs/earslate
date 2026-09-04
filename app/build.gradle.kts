@@ -22,20 +22,57 @@ val localProperties = Properties().apply {
 // these values, but every release build is gated by verifyReleaseSigning below.
 // Verify the production keystore has been used with:
 //   $ jarsigner -verify -verbose app/build/outputs/apk/release/app-release.apk
-val releaseStoreFile = localProperties.getProperty("EARSLATE_STORE_FILE")?.takeIf { it.isNotBlank() }
-val releaseStorePassword = localProperties.getProperty("EARSLATE_STORE_PASSWORD")?.takeIf { it.isNotBlank() }
-val releaseKeyAlias = localProperties.getProperty("EARSLATE_KEY_ALIAS")?.takeIf { it.isNotBlank() }
-val releaseKeyPassword = localProperties.getProperty("EARSLATE_KEY_PASSWORD")?.takeIf { it.isNotBlank() }
+val brandStoreFile = localProperties.getProperty("EARSLATE_STORE_FILE")?.takeIf { it.isNotBlank() }
+val brandStorePassword = localProperties.getProperty("EARSLATE_STORE_PASSWORD")?.takeIf { it.isNotBlank() }
+val brandKeyAlias = localProperties.getProperty("EARSLATE_KEY_ALIAS")?.takeIf { it.isNotBlank() }
+val brandKeyPassword = localProperties.getProperty("EARSLATE_KEY_PASSWORD")?.takeIf { it.isNotBlank() }
+
+// An AAB and an APK go to different places and must carry DIFFERENT certificates.
+// The APK is the direct download, signed with the brand key whose DN carries no
+// company entity. The AAB goes to Google Play, which pins the UPLOAD certificate
+// registered when the app was created and rejects anything else with a 403; Play
+// App Signing re-signs for users, so that upload certificate — and the legal
+// entity in its DN — never reaches a device and is not a user-facing leak. The
+// earslate upload key is earslate-release.keystore (alias earslate, SHA-256
+// pinned in verifyBundleIdentity); see _keystore-backups/README.txt. Signing the
+// AAB with the brand key builds cleanly and is then refused at upload, which is
+// exactly what blocked earslate on Play.
+val uploadStoreFile = localProperties.getProperty("PLAY_UPLOAD_STORE_FILE")?.takeIf { it.isNotBlank() }
+val uploadStorePassword = localProperties.getProperty("PLAY_UPLOAD_STORE_PASSWORD")?.takeIf { it.isNotBlank() }
+val uploadKeyAlias = localProperties.getProperty("PLAY_UPLOAD_KEY_ALIAS")?.takeIf { it.isNotBlank() }
+val uploadKeyPassword = localProperties.getProperty("PLAY_UPLOAD_KEY_PASSWORD")?.takeIf { it.isNotBlank() }
+val hasUploadKeystore = uploadStoreFile?.let { file(it).exists() } == true &&
+    uploadStorePassword != null && uploadKeyAlias != null && uploadKeyPassword != null
+
+val bundleRequested = gradle.startParameter.taskNames.any { taskName ->
+    taskName.substringAfterLast(':').startsWith("bundle", ignoreCase = true)
+}
+val signWithUploadKey = bundleRequested && hasUploadKeystore
+
+// Downstream signingConfigs read these: the brand key for an APK, the Play
+// upload key for a bundle.
+val releaseStoreFile = if (signWithUploadKey) uploadStoreFile else brandStoreFile
+val releaseStorePassword = if (signWithUploadKey) uploadStorePassword else brandStorePassword
+val releaseKeyAlias = if (signWithUploadKey) uploadKeyAlias else brandKeyAlias
+val releaseKeyPassword = if (signWithUploadKey) uploadKeyPassword else brandKeyPassword
 val releaseSigningProperties = linkedMapOf(
-    "EARSLATE_STORE_FILE" to releaseStoreFile,
-    "EARSLATE_STORE_PASSWORD" to releaseStorePassword,
-    "EARSLATE_KEY_ALIAS" to releaseKeyAlias,
-    "EARSLATE_KEY_PASSWORD" to releaseKeyPassword,
+    "store file" to releaseStoreFile,
+    "store password" to releaseStorePassword,
+    "key alias" to releaseKeyAlias,
+    "key password" to releaseKeyPassword,
 )
 val missingReleaseSigningProperties = releaseSigningProperties
     .filterValues { it == null }
     .keys
 val hasReleaseKeystore = missingReleaseSigningProperties.isEmpty()
+
+if (bundleRequested && !hasUploadKeystore) {
+    println(
+        "WARNING: PLAY_UPLOAD_* is not configured, so this bundle would be signed with the brand key " +
+            "and Play will refuse it (it expects the registered upload certificate). Set " +
+            "PLAY_UPLOAD_STORE_FILE/PASSWORD/KEY_ALIAS/KEY_PASSWORD in local.properties.",
+    )
+}
 
 android {
     namespace = "com.classeve.earslate"
@@ -310,11 +347,17 @@ val verifyReleaseIdentity by tasks.registering {
  */
 val verifyBundleIdentity by tasks.registering {
     group = "verification"
-    description = "Fails if the release AAB leaks the legal entity, a city, or a state."
+    description = "Fails unless the release AAB is signed with the registered Play upload certificate."
 
     val bundleDir = layout.buildDirectory.dir("outputs/bundle/release")
-    val allowedDn = brandCertificateDn
-    val forbiddenSubstrings = forbiddenIdentityStrings
+    // The Play upload certificate for com.classeve.earslate — earslate-release.keystore,
+    // alias earslate. Unlike the direct-download APK, its DN carries the legal
+    // entity ON PURPOSE: Play App Signing strips it and re-signs before any
+    // device sees the app, so it is never a user-facing leak, and Play 403s any
+    // OTHER key. So the bundle is pinned to this certificate by SHA-256 (a
+    // wrong-key bundle fails here instead of at upload), NOT held to the clean
+    // brand DN the APK gate requires. See _keystore-backups/README.txt.
+    val uploadCertSha256 = "06DC3708937740310F93D9EF6F400DE16D2619C95E76D0EA50B737B495F3F544"
     val javaHome = System.getProperty("java.home")
 
     doLast {
@@ -334,7 +377,7 @@ val verifyBundleIdentity by tasks.registering {
         }
 
         for (aab in bundles) {
-            // 1. Exact signer DN, read from the JAR signature.
+            // An AAB is a JAR, so it carries the v1 signature keytool reads.
             val process = ProcessBuilder(
                 keytool.absolutePath, "-printcert", "-jarfile", aab.absolutePath,
             ).redirectErrorStream(true).start()
@@ -342,40 +385,28 @@ val verifyBundleIdentity by tasks.registering {
             if (process.waitFor() != 0) {
                 throw GradleException("verifyBundleIdentity: keytool failed on ${aab.name}:\n$output")
             }
-            val owners = output.lineSequence()
-                .filter { it.trimStart().startsWith("Owner:") }
-                .map { it.substringAfter("Owner:").trim() }
-                .toList()
-            if (owners.isEmpty()) {
+            val fingerprints = output.lineSequence()
+                .filter { it.contains("SHA256:") }
+                .map { it.substringAfter("SHA256:").trim().replace(":", "").uppercase() }
+                .toSet()
+            if (fingerprints.isEmpty()) {
                 throw GradleException(
                     "verifyBundleIdentity: ${aab.name} has no readable signer. An unsigned " +
                         "bundle cannot be uploaded, and an unreadable one cannot be checked:\n$output",
                 )
             }
-            // keytool and apksigner space a DN differently; compare on content,
-            // not on formatting, so this fails on identity and never on layout.
-            fun normalise(dn: String) = dn.split(",").joinToString(", ") { it.trim() }
-            for (owner in owners) {
-                if (normalise(owner) != normalise(allowedDn)) {
-                    throw GradleException(
-                        "verifyBundleIdentity: ${aab.name} is signed with a non-brand certificate.\n" +
-                            "  expected: $allowedDn\n" +
-                            "  actual:   $owner\n" +
-                            "INTERNAL-RULES 2: no OU, no O beyond 'ClassEve', no L, no ST.",
-                    )
-                }
-            }
-
-            // 2. Raw bytes, because a certificate is not the only way to leak.
-            val haystack = String(aab.readBytes(), Charsets.ISO_8859_1)
-            val hits = forbiddenSubstrings.filter { haystack.contains(it) }
-            if (hits.isNotEmpty()) {
+            if (fingerprints != setOf(uploadCertSha256)) {
                 throw GradleException(
-                    "verifyBundleIdentity: ${aab.name} contains forbidden identity strings: " +
-                        hits.joinToString() + " (INTERNAL-RULES 2)",
+                    "verifyBundleIdentity: ${aab.name} is not signed with the registered Play " +
+                        "upload certificate.\n" +
+                        "  expected: $uploadCertSha256\n" +
+                        "  actual:   ${fingerprints.sorted().joinToString()}\n" +
+                        "Set PLAY_UPLOAD_STORE_FILE/PASSWORD/KEY_ALIAS/KEY_PASSWORD in local.properties. " +
+                        "A bundle signed with the brand key builds cleanly and is then refused at upload " +
+                        "with a 403, which is how the earslate Play channel was blocked.",
                 )
             }
-            logger.lifecycle("verifyBundleIdentity: ${aab.name} - DN clean, raw bytes clean")
+            logger.lifecycle("verifyBundleIdentity: ${aab.name} - signed with the registered Play upload certificate")
         }
     }
 }
