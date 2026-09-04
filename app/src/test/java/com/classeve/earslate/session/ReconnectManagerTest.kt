@@ -29,6 +29,45 @@ class ReconnectManagerTest {
     }
 
     @Test
+    fun `a session that stayed connected long enough earns a fresh backoff`() {
+        val rm = ReconnectManager()
+        rm.nextDelayMs()
+        rm.nextDelayMs()
+        assertEquals(2, rm.attemptNumber)
+
+        rm.noteSessionEnded(ReconnectManager.STABLE_AFTER_MS)
+        assertEquals(0, rm.attemptNumber)
+        assertEquals(0L, rm.nextDelayMs())
+    }
+
+    @Test
+    fun `a fast accept-then-drop does not reset the backoff`() {
+        val rm = ReconnectManager()
+        rm.nextDelayMs()
+        rm.noteSessionEnded(0L)                                   // never really up
+        rm.noteSessionEnded(ReconnectManager.STABLE_AFTER_MS - 1) // up, but too briefly
+        assertEquals(1, rm.attemptNumber)
+    }
+
+    @Test
+    fun `repeated fast drops exhaust the budget instead of looping forever`() {
+        // Models the reconnect loop against a provider that reaches READY then
+        // drops immediately every cycle: end a session, and while the budget is
+        // not spent, schedule the next attempt. The backoff must climb to the
+        // budget and stop — the reset-on-READY bug pinned it at 0 forever.
+        val rm = ReconnectManager()
+        val budget = 4 // mirrors SessionCoordinator.MAX_RECONNECT_ATTEMPTS
+        var sessions = 0
+        while (rm.attemptNumber < budget) {
+            rm.noteSessionEnded(0L)
+            if (rm.attemptNumber < budget) rm.nextDelayMs()
+            sessions++
+            assertTrue("must terminate, not loop forever", sessions <= budget + 2)
+        }
+        assertEquals(budget, rm.attemptNumber)
+    }
+
+    @Test
     fun `reset returns to attempt zero`() {
         val rm = ReconnectManager()
         rm.nextDelayMs()

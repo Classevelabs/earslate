@@ -38,5 +38,33 @@ class ReconnectManager {
         attempt = 0
     }
 
+    /**
+     * Report how long the session that just ended stayed connected, so the
+     * backoff is reset only for a session that was genuinely working.
+     *
+     * A session that reached READY and lasted at least [STABLE_AFTER_MS] earns
+     * a fresh backoff: its drop is an isolated blip, and the next one should
+     * retry promptly. A session that dropped sooner — including one a provider
+     * accepts and then refuses immediately — does NOT reset. That is what
+     * bounds the reconnect: without it, resetting the instant a leg reached
+     * READY meant an accept-then-drop provider looped forever at the attempt-1
+     * delay of 0 ms, re-minting a single-use credential on the user's own key
+     * every iteration. Now a run of fast drops walks the delay up to its cap
+     * and stops at [attemptNumber] == the caller's budget instead.
+     */
+    fun noteSessionEnded(readyDurationMs: Long) {
+        if (readyDurationMs >= STABLE_AFTER_MS) reset()
+    }
+
     val attemptNumber: Int get() = attempt
+
+    companion object {
+        /**
+         * How long a session must stay connected before its death counts as
+         * "was working, just blipped" rather than "flapping". Comfortably
+         * longer than the 5 s backoff cap so a provider that keeps
+         * accepting-then-dropping cannot keep the backoff pinned at zero.
+         */
+        const val STABLE_AFTER_MS = 15_000L
+    }
 }

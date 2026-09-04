@@ -87,6 +87,13 @@ class SessionCoordinator(
     @Volatile private var wasSocketDeath: Boolean = false
 
     /**
+     * Monotonic time the current session reached READY, or 0 before it does.
+     * reconnectLoop turns the interval up to the session's end into the
+     * "was this stable?" decision that gates the backoff reset.
+     */
+    @Volatile private var sessionReadyAtMs: Long = 0L
+
+    /**
      * True once this attempt has decided to fail and has begun closing its own
      * sockets.
      *
@@ -324,6 +331,7 @@ class SessionCoordinator(
         while (true) {
             wasSocketDeath = false
             deliberateTeardown = false
+            sessionReadyAtMs = 0L
 
             try {
                 runSession(policy)
@@ -497,7 +505,14 @@ class SessionCoordinator(
             // Independent playback session (no AEC coupling — we don't run AEC).
             playbackEngine.start()
             stateStore.set(RuntimeState.READY)
-            reconnectManager.reset()
+            // Do NOT reset the backoff here. Reaching READY is not the same as
+            // being stable: a provider that accepts setup then drops the socket
+            // reaches READY every cycle, and resetting on that let the reconnect
+            // loop spin forever at the attempt-1 delay of 0 ms, re-minting a
+            // credential each time. Instead, record when the session became
+            // ready; reconnectLoop resets only if it then lasted long enough to
+            // be real. See ReconnectManager.noteSessionEnded.
+            sessionReadyAtMs = android.os.SystemClock.elapsedRealtime()
             awaitCancellation()
         } finally {
             playbackGateActive = false
@@ -531,6 +546,17 @@ class SessionCoordinator(
             // The consequence was that any network blip ended the session
             // instead of recovering from it, which is the one moment reconnect
             // exists for.
+            //
+            // Decide the backoff BEFORE this state choice, not after, so
+            // willReconnect() below sees the reset and the two never disagree.
+            // A session that stayed connected past the stability threshold earns
+            // a fresh backoff; a fast accept-then-drop (or a never-ready
+            // failure, readyAt == 0) does not, so a run of them walks the delay
+            // up to its cap and stops instead of looping at 0 ms forever.
+            val readyAt = sessionReadyAtMs
+            reconnectManager.noteSessionEnded(
+                if (readyAt == 0L) 0L else android.os.SystemClock.elapsedRealtime() - readyAt,
+            )
             stateStore.set(
                 if (willReconnect()) RuntimeState.RECONNECTING else RuntimeState.IDLE,
             )
