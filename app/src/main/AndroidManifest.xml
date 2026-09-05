@@ -75,5 +75,9 @@
                 android:value="true" />
         </service>
 
+        <!-- The commit this build came from, stamped by the release gates. -->
+        <meta-data
+            android:name="app.classeve.commit"
+            android:value="${classeveCommit}" />
     </application>
 </manifest>

@@ -1,4 +1,4 @@
-import java.util.Base64
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.util.Properties
 
 plugins {
@@ -6,6 +6,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
+    id("com.classeve.release-gates")
 }
 
 val localProperties = Properties().apply {
@@ -145,8 +146,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
+    kotlin {
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_17)
+        }
     }
 
     packaging {
@@ -196,227 +199,17 @@ tasks.matching { it.name == "preReleaseBuild" }.configureEach {
     dependsOn(verifyReleaseSigning)
 }
 
-/**
- * The one definition of what a clean artifact looks like.
- *
- * Both the APK gate and the bundle gate read these. They were nearly written
- * out twice, which is the same mistake as any other duplicated contract: the
- * copies drift, each has its own passing check, and neither notices.
- *
- * Base64, and not for secrecy — the certificate DN is readable in any signed
- * artifact, so this hides nothing from anyone holding an APK. It keeps the
- * plaintext out of the repository, which is a different problem: a scrubber
- * that lists its needles in cleartext is a public index of exactly what the
- * project removes, findable by searching this host for any one of them. The
- * gate is unchanged; only its source form is.
- */
-fun identityNeedle(encoded: String): String =
-    String(Base64.getDecoder().decode(encoded))
-
-val brandCertificateDn = identityNeedle("Q049RWFyc2xhdGUsIE89Q2xhc3NFdmUsIEM9SU4=")
-
-/**
- * Strings that are never legitimate in a shipped artifact. Deliberately NOT
- * bare city/state words — see [verifyReleaseIdentity]'s KDoc.
- */
-val forbiddenIdentityStrings = listOf(
-    "UHJpdmF0ZSBMaW1pdGVk",
-    "UHZ0IEx0ZA==",
-    "UHZ0LiBMdGQ=",
-    "QmFybmFsYQ==",
-    "QmVuZ2FsdXJ1",
-).map(::identityNeedle)
-
-/**
- * Fails the build if a release APK carries the legal entity, a city, or a state.
- *
- * This exists because the check did not, and the omission shipped. Up to 0.4.3
- * the release keystore's DN carried OU, O, L and ST attributes well beyond the
- * brand name, so every published APK — including the one served from
- * classeve.com — had them in its bytes, against INTERNAL-RULES §2. Those
- * attribute values are written down exactly once, in
- * [forbiddenIdentityStrings]; restating them here would only add a second copy
- * to scrub.
- *
- * It survived because the obvious checks all report CLEAN on a dirty APK: the
- * DN is DER-encoded inside the v2 signing block, and these builds carry no v1
- * signature, so `strings` finds nothing and `keytool -printcert -jarfile`
- * has no JAR signature to read.
- *
- * Two assertions, because either alone has a hole:
- *  1. The signer DN must equal [brandCertificateDn] EXACTLY. Checking the DN
- *     rather than grepping for place names is what makes this precise: a bare
- *     state word is also the prefix of a language name, and the day that
- *     language is added to SupportedLanguages a substring scan would fail an
- *     innocent build.
- *  2. A raw-byte scan for entity strings that can never be legitimate,
- *     catching a leak that arrives through some path other than the
- *     certificate.
- *
- * Fails closed: if apksigner cannot be found or run, that is a failure, not a
- * skip. A gate that quietly does nothing is worse than no gate, because it
- * reads as proof.
- */
-val verifyReleaseIdentity by tasks.registering {
-    group = "verification"
-    description = "Fails if the release APK leaks the legal entity, a city, or a state."
-
-    val apkDir = layout.buildDirectory.dir("outputs/apk/release")
-    val sdkDir = localProperties.getProperty("sdk.dir")
-    val allowedDn = brandCertificateDn
-    val forbiddenSubstrings = forbiddenIdentityStrings
-
-    doLast {
-        val apks = apkDir.get().asFile.listFiles { f: File -> f.name.endsWith(".apk") }
-            ?.sortedBy { it.name }
-            .orEmpty()
-        if (apks.isEmpty()) {
-            throw GradleException("verifyReleaseIdentity: no release APK found in ${apkDir.get().asFile}")
-        }
-
-        val sdk = sdkDir?.let(::File)
-            ?: throw GradleException("verifyReleaseIdentity: sdk.dir is not set in local.properties")
-        val apksignerJar = File(sdk, "build-tools").listFiles()
-            ?.filter { it.isDirectory }
-            ?.sortedBy { it.name }
-            ?.reversed()
-            ?.map { File(it, "lib/apksigner.jar") }
-            ?.firstOrNull { it.isFile }
-            ?: throw GradleException(
-                "verifyReleaseIdentity: apksigner.jar not found under ${File(sdk, "build-tools")}. " +
-                    "The identity gate fails closed rather than skipping.",
-            )
-
-        for (apk in apks) {
-            // 1. Exact signer DN.
-            val process = ProcessBuilder(
-                "java", "-jar", apksignerJar.absolutePath,
-                "verify", "--print-certs", apk.absolutePath,
-            ).redirectErrorStream(true).start()
-            val output = process.inputStream.bufferedReader().readText()
-            if (process.waitFor() != 0) {
-                throw GradleException("verifyReleaseIdentity: apksigner failed on ${apk.name}:\n$output")
-            }
-            val dnLine = output.lineSequence()
-                .firstOrNull { it.contains("certificate DN:") }
-                ?: throw GradleException(
-                    "verifyReleaseIdentity: apksigner printed no certificate DN for ${apk.name}:\n$output",
-                )
-            val dn = dnLine.substringAfter("certificate DN:").trim()
-            if (dn != allowedDn) {
-                throw GradleException(
-                    "verifyReleaseIdentity: ${apk.name} is signed with a non-brand certificate.\n" +
-                        "  expected: $allowedDn\n" +
-                        "  actual:   $dn\n" +
-                        "INTERNAL-RULES §2: no OU, no O beyond 'ClassEve', no L, no ST.",
-                )
-            }
-
-            // 2. Raw bytes, because a certificate is not the only way to leak.
-            val bytes = apk.readBytes()
-            val haystack = String(bytes, Charsets.ISO_8859_1)
-            val hits = forbiddenSubstrings.filter { haystack.contains(it) }
-            if (hits.isNotEmpty()) {
-                throw GradleException(
-                    "verifyReleaseIdentity: ${apk.name} contains forbidden identity strings: " +
-                        hits.joinToString() + " (INTERNAL-RULES §2)",
-                )
-            }
-            // ASCII only: CI log encodings mangle anything else.
-            logger.lifecycle("verifyReleaseIdentity: ${apk.name} - DN clean, raw bytes clean")
-        }
-    }
-}
-
-/**
- * The same gate, on the artifact Play actually receives.
- *
- * [verifyReleaseIdentity] reads `outputs/apk/release` and is wired only to
- * `assembleRelease`. Play is given an **AAB**, produced by `bundleRelease`, and
- * those are separate Gradle invocations — so the gate written *because* the
- * entity leak shipped never ran on the thing that ships. The APK it does check
- * is the one served from classeve.com; the store build had no check at all.
- *
- * `apksigner` cannot read an AAB, but it does not need to: an AAB is a JAR, so
- * it carries a v1 signature that `keytool -printcert -jarfile` can read — the
- * tool the APK KDoc dismisses, for the opposite reason. There it fails because
- * these APKs have no v1 signature; here v1 is all there is.
- *
- * Fails closed, like its sibling: no bundle, no keytool, or no readable signer
- * is a failure and not a skip.
- */
-val verifyBundleIdentity by tasks.registering {
-    group = "verification"
-    description = "Fails unless the release AAB is signed with the registered Play upload certificate."
-
-    val bundleDir = layout.buildDirectory.dir("outputs/bundle/release")
-    // The Play upload certificate for com.classeve.earslate — earslate-release.keystore,
-    // alias earslate. Unlike the direct-download APK, its DN carries the legal
-    // entity ON PURPOSE: Play App Signing strips it and re-signs before any
-    // device sees the app, so it is never a user-facing leak, and Play 403s any
-    // OTHER key. So the bundle is pinned to this certificate by SHA-256 (a
-    // wrong-key bundle fails here instead of at upload), NOT held to the clean
-    // brand DN the APK gate requires. See _keystore-backups/README.txt.
-    val uploadCertSha256 = "06DC3708937740310F93D9EF6F400DE16D2619C95E76D0EA50B737B495F3F544"
-    val javaHome = System.getProperty("java.home")
-
-    doLast {
-        val bundles = bundleDir.get().asFile.listFiles { f: File -> f.name.endsWith(".aab") }
-            ?.sortedBy { it.name }
-            .orEmpty()
-        if (bundles.isEmpty()) {
-            throw GradleException("verifyBundleIdentity: no release AAB found in ${bundleDir.get().asFile}")
-        }
-
-        val keytool = File(javaHome, if (File(javaHome, "bin/keytool.exe").isFile) "bin/keytool.exe" else "bin/keytool")
-        if (!keytool.isFile) {
-            throw GradleException(
-                "verifyBundleIdentity: keytool not found at $keytool. " +
-                    "The identity gate fails closed rather than skipping.",
-            )
-        }
-
-        for (aab in bundles) {
-            // An AAB is a JAR, so it carries the v1 signature keytool reads.
-            val process = ProcessBuilder(
-                keytool.absolutePath, "-printcert", "-jarfile", aab.absolutePath,
-            ).redirectErrorStream(true).start()
-            val output = process.inputStream.bufferedReader().readText()
-            if (process.waitFor() != 0) {
-                throw GradleException("verifyBundleIdentity: keytool failed on ${aab.name}:\n$output")
-            }
-            val fingerprints = output.lineSequence()
-                .filter { it.contains("SHA256:") }
-                .map { it.substringAfter("SHA256:").trim().replace(":", "").uppercase() }
-                .toSet()
-            if (fingerprints.isEmpty()) {
-                throw GradleException(
-                    "verifyBundleIdentity: ${aab.name} has no readable signer. An unsigned " +
-                        "bundle cannot be uploaded, and an unreadable one cannot be checked:\n$output",
-                )
-            }
-            if (fingerprints != setOf(uploadCertSha256)) {
-                throw GradleException(
-                    "verifyBundleIdentity: ${aab.name} is not signed with the registered Play " +
-                        "upload certificate.\n" +
-                        "  expected: $uploadCertSha256\n" +
-                        "  actual:   ${fingerprints.sorted().joinToString()}\n" +
-                        "Set PLAY_UPLOAD_STORE_FILE/PASSWORD/KEY_ALIAS/KEY_PASSWORD in local.properties. " +
-                        "A bundle signed with the brand key builds cleanly and is then refused at upload " +
-                        "with a 403, which is how the earslate Play channel was blocked.",
-                )
-            }
-            logger.lifecycle("verifyBundleIdentity: ${aab.name} - signed with the registered Play upload certificate")
-        }
-    }
-}
-
-tasks.matching { it.name == "assembleRelease" }.configureEach {
-    finalizedBy(verifyReleaseIdentity)
-}
-
-tasks.matching { it.name == "bundleRelease" }.configureEach {
-    finalizedBy(verifyBundleIdentity)
+// Release gates come from the shared plugin in build-logic/gates, vendored from
+// SYSTEM/gradle-gates and held byte-identical by the drift check. Only what is
+// specific to THIS app lives here: the brand DN the direct-download APK must
+// carry, the Play upload certificate the AAB is pinned to, and the identity
+// needles, base64 so the list is not an index.
+classeveGates {
+    apkSignerDn.set("CN=Earslate, O=ClassEve, C=IN")
+    bundleSignerSha256.set("06DC3708937740310F93D9EF6F400DE16D2619C95E76D0EA50B737B495F3F544")
+    forbiddenNeedlesBase64.set(
+        listOf("UHJpdmF0ZSBMaW1pdGVk", "UHZ0IEx0ZA==", "UHZ0LiBMdGQ=", "QmFybmFsYQ==", "QmVuZ2FsdXJ1"),
+    )
 }
 
 dependencies {
