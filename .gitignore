@@ -27,3 +27,8 @@ CONTEXT.md
 # the mirror exclusion was a manual delete, not a rule. One ordinary push of
 # main republished it. Keep it on disk, out of the index.
 play-store-assets/PLAY_STORE_HANDOFF.md
+
+# Local environment files. Never tracked; the .example template is the one exception.
+.env
+.env.*
+!.env.example
