@@ -9,6 +9,10 @@ on:
 
 # A pull request that supersedes an in-flight run should cancel it rather than
 # queue behind it.
+# Builds and tests. Reads the tree, writes nothing.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
