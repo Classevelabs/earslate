@@ -354,7 +354,9 @@ class JitterBufferTest {
     private fun geminiLikeBuffer(): JitterBuffer {
         fun ms(n: Int) = (24_000 * n / 1000) * 2
         return JitterBuffer(
-            startupBytes = ms(180),
+            // Mirrors AndroidAudioPlaybackEngine: one 250 ms chunk plus a margin,
+            // so the first utterance arms with the cushion the steady state uses.
+            startupBytes = ms(300),
             maxTargetBytes = ms(600),
             growthStepBytes = ms(60),
             maxBufferedBytes = ms(1_200),

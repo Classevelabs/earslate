@@ -10,7 +10,6 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.classeve.earslate.session.SupportedLanguages
 import com.classeve.earslate.session.TargetLanguage
 import com.classeve.earslate.session.TranslatorPolicy
-import com.classeve.earslate.session.TranslationProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -25,28 +24,20 @@ val Context.earslateDataStore: DataStore<Preferences> by preferencesDataStore(
 
 /**
  * All user-facing settings that survive app restarts, backed by Jetpack
- * DataStore Preferences. earslate is a bidirectional conversation translator:
- * the only two settings that shape translation are the two languages.
+ * DataStore Preferences. earslate is a bidirectional conversation translator
+ * that works both languages out by listening: the one language it cannot hear
+ * is the device user's own, so that is the only translation setting.
  */
 data class UserSettings(
     /** The device user's language. Seeded from the device locale on first run. */
     val myLanguageBcp47: String = "en-US",
-    /** Honoured only when [manualLanguages] is on. Otherwise the session learns it. */
-    val theirLanguageBcp47: String = "en-US",
     /**
-     * Off by default, and off is the product: earslate listens, works out what
-     * is being spoken, and speaks back in it. Both languages are then decided
-     * by what the microphone hears, and there is nothing to set up.
-     *
-     * On, the two languages come from the pickers instead and the session stops
-     * following the conversation. It exists for the case where someone knows
-     * exactly which pair they want and does not want it moving — which is the
-     * narrow case, which is why it is buried and why it is off.
+     * The other person's language, or null for Automatic (learn it by listening).
+     * Null is the default — the app works it out from the conversation. Set only
+     * when the user wants "me → them" to work before the other person has spoken.
      */
-    val manualLanguages: Boolean = false,
-    val externalOnly: Boolean = false,
+    val otherLanguageBcp47: String? = null,
     val persistentNotification: Boolean = false,
-    val provider: TranslationProvider = TranslationProvider.AUTOMATIC,
 )
 
 class SettingsRepository(
@@ -59,25 +50,18 @@ class SettingsRepository(
         // NOTE: key string kept as the historical "target_language_bcp47" so an
         // existing install's chosen language survives the upgrade.
         val MY_LANGUAGE = stringPreferencesKey("target_language_bcp47")
-        val THEIR_LANGUAGE = stringPreferencesKey("their_language_bcp47")
-        // A NEW key, not the old "conversation_mode". Anyone who had that on is
-        // opted into automatic detection rather than into a manual pair they
-        // chose for a feature that no longer works the way it did.
-        val MANUAL_LANGUAGES = booleanPreferencesKey("manual_languages")
-        val EXTERNAL_ONLY = booleanPreferencesKey("external_only")
+        // A fresh key, not the old manual-mode "their_language_bcp47": absent
+        // means Automatic, which is the default the product ships on.
+        val OTHER_LANGUAGE = stringPreferencesKey("other_language_bcp47")
         val PERSISTENT_NOTIFICATION = booleanPreferencesKey("persistent_notification")
-        val PROVIDER = stringPreferencesKey("translation_provider")
     }
 
     private val defaults = UserSettings()
 
     private fun read(prefs: Preferences) = UserSettings(
         myLanguageBcp47 = prefs[Keys.MY_LANGUAGE] ?: defaults.myLanguageBcp47,
-        theirLanguageBcp47 = prefs[Keys.THEIR_LANGUAGE] ?: defaults.theirLanguageBcp47,
-        externalOnly = prefs[Keys.EXTERNAL_ONLY] ?: defaults.externalOnly,
-        manualLanguages = prefs[Keys.MANUAL_LANGUAGES] ?: defaults.manualLanguages,
+        otherLanguageBcp47 = prefs[Keys.OTHER_LANGUAGE],
         persistentNotification = prefs[Keys.PERSISTENT_NOTIFICATION] ?: defaults.persistentNotification,
-        provider = TranslationProvider.fromWireValue(prefs[Keys.PROVIDER]),
     )
 
     // ── observable state ───────────────────────────────────────────────
@@ -114,30 +98,21 @@ class SettingsRepository(
         dataStore.edit { prefs -> prefs[Keys.MY_LANGUAGE] = bcp47 }
     }
 
-    suspend fun setTheirLanguage(bcp47: String) {
-        dataStore.edit { prefs -> prefs[Keys.THEIR_LANGUAGE] = bcp47 }
-    }
-
-    suspend fun setManualLanguages(enabled: Boolean) {
-        dataStore.edit { prefs -> prefs[Keys.MANUAL_LANGUAGES] = enabled }
-    }
-
-    suspend fun setExternalOnly(enabled: Boolean) {
-        dataStore.edit { prefs -> prefs[Keys.EXTERNAL_ONLY] = enabled }
+    /** [bcp47] null resets to Automatic (the session learns the other language). */
+    suspend fun setOtherLanguage(bcp47: String?) {
+        dataStore.edit { prefs ->
+            if (bcp47 == null) prefs.remove(Keys.OTHER_LANGUAGE) else prefs[Keys.OTHER_LANGUAGE] = bcp47
+        }
     }
 
     suspend fun setPersistentNotification(enabled: Boolean) {
         dataStore.edit { prefs -> prefs[Keys.PERSISTENT_NOTIFICATION] = enabled }
     }
 
-    suspend fun setProvider(provider: TranslationProvider) {
-        dataStore.edit { prefs -> prefs[Keys.PROVIDER] = provider.wireValue }
-    }
-
     /**
      * On first launch, detect the device locale and set MY language if the
      * default is still en-US, so the picker starts on a sensible language for
-     * non-English users. "Their" language stays English by default.
+     * non-English users.
      */
     suspend fun initializeFromLocaleIfNeeded() {
         // awaitSettings, NOT settings.value. The seed reports "en-US" before the
@@ -159,21 +134,20 @@ class SettingsRepository(
 // ── policy mapping ─────────────────────────────────────────────────────
 /**
  * Converts persisted [UserSettings] into the [TranslatorPolicy] the runtime
- * consumes. Always bidirectional — no modes.
+ * consumes. Always bidirectional. The outbound direction is Automatic by
+ * default — it starts on English and follows whatever the other person is heard
+ * speaking — unless the user has pinned an other-language, in which case it is
+ * aimed there from the first frame.
  *
  * PRIVATE on purpose. This used to be public, and the service built a policy
  * out of `settings.value` — the eagerly-seeded StateFlow. On a cold process
  * (a Quick Settings tile tap, or the notification's Start action, after the
  * process had been killed) DataStore had not read from disk yet, so the policy
- * was built from the DEFAULTS: myLanguage and theirLanguage both "en-US".
- *
- * runSession collapses to a single leg when the two languages match, so the
- * session opened, connected, listened, and translated English into English.
- * The user's language pair, captions choice and provider choice were all
- * silently discarded, and nothing anywhere reported an error — the app looked
- * like it was working and produced nothing. The tile is the entry point the
- * product is documented around, which made this the most likely way to start
- * a session and the least likely to be noticed in testing from the app UI.
+ * was built from the DEFAULT myLanguage "en-US" rather than the user's real
+ * choice, and the session translated into the wrong language with nothing
+ * anywhere reporting an error. The tile is the entry point the product is
+ * documented around, which made this the most likely way to start a session and
+ * the least likely to be noticed in testing from the app UI.
  *
  * Confining this to the file forces every policy through
  * [SettingsRepository.translatorPolicy], which cannot be called without
@@ -182,22 +156,8 @@ class SettingsRepository(
 private fun UserSettings.toTranslatorPolicy(): TranslatorPolicy {
     val mine = SupportedLanguages.firstOrNull { it.bcp47 == myLanguageBcp47 }
         ?: TargetLanguage.EnglishUS
-    val theirs = SupportedLanguages.firstOrNull { it.bcp47 == theirLanguageBcp47 }
-        ?: TargetLanguage.EnglishUS
-    return TranslatorPolicy(
-        myLanguage = mine,
-        // Automatic starts on English and moves: English is what an
-        // unrecognised speaker is treated as, and it is also the pair that
-        // collapses to a single leg for an English-speaking user, so the second
-        // socket is not opened until there is actually a second language to
-        // aim it at.
-        theirLanguage = if (manualLanguages) theirs else TargetLanguage.EnglishUS,
-        manualLanguages = manualLanguages,
-        // Not a setting. The source transcript this turns on is what the
-        // automatic language detection reads, so switching it off would switch
-        // off the product's main behaviour to save nothing.
-        captionsEnabled = true,
-        externalOnly = externalOnly,
-        provider = provider,
-    )
+    // Null when unset OR when the saved tag is no longer a supported language:
+    // either way, fall back to Automatic rather than a target that will not send.
+    val other = otherLanguageBcp47?.let { tag -> SupportedLanguages.firstOrNull { it.bcp47 == tag } }
+    return TranslatorPolicy(myLanguage = mine, otherLanguage = other)
 }

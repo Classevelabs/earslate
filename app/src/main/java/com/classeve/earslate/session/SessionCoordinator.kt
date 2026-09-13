@@ -51,8 +51,6 @@ import kotlinx.coroutines.withContext
  * Both legs share the one mic; each leg's `echoTargetLanguage=false` makes it
  * stay SILENT when the input is already its target, so only one leg ever speaks
  * for a given utterance. When both languages match it collapses to a single leg.
- * OpenAI's dedicated translation endpoint has one output language and no
- * echo-suppression control, so it uses the primary listen-to-my-language leg.
  *
  * The model emits filler/anti-repeat silence as zero PCM; [isSilent] drops those
  * frames so the two legs' streams never interleave in the shared playback buffer.
@@ -370,27 +368,24 @@ class SessionCoordinator(
         val outer: CoroutineScope = this
 
         val myCode = LiveSessionConfigFactory.translateCodeFor(policy.myLanguage.bcp47)
-        // Automatic follows the room, and within a session it remembers what it
-        // heard across a reconnect. Manual pins the outbound direction; it still
-        // needs to know whose voice is whose, so the tracker is built either way.
-        followsTheirLanguage = !policy.manualLanguages
-        val theirBcp47 = if (followsTheirLanguage) {
-            lastHeardCode ?: policy.theirLanguage.bcp47
-        } else {
-            policy.theirLanguage.bcp47
-        }
+        // The outbound direction is either PINNED to a language the user chose,
+        // or Automatic. Pinned aims "me → them" from the first frame, so speaking
+        // first works and it never waits on detection. Automatic starts on
+        // English — what an unrecognised speaker is treated as — remembers what it
+        // last heard across a reconnect, and a live correction can still pin it.
+        val pinnedOther = policy.otherLanguage
+        followsTheirLanguage = pinnedOther == null
+        val theirBcp47 = pinnedOther?.bcp47 ?: (lastHeardCode ?: TargetLanguage.EnglishUS.bcp47)
         val theirCode = LiveSessionConfigFactory.translateCodeFor(theirBcp47)
         primaryCode = myCode
         myLanguageBcp47 = policy.myLanguage.bcp47
         heardLanguages = HeardLanguageTracker(policy.myLanguage.bcp47, theirBcp47)
         currentSpeaker = Speaker.UNKNOWN
         sessionScope = outer
+        stateStore.setTheirLanguagePinned(pinnedOther != null)
         stateStore.setHeardLanguage(
-            if (followsTheirLanguage) {
-                lastHeardCode?.let { code -> SupportedLanguages.firstOrNull { it.bcp47 == code } }
-            } else {
-                null
-            },
+            pinnedOther
+                ?: lastHeardCode?.let { code -> SupportedLanguages.firstOrNull { it.bcp47 == code } },
         )
 
         stateStore.set(RuntimeState.BOOTSTRAPPING)
@@ -631,9 +626,9 @@ class SessionCoordinator(
 
     /**
      * Gemini's `echoTargetLanguage=false` lets two sockets share one microphone
-     * safely — each stays silent unless the speech is going its way. OpenAI's
-     * translation session has one output language and no echo suppression, so a
-     * second socket would just talk over the first.
+     * safely — each stays silent unless the speech is going its way, so both
+     * directions can run at once. Kept as a per-provider predicate so the two
+     * call sites stay honest if another backend is ever added.
      */
     private fun canHoldTwoDirections(provider: TranslationProvider): Boolean =
         provider == TranslationProvider.GEMINI
@@ -652,8 +647,8 @@ class SessionCoordinator(
         legs: List<Leg>,
         captionsEnabled: Boolean,
     ): RuntimeError? {
-        // Collectors first. OpenAI can emit its first session event immediately
-        // after the upgrade, and SharedFlow has no replay.
+        // Collectors first. A provider can emit its first session event
+        // immediately after the socket upgrade, and SharedFlow has no replay.
         for (leg in legs) {
             leg.pumpJob = scope.launch {
                 pumpFrames(leg) { message ->
@@ -824,7 +819,7 @@ class SessionCoordinator(
             myLanguageBcp47 = newBcp47
             heardLanguages = HeardLanguageTracker(
                 newBcp47,
-                lastHeardCode ?: policy.theirLanguage.bcp47,
+                lastHeardCode ?: TargetLanguage.EnglishUS.bcp47,
             )
             currentSpeaker = Speaker.UNKNOWN
             synchronized(legLock) { legTurns.clearDecisions() }
@@ -1234,14 +1229,13 @@ class SessionCoordinator(
         )
     }
 
-    // Half-duplex gate: mute the mic while the translator is speaking. Always on
-    // for SPEAKER (the translated audio would otherwise be re-ingested and
-    // re-translated by the other leg → feedback loop); opt-in on earbud routes
-    // via externalOnly.
-    private fun shouldGateMic(): Boolean {
-        if (currentPolicy?.externalOnly == true) return true
-        return deviceMonitor.route.value == AudioRoute.SPEAKER
-    }
+    // Half-duplex gate: mute the mic while the translator is speaking. On for
+    // SPEAKER only — the translated audio would otherwise be re-ingested and
+    // re-translated by the other leg into a feedback loop. On earbuds there is
+    // no acoustic path back, so the mic stays open for a natural full-duplex
+    // conversation.
+    private fun shouldGateMic(): Boolean =
+        deviceMonitor.route.value == AudioRoute.SPEAKER
 
     /**
      * Keep the mic shut until the phone has actually finished SPEAKING.
@@ -1341,9 +1335,7 @@ class SessionCoordinator(
                 // as -65538. Every negative sample therefore cleared the
                 // threshold and the gate answered "audible" for silence —
                 // including the model's own peak-1 filler, which is the exact
-                // frame it exists to drop. Same idiom as
-                // TranslationLiveProtocol.Pcm16Resampler.sample; keep them
-                // identical.
+                // frame it exists to drop.
                 val lo = pcm[i].toInt() and 0xff
                 val hi = pcm[i + 1].toInt() and 0xff
                 val s = ((hi shl 8) or lo).toShort().toInt()

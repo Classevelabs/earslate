@@ -73,9 +73,7 @@ object NotificationFactory {
             RuntimeState.LISTENING -> R.string.status_listening
             RuntimeState.PLAYING -> R.string.status_playing
             RuntimeState.RECONNECTING -> R.string.status_reconnecting
-            RuntimeState.RESUMING -> R.string.status_resuming
             RuntimeState.DEGRADED -> R.string.status_degraded
-            RuntimeState.STOPPING -> R.string.status_stopping
         }
 
         val statusText = context.getString(statusRes)

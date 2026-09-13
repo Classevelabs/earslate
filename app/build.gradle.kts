@@ -94,8 +94,8 @@ android {
         // entity, city and state into every APK), BLUETOOTH_CONNECT removed,
         // two audio-teardown races fixed. That certificate change is why an
         // install signed by the old key cannot take these as an update.
-        versionCode = 28
-        versionName = "0.5.3"
+        versionCode = 29
+        versionName = "0.5.4"
 
         vectorDrawables.useSupportLibrary = true
 

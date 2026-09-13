@@ -25,7 +25,7 @@ private class FakeVault(entries: Map<String, String?>) : SecretStore {
 private fun repositoryOver(entries: Map<String, String?>) = LocalKeyBootstrapRepository(
     keys = ProviderKeyStore(FakeVault(entries)),
     // Never reached in these tests: every one of them fails before minting.
-    minter = ProviderSessionMinter(installId = "test-install"),
+    minter = ProviderSessionMinter(),
 )
 
 private fun failureFrom(entries: Map<String, String?>, provider: TranslationProvider): Throwable {
@@ -74,17 +74,6 @@ class LocalKeyBootstrapRepositoryTest {
         )
     }
 
-    /** Same on the automatic path, where the provider is chosen for the user. */
-    @Test
-    fun `automatic reports an unreadable key rather than falling through to missing`() {
-        val failure = failureFrom(
-            entries = mapOf("api_key_gemini" to null),
-            provider = TranslationProvider.AUTOMATIC,
-        )
-
-        assertTrue("says the key could not be read: ${failure.message}", failure.message.orEmpty().contains("can't be read"))
-    }
-
     /**
      * And the opposite case still reads correctly — a genuinely absent key must
      * not be dressed up as a storage fault, or the user goes looking for a
@@ -94,8 +83,5 @@ class LocalKeyBootstrapRepositoryTest {
     fun `no key at all still says no key`() {
         val named = failureFrom(emptyMap(), TranslationProvider.GEMINI)
         assertTrue(named.message.orEmpty().contains("No Google Gemini key is set up"))
-
-        val unnamed = failureFrom(emptyMap(), TranslationProvider.AUTOMATIC)
-        assertTrue(unnamed.message.orEmpty().contains("No API key is set up yet"))
     }
 }

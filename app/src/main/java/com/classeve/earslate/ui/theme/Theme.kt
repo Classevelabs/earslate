@@ -40,11 +40,6 @@ object EarslateTheme {
         @Composable
         @ReadOnlyComposable
         get() = LocalEarslateShapes.current
-
-    val spacing: EarslateSpacing
-        @Composable
-        @ReadOnlyComposable
-        get() = LocalEarslateSpacing.current
 }
 
 @Composable
@@ -53,7 +48,6 @@ fun EarslateTheme(content: @Composable () -> Unit) {
         LocalEarslateColors provides DarkEarslateColors,
         LocalEarslateTextStyles provides DefaultEarslateTextStyles,
         LocalEarslateShapes provides DefaultEarslateShapes,
-        LocalEarslateSpacing provides DefaultEarslateSpacing,
     ) {
         MaterialTheme(
             colorScheme = DarkColorScheme,

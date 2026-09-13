@@ -10,7 +10,6 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.IOException
-import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -30,19 +29,11 @@ import java.util.concurrent.TimeUnit
  * to exactly one session. The socket never carries the real key.
  *
  * This runs entirely on the device. There is no ClassEve server in this path —
- * or in any other path. Requests go from the phone directly to Google or
- * OpenAI, authenticated with the user's own key, billed to the user's own
- * account.
+ * or in any other path. Requests go from the phone directly to Google,
+ * authenticated with the user's own key, billed to the user's own account.
  */
 class ProviderSessionMinter(
     private val http: OkHttpClient = defaultClient(),
-    /**
-     * Stable per-install identifier, hashed before it is sent. OpenAI uses it
-     * to attribute abuse signals to a device rather than to the whole account,
-     * which protects the user's other OpenAI usage if something goes wrong
-     * here. It identifies an installation, never a person.
-     */
-    private val installId: String,
 ) {
 
     /**
@@ -63,7 +54,6 @@ class ProviderSessionMinter(
             ?: throw BootstrapException("Choose a supported target language.")
         when (provider) {
             KeyProvider.GEMINI -> mintGemini(apiKey, language, captionsEnabled)
-            KeyProvider.OPENAI -> mintOpenAI(apiKey, language)
         }
     }
 
@@ -132,36 +122,6 @@ class ProviderSessionMinter(
         )
     }
 
-    private fun mintOpenAI(apiKey: String, language: String): SessionBootstrap {
-        val body = JSONObject().put(
-            "session",
-            JSONObject()
-                .put("model", OPENAI_MODEL)
-                .put("audio", JSONObject().put("output", JSONObject().put("language", language))),
-        )
-
-        val request = Request.Builder()
-            .url(OPENAI_SECRET_URL)
-            .header("Authorization", "Bearer $apiKey")
-            .header("Content-Type", "application/json")
-            .header("OpenAI-Safety-Identifier", safetyIdentifier())
-            .post(body.toString().toRequestBody(JSON))
-            .build()
-
-        val json = execute(request, KeyProvider.OPENAI)
-        val value = json.optString("value").takeIf { it.isNotBlank() }
-            ?: throw BootstrapException("OpenAI returned a session without a credential. Try again.")
-        val expiresAtEpoch = json.optLong("expires_at", 0L)
-
-        return SessionBootstrap(
-            credential = value,
-            provider = KeyProvider.OPENAI.provider,
-            webSocketUrl = "$OPENAI_WSS?model=${OPENAI_MODEL.urlEncoded()}",
-            model = OPENAI_MODEL,
-            expiresAt = if (expiresAtEpoch > 0) iso8601(expiresAtEpoch * 1000L) else null,
-        )
-    }
-
     /**
      * Runs the request and turns provider failures into sentences a user can
      * act on. The provider's own error text is deliberately not surfaced: it is
@@ -226,12 +186,6 @@ class ProviderSessionMinter(
         return BootstrapException(message)
     }
 
-    private fun safetyIdentifier(): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-            .digest(installId.toByteArray(Charsets.UTF_8))
-        return "earslate_" + digest.joinToString("") { "%02x".format(it) }
-    }
-
     private fun iso8601(epochMillis: Long): String =
         SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
             .apply { timeZone = TimeZone.getTimeZone("UTC") }
@@ -242,18 +196,14 @@ class ProviderSessionMinter(
 
     companion object {
         // Pinned here rather than fetched, so the app has no configuration
-        // server of any kind. Bump with a release when a provider moves.
+        // server of any kind. Bump with a release when the provider moves.
         const val GEMINI_MODEL = "gemini-3.5-live-translate-preview"
-        const val OPENAI_MODEL = "gpt-realtime-translate"
 
         private const val GEMINI_TOKEN_URL =
             "https://generativelanguage.googleapis.com/v1alpha/auth_tokens"
-        private const val OPENAI_SECRET_URL =
-            "https://api.openai.com/v1/realtime/translations/client_secrets"
         const val GEMINI_WSS =
             "wss://generativelanguage.googleapis.com/ws/" +
                 "google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained"
-        const val OPENAI_WSS = "wss://api.openai.com/v1/realtime/translations"
 
         private val JSON = "application/json; charset=utf-8".toMediaType()
 

@@ -148,12 +148,11 @@ class TranslatorService : Service() {
                 //
                 // This service is reachable with a cold process — the QS tile and
                 // the notification's Start action both call it directly — and the
-                // settings StateFlow is seeded with defaults until DataStore's
-                // first disk read lands. Reading .value here produced a policy of
-                // myLanguage == theirLanguage == "en-US", which collapses the
-                // session to one English leg: connected, listening, translating
-                // English into English, with the user's language pair, captions
-                // choice and provider choice all silently discarded.
+                // settings StateFlow is seeded with the default myLanguage of
+                // "en-US" until DataStore's first disk read lands. Reading .value
+                // here would build a session that translates into English rather
+                // than the user's real language, connected and listening and
+                // producing the wrong output, with nothing reporting an error.
                 //
                 // Suspending costs one disk read before capture opens. The
                 // session already reports BOOTSTRAPPING through the same state

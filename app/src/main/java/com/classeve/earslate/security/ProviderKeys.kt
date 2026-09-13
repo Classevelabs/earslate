@@ -8,12 +8,11 @@ import com.classeve.earslate.session.TranslationProvider
  * check on what they pasted.
  *
  * **We do not validate key formats, and must not start.** An earlier version of
- * this screen refused anything that did not begin with `AIza` for Gemini or
- * `sk-` for OpenAI. Google then changed what its keys look like, and the app
- * rejected perfectly good keys with a confident, wrong error message — the user
- * could not get past setup at all. A provider can change its key format
- * whenever it likes, and a hardcoded allowlist turns that into an app that is
- * broken until it ships an update.
+ * this screen refused anything that did not begin with `AIza`. Google then
+ * changed what its keys look like, and the app rejected perfectly good keys with
+ * a confident, wrong error message — the user could not get past setup at all. A
+ * provider can change its key format whenever it likes, and a hardcoded
+ * allowlist turns that into an app that is broken until it ships an update.
  *
  * So the only things rejected here are mistakes that are *definitely* mistakes
  * regardless of format: nothing pasted, a URL, a leftover "Bearer " prefix,
@@ -22,13 +21,13 @@ import com.classeve.earslate.session.TranslationProvider
  * real session before any key is saved, so a bad key still fails at setup —
  * just with the provider's verdict instead of our guess.
  *
- * [prefix] survives only as a *hint*: it seeds the placeholder text and lets
- * [detect] guess which provider a pasted key belongs to. It never blocks.
+ * [prefix] survives only as a display hint: it seeds the masked form. It never
+ * blocks.
  */
 enum class KeyProvider(
     val provider: TranslationProvider,
     val displayName: String,
-    /** Historical prefix. A display and detection hint only — never a gate. */
+    /** Historical prefix. A display hint only — never a gate. */
     val prefix: String,
     val consoleName: String,
     val consoleUrl: String,
@@ -39,13 +38,6 @@ enum class KeyProvider(
         prefix = "AIza",
         consoleName = "Google AI Studio",
         consoleUrl = "https://aistudio.google.com/apikey",
-    ),
-    OPENAI(
-        provider = TranslationProvider.OPENAI,
-        displayName = "OpenAI",
-        prefix = "sk-",
-        consoleName = "the OpenAI dashboard",
-        consoleUrl = "https://platform.openai.com/api-keys",
     );
 
     /** Storage name. Stable — changing it strands the user's saved key. */
@@ -87,26 +79,9 @@ enum class KeyProvider(
 
     fun isPlausible(candidate: String): Boolean = rejectionReason(candidate) == null
 
-    /**
-     * A non-blocking observation for the UI: true when the key looks like it
-     * might belong to the *other* provider. The user is shown a note and can
-     * ignore it — a hint, never a refusal.
-     */
-    fun looksLikeAnotherProvider(candidate: String): KeyProvider? {
-        val key = candidate.trim()
-        if (key.isEmpty() || key.startsWith(prefix)) return null
-        return entries.firstOrNull { it != this && key.startsWith(it.prefix) }
-    }
-
     companion object {
         fun forProvider(provider: TranslationProvider): KeyProvider? =
             entries.firstOrNull { it.provider == provider }
-
-        /** Best guess at which provider a pasted key belongs to. */
-        fun detect(candidate: String): KeyProvider? {
-            val key = candidate.trim()
-            return entries.firstOrNull { key.startsWith(it.prefix) }
-        }
     }
 }
 
@@ -168,19 +143,12 @@ class ProviderKeyStore(private val vault: SecretStore) {
     fun hasAnyKey(): Boolean = KeyProvider.entries.any { has(it) }
 
     /**
-     * The provider a session should actually use, given what the user picked
-     * and which keys exist. Returns null when nothing is usable.
-     *
-     * "Automatic" prefers Gemini because it is the only provider that runs both
-     * translation directions; OpenAI's translation endpoint has a single output
-     * language and no echo suppression, so it is one-directional by design.
+     * The provider a session should actually use. Returns null when no usable
+     * key exists. One provider today, so this is "Gemini if a key is stored".
      */
-    fun resolve(preference: TranslationProvider): KeyProvider? {
-        KeyProvider.forProvider(preference)?.let { explicit ->
-            return explicit.takeIf { has(it) }
-        }
-        return KeyProvider.entries.firstOrNull { has(it) }
-    }
+    fun resolve(preference: TranslationProvider): KeyProvider? =
+        KeyProvider.forProvider(preference)?.takeIf { has(it) }
+            ?: KeyProvider.entries.firstOrNull { has(it) }
 
     /**
      * True when the platform destroyed the encryption key, which happens when

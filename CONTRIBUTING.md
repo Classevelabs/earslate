@@ -14,9 +14,9 @@ Requires JDK 17 and an Android SDK. Copy `local.properties.example` to
 There is nothing else to configure — no keys, no service URLs, no accounts. If
 a build asks you for a secret, that is a bug; please report it.
 
-To actually run a translation you will need your own Gemini or OpenAI key,
-entered in the app at runtime. It is billed to your account, so develop with a
-key you are happy to spend a little on.
+To actually run a translation you will need your own Google Gemini key, entered
+in the app at runtime. It is billed to your account, so develop with a key you
+are happy to spend a little on.
 
 ## What makes a change easy to accept
 
@@ -49,10 +49,10 @@ in plaintext beyond the moment of use, never be written to a file, and never be
 shown in full in the UI. If a change makes a key more visible, it needs an
 argument.
 
-**Provider protocols.** Gemini and OpenAI speak different wire formats and
-their APIs move. Protocol changes want a contract test alongside them so a
-silent upstream change surfaces as a failing build rather than as a session
-that connects and stays quiet.
+**The Gemini Live protocol.** The wire format is exact and the API moves.
+Protocol changes want a contract test alongside them so a silent upstream change
+surfaces as a failing build rather than as a session that connects and stays
+quiet.
 
 **No backend.** earslate has no server and should acquire none. A change that
 introduces a call to a ClassEve endpoint will not be merged — it breaks the

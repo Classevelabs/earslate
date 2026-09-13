@@ -26,39 +26,28 @@ class KeyProviderTest {
      */
     @Test
     fun `an unfamiliar key format is accepted rather than guessed at`() {
-        // Whatever Google or OpenAI issue next must pass straight through.
+        // Whatever Google issues next must pass straight through.
         assertTrue(KeyProvider.GEMINI.isPlausible("gk_live_" + "x".repeat(40)))
         assertTrue(KeyProvider.GEMINI.isPlausible("AQ.Ab8RN6" + "y".repeat(50)))
-        assertTrue(KeyProvider.OPENAI.isPlausible("oai_" + "z".repeat(40)))
         assertTrue(KeyProvider.GEMINI.isPlausible("totally-new-scheme-2027"))
     }
 
     @Test
     fun `historical prefixes still pass`() {
         assertTrue(KeyProvider.GEMINI.isPlausible("AIza" + "b".repeat(35)))
-        assertTrue(KeyProvider.OPENAI.isPlausible("sk-" + "c".repeat(40)))
     }
 
     @Test
     fun `a key of unusual length is not rejected on length alone`() {
         assertTrue("short but credible", KeyProvider.GEMINI.isPlausible("abcd1234"))
-        assertTrue("very long", KeyProvider.OPENAI.isPlausible("k".repeat(400)))
+        assertTrue("very long", KeyProvider.GEMINI.isPlausible("k".repeat(400)))
     }
 
     @Test
-    fun `pasting the wrong provider's key is a hint, not a rejection`() {
-        val openAiKey = "sk-" + "f".repeat(40)
-        assertNull("must not block", KeyProvider.GEMINI.rejectionReason(openAiKey))
-        assertEquals(
-            KeyProvider.OPENAI,
-            KeyProvider.GEMINI.looksLikeAnotherProvider(openAiKey),
-        )
-    }
-
-    @Test
-    fun `no hint when the key matches the selected provider`() {
-        assertNull(KeyProvider.GEMINI.looksLikeAnotherProvider("AIza" + "g".repeat(35)))
-        assertNull(KeyProvider.GEMINI.looksLikeAnotherProvider("some-unrecognised-key"))
+    fun `an unrecognised key is not blocked`() {
+        // Format allowlists are gone: anything that could be a key goes to the
+        // provider, which is the only real judge.
+        assertNull("must not block", KeyProvider.GEMINI.rejectionReason("sk-" + "f".repeat(40)))
     }
 
     @Test
@@ -70,7 +59,7 @@ class KeyProviderTest {
 
     @Test
     fun `a Bearer prefix is called out specifically`() {
-        val reason = KeyProvider.OPENAI.rejectionReason("Bearer sk-${"d".repeat(40)}")
+        val reason = KeyProvider.GEMINI.rejectionReason("Bearer AIza${"d".repeat(35)}")
         assertNotNull(reason)
         assertTrue(reason!!.contains("Bearer"))
     }
@@ -90,24 +79,14 @@ class KeyProviderTest {
     }
 
     @Test
-    fun `detect identifies the provider from the prefix`() {
-        assertEquals(KeyProvider.GEMINI, KeyProvider.detect("AIza${"g".repeat(35)}"))
-        assertEquals(KeyProvider.OPENAI, KeyProvider.detect("sk-${"h".repeat(40)}"))
-        assertNull(KeyProvider.detect("not-a-key"))
-    }
-
-    @Test
-    fun `provider mapping is complete and automatic maps to nothing`() {
+    fun `provider mapping resolves Gemini`() {
         assertEquals(KeyProvider.GEMINI, KeyProvider.forProvider(TranslationProvider.GEMINI))
-        assertEquals(KeyProvider.OPENAI, KeyProvider.forProvider(TranslationProvider.OPENAI))
-        assertNull(KeyProvider.forProvider(TranslationProvider.AUTOMATIC))
     }
 
     @Test
-    fun `vault entry names are stable and distinct`() {
-        // Changing these strands the user's saved key on upgrade.
+    fun `vault entry name is stable`() {
+        // Changing this strands the user's saved key on upgrade.
         assertEquals("api_key_gemini", KeyProvider.GEMINI.vaultEntry)
-        assertEquals("api_key_openai", KeyProvider.OPENAI.vaultEntry)
     }
 
     @Test

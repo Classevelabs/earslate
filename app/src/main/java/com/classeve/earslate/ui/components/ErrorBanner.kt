@@ -12,9 +12,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
-// `Color` is still required for the BandPalette data class declaration below.
 import androidx.compose.ui.unit.dp
 import com.classeve.earslate.session.RuntimeError
 import com.classeve.earslate.ui.theme.EarslateTheme
@@ -46,8 +44,8 @@ fun ErrorBanner(
         RuntimeError.Kind.UNKNOWN -> "ERROR"
     }
 
-    // Brand-correct band treatment by kind.
-    val palette = bandPaletteFor(error.kind)
+    // One brand band for every error kind — an oxblood plane with cream text.
+    val colors = EarslateTheme.colors
 
     val showRetry = onRetry != null
 
@@ -55,7 +53,7 @@ fun ErrorBanner(
         modifier = modifier
             .fillMaxWidth()
             .background(
-                color = palette.background,
+                color = colors.oxbloodSoft,
                 shape = EarslateTheme.shapes.lg,
             )
             .padding(horizontal = 20.dp, vertical = 18.dp),
@@ -64,12 +62,12 @@ fun ErrorBanner(
         Text(
             text = kickerLabel,
             style = EarslateTheme.textStyles.meta,
-            color = palette.kicker,
+            color = colors.creamSoft,
         )
         Text(
             text = error.message,
             style = EarslateTheme.textStyles.body,
-            color = palette.text,
+            color = colors.cream,
         )
         if (showRetry || onDismiss != null) {
             Row(
@@ -91,22 +89,6 @@ fun ErrorBanner(
             }
         }
     }
-}
-
-private data class BandPalette(
-    val background: Color,
-    val text: Color,
-    val kicker: Color,
-)
-
-@Composable
-private fun bandPaletteFor(@Suppress("UNUSED_PARAMETER") kind: RuntimeError.Kind): BandPalette {
-    val colors = EarslateTheme.colors
-    return BandPalette(
-        background = colors.oxbloodSoft,
-        text = colors.cream,
-        kicker = colors.creamSoft,
-    )
 }
 
 @Composable

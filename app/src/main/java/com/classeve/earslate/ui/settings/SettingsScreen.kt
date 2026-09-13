@@ -1,12 +1,7 @@
 package com.classeve.earslate.ui.settings
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -23,9 +18,7 @@ import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,11 +27,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.classeve.earslate.session.TargetLanguage
-import com.classeve.earslate.session.TranslationProvider
 import com.classeve.earslate.ui.components.BackRow
 import com.classeve.earslate.ui.components.FramedPanel
 import com.classeve.earslate.ui.components.SectionHeader
@@ -61,18 +52,13 @@ import com.classeve.earslate.ui.theme.EarslateTheme
 @Composable
 fun SettingsScreen(
     initialMyLanguage: TargetLanguage = TargetLanguage.EnglishUS,
-    initialTheirLanguage: TargetLanguage = TargetLanguage.EnglishUS,
-    initialManualLanguages: Boolean = false,
-    initialExternalOnly: Boolean = false,
+    initialOtherLanguage: TargetLanguage? = null,
     initialPersistentNotification: Boolean = false,
-    initialProvider: TranslationProvider = TranslationProvider.AUTOMATIC,
     onBack: () -> Unit,
     onMyLanguageChange: (TargetLanguage) -> Unit = {},
-    onTheirLanguageChange: (TargetLanguage) -> Unit = {},
-    onManualLanguagesChange: (Boolean) -> Unit = {},
-    onExternalOnlyChange: (Boolean) -> Unit = {},
+    /** null resets the other language to Automatic. */
+    onOtherLanguageChange: (TargetLanguage?) -> Unit = {},
     onPersistentNotificationChange: (Boolean) -> Unit = {},
-    onProviderChange: (TranslationProvider) -> Unit = {},
     onOpenOnboarding: () -> Unit = {},
     onOpenHelp: () -> Unit = {},
     onOpenKeySetup: () -> Unit = {},
@@ -85,60 +71,19 @@ fun SettingsScreen(
     // until DataStore's first disk read lands. A bare remember{} captures that
     // seed on the first composition and never looks again, so a screen opened
     // quickly after a cold start — the ordinary case after process death —
-    // showed every row at its default: captions on, earbuds preferred, English.
-    // The rows are the user's own settings misreported back to them, which is
-    // worse than a spinner, because there is nothing to indicate it is wrong.
+    // showed every row at its default. The rows would then be the user's own
+    // settings misreported back to them, which is worse than a spinner, because
+    // there is nothing to indicate it is wrong.
     //
     // Keying re-seeds each row when the real value arrives. A local edit is not
     // lost to it: every onChange writes through immediately, so the value that
     // comes back IS the edit.
     var myLanguage by remember(initialMyLanguage) { mutableStateOf(initialMyLanguage) }
-    var theirLanguage by remember(initialTheirLanguage) { mutableStateOf(initialTheirLanguage) }
-    var manualLanguages by remember(initialManualLanguages) { mutableStateOf(initialManualLanguages) }
-    var externalOnly by remember(initialExternalOnly) { mutableStateOf(initialExternalOnly) }
+    var otherLanguage by remember(initialOtherLanguage) { mutableStateOf(initialOtherLanguage) }
     var persistentNotification by
         remember(initialPersistentNotification) { mutableStateOf(initialPersistentNotification) }
-    var provider by remember(initialProvider) { mutableStateOf(initialProvider) }
     var showMyPicker by remember { mutableStateOf(false) }
-    var showTheirPicker by remember { mutableStateOf(false) }
-
-    var showProviderDialog by remember { mutableStateOf(false) }
-
-    if (showProviderDialog) {
-        AlertDialog(
-            onDismissRequest = { showProviderDialog = false },
-            containerColor = EarslateTheme.colors.elev2,
-            titleContentColor = EarslateTheme.colors.textPrimary,
-            textContentColor = EarslateTheme.colors.textSecondary,
-            title = { Text("Translation provider") },
-            text = {
-                Column {
-                    TranslationProvider.entries.forEach { option ->
-                        TextButton(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .semantics { selected = provider == option },
-                            onClick = {
-                                provider = option
-                                onProviderChange(option)
-                                showProviderDialog = false
-                            },
-                        ) {
-                            Text(
-                                text = option.displayName,
-                                color = if (provider == option) {
-                                    EarslateTheme.colors.ember
-                                } else {
-                                    EarslateTheme.colors.textPrimary
-                                },
-                            )
-                        }
-                    }
-                }
-            },
-            confirmButton = {},
-        )
-    }
+    var showOtherPicker by remember { mutableStateOf(false) }
 
     if (showMyPicker) {
         LanguagePickerDialog(
@@ -152,15 +97,22 @@ fun SettingsScreen(
         )
     }
 
-    if (showTheirPicker) {
+    if (showOtherPicker) {
         LanguagePickerDialog(
-            currentLanguage = theirLanguage,
+            title = "Other language",
+            currentLanguage = otherLanguage ?: myLanguage,
             onSelect = { selected ->
-                theirLanguage = selected
-                onTheirLanguageChange(selected)
-                showTheirPicker = false
+                otherLanguage = selected
+                onOtherLanguageChange(selected)
+                showOtherPicker = false
             },
-            onDismiss = { showTheirPicker = false },
+            // Back to letting the app work it out from the conversation.
+            onAutomatic = {
+                otherLanguage = null
+                onOtherLanguageChange(null)
+                showOtherPicker = false
+            },
+            onDismiss = { showOtherPicker = false },
         )
     }
 
@@ -182,9 +134,10 @@ fun SettingsScreen(
 
             SectionHeader(
                 kicker = "Language",
-                headline = "The one you speak.",
-                support = "Everything said around you arrives in this. Theirs is worked out " +
-                    "by listening, so there is nothing to set for them.",
+                headline = "Yours, and theirs.",
+                support = "Everything said around you arrives in your language. The other " +
+                    "language is worked out by listening — leave it on Automatic. Set it only " +
+                    "if you want to be understood before the other person has spoken.",
             )
 
             FramedPanel {
@@ -193,6 +146,13 @@ fun SettingsScreen(
                     value = myLanguage.displayName,
                     onClick = { showMyPicker = true },
                     onClickLabel = "Change your language",
+                )
+                Divider()
+                SettingsRow(
+                    label = "Other language",
+                    value = otherLanguage?.displayName ?: "Automatic",
+                    onClick = { showOtherPicker = true },
+                    onClickLabel = "Change the other language",
                 )
             }
 
@@ -203,22 +163,6 @@ fun SettingsScreen(
             )
 
             FramedPanel {
-                // The runtime has honoured this since the half-duplex gate was
-                // written (SessionCoordinator.shouldGateMic) and the in-app help
-                // told users to enable it, but no control ever existed to set
-                // it — the only writer was a repository setter with no caller.
-                // On speaker the gate is unconditional; this is the earbud
-                // opt-in, which is why the helper says what it says.
-                ToggleRow(
-                    label = "External only",
-                    helper = "Mute the microphone while the translator speaks, on earbuds too. On speaker this always happens.",
-                    value = externalOnly,
-                    onChange = {
-                        externalOnly = it
-                        onExternalOnlyChange(it)
-                    },
-                )
-                Divider()
                 ToggleRow(
                     label = "Notification controls",
                     helper = "Keep a start/stop toggle in the notification shade even when the translator is idle.",
@@ -232,25 +176,17 @@ fun SettingsScreen(
 
             SectionHeader(
                 kicker = "Service",
-                headline = "Translation provider.",
-                support = "earslate runs on your own API key, billed to your own account. " +
-                    "Automatic uses whichever provider you have a key for. Gemini translates " +
-                    "both directions at once; OpenAI translates into one language at a time.",
+                headline = "Your key.",
+                support = "earslate runs on your own Google Gemini API key, billed to your own " +
+                    "account. There is no ClassEve server in the path.",
             )
 
             FramedPanel {
                 SettingsRow(
-                    label = "Provider",
-                    value = provider.displayName,
-                    onClick = { showProviderDialog = true },
-                    onClickLabel = "Choose translation provider",
-                )
-                Divider()
-                SettingsRow(
-                    label = "API keys",
+                    label = "API key",
                     value = configuredKeySummary,
                     onClick = onOpenKeySetup,
-                    onClickLabel = "Manage API keys",
+                    onClickLabel = "Manage API key",
                 )
             }
 
@@ -272,41 +208,6 @@ fun SettingsScreen(
                     value = "Start",
                     onClick = onOpenOnboarding,
                 )
-            }
-
-            SectionHeader(
-                kicker = "Advanced",
-                headline = "Pin their language.",
-                support = "earslate hears which language is being spoken and answers in it. " +
-                    "Turn this on only if you want to fix that side yourself.",
-            )
-
-            FramedPanel {
-                ToggleRow(
-                    label = "Choose languages manually",
-                    helper = "Off, the other side follows whoever is speaking, and starts on English " +
-                        "until something is recognised. On, it stays where you put it.",
-                    value = manualLanguages,
-                    onChange = {
-                        manualLanguages = it
-                        onManualLanguagesChange(it)
-                    },
-                )
-                AnimatedVisibility(
-                    visible = manualLanguages,
-                    enter = expandVertically(tween(220)) + fadeIn(tween(220)),
-                    exit = shrinkVertically(tween(220)) + fadeOut(tween(220)),
-                ) {
-                    Column {
-                        Divider()
-                        SettingsRow(
-                            label = "Their language",
-                            value = theirLanguage.displayName,
-                            onClick = { showTheirPicker = true },
-                            onClickLabel = "Change their language",
-                        )
-                    }
-                }
             }
         }
     }

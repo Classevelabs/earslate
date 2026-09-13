@@ -89,11 +89,9 @@ import com.classeve.earslate.session.SupportedLanguages
 import com.classeve.earslate.session.TargetLanguage
 import com.classeve.earslate.session.isActive
 import com.classeve.earslate.settings.OnboardingPrefs
-import com.classeve.earslate.settings.SettingsRepository
 import com.classeve.earslate.ui.captions.CaptionsView
 import com.classeve.earslate.ui.components.ErrorBanner
 import com.classeve.earslate.ui.help.HelpScreen
-import com.classeve.earslate.security.KeyProvider
 import com.classeve.earslate.security.ProviderKeyStore
 import com.classeve.earslate.ui.onboarding.ApiKeySetupScreen
 import com.classeve.earslate.ui.onboarding.OnboardingScreen
@@ -106,7 +104,6 @@ import com.classeve.earslate.ui.theme.MotionFastMs
 import com.classeve.earslate.ui.theme.PreciseEasing
 import com.classeve.earslate.ui.theme.rememberReducedMotion
 import com.classeve.earslate.service.NotificationControlService
-import com.classeve.earslate.service.NotificationFactory
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -304,11 +301,10 @@ class MainActivity : ComponentActivity() {
 
     /**
      * Prominent in-app disclosure (Google Play User Data policy): names the
-     * third parties that can receive audio (Gemini or OpenAI — resolved per
-     * session from the keys the user has supplied), the data (microphone audio),
-     * the purpose (live translation), and retention, gated behind an explicit
-     * "I agree". Shown before the FIRST capture on any entry point; the choice
-     * persists.
+     * third party that can receive audio (Google Gemini), the data (microphone
+     * audio), the purpose (live translation), and retention, gated behind an
+     * explicit "I agree". Shown before the FIRST capture on any entry point; the
+     * choice persists.
      *
      * The wording lives in `R.string.audio_disclosure_body`. If the set of
      * providers the app can mint against ever changes, that string and the Play
@@ -404,14 +400,14 @@ private fun EarslateApp(
         }
     }
 
-    // Resolve persisted BCP-47 tags to TargetLanguage objects.
+    // Resolve the persisted BCP-47 tags to TargetLanguage objects.
     val currentLanguage = remember(userSettings.myLanguageBcp47) {
         SupportedLanguages.firstOrNull { it.bcp47 == userSettings.myLanguageBcp47 }
             ?: TargetLanguage.EnglishUS
     }
-    val currentTheirs = remember(userSettings.theirLanguageBcp47) {
-        SupportedLanguages.firstOrNull { it.bcp47 == userSettings.theirLanguageBcp47 }
-            ?: TargetLanguage.EnglishUS
+    // Null = Automatic (learn it by listening).
+    val currentOther = remember(userSettings.otherLanguageBcp47) {
+        userSettings.otherLanguageBcp47?.let { tag -> SupportedLanguages.firstOrNull { it.bcp47 == tag } }
     }
 
     // On first launch, pre-select the device locale so the onboarding picker
@@ -457,8 +453,6 @@ private fun EarslateApp(
             Screen.KEY_SETUP -> ApiKeySetupScreen(
                 padding = padding,
                 targetLanguageCode = currentLanguage.bcp47,
-                initialProvider = KeyProvider.forProvider(userSettings.provider)
-                    ?: KeyProvider.GEMINI,
                 onBack = if (hasKey) {
                     { screen = Screen.SETTINGS }
                 } else {
@@ -506,11 +500,8 @@ private fun EarslateApp(
             Screen.SETTINGS -> SettingsScreen(
                 padding = padding,
                 initialMyLanguage = currentLanguage,
-                initialTheirLanguage = currentTheirs,
-                initialManualLanguages = userSettings.manualLanguages,
-                initialExternalOnly = userSettings.externalOnly,
+                initialOtherLanguage = currentOther,
                 initialPersistentNotification = userSettings.persistentNotification,
-                initialProvider = userSettings.provider,
                 onBack = { screen = Screen.MAIN },
                 onMyLanguageChange = { lang ->
                     scope.launch { settingsRepo.setMyLanguage(lang.bcp47) }
@@ -521,21 +512,13 @@ private fun EarslateApp(
                     // translating did nothing until the next STOP/START.
                     EarslateRuntime.sessionCoordinator(context).setLanguages(my = lang)
                 },
-                onTheirLanguageChange = { lang ->
-                    scope.launch { settingsRepo.setTheirLanguage(lang.bcp47) }
-                    EarslateRuntime.sessionCoordinator(context).setLanguages(their = lang)
-                },
-                onManualLanguagesChange = { enabled ->
-                    scope.launch { settingsRepo.setManualLanguages(enabled) }
+                onOtherLanguageChange = { lang ->
+                    scope.launch { settingsRepo.setOtherLanguage(lang?.bcp47) }
+                    // Reflect the choice on any running session too: a specific
+                    // language pins the outbound direction; null resumes following.
                     val coordinator = EarslateRuntime.sessionCoordinator(context)
-                    if (enabled) {
-                        coordinator.setLanguages(their = currentTheirs)
-                    } else {
-                        coordinator.setLanguages(follow = true)
-                    }
-                },
-                onExternalOnlyChange = { enabled ->
-                    scope.launch { settingsRepo.setExternalOnly(enabled) }
+                    if (lang != null) coordinator.setLanguages(their = lang)
+                    else coordinator.setLanguages(follow = true)
                 },
                 onPersistentNotificationChange = { enabled ->
                     scope.launch { settingsRepo.setPersistentNotification(enabled) }
@@ -544,9 +527,6 @@ private fun EarslateApp(
                     } else {
                         NotificationControlService.stop(context)
                     }
-                },
-                onProviderChange = { provider ->
-                    scope.launch { settingsRepo.setProvider(provider) }
                 },
                 onOpenOnboarding = { screen = Screen.ONBOARDING },
                 onOpenHelp = { screen = Screen.HELP },
@@ -1015,7 +995,7 @@ private fun StatusPill(state: RuntimeState) {
     }
     val targetFg = when {
         active -> EarslateTheme.colors.onEmber
-        state == RuntimeState.RECONNECTING || state == RuntimeState.RESUMING -> EarslateTheme.colors.warning
+        state == RuntimeState.RECONNECTING -> EarslateTheme.colors.warning
         state == RuntimeState.DEGRADED -> EarslateTheme.colors.cream
         else -> EarslateTheme.colors.creamSoft
     }
@@ -1137,7 +1117,5 @@ private fun statusLabelFor(state: RuntimeState): Int = when (state) {
     RuntimeState.LISTENING -> R.string.status_listening
     RuntimeState.PLAYING -> R.string.status_playing
     RuntimeState.RECONNECTING -> R.string.status_reconnecting
-    RuntimeState.RESUMING -> R.string.status_resuming
     RuntimeState.DEGRADED -> R.string.status_degraded
-    RuntimeState.STOPPING -> R.string.status_stopping
 }

@@ -19,15 +19,14 @@ import java.util.concurrent.atomic.AtomicReference
  * Owns the translated-audio playback path.
  *
  *   - Mono PCM16, at whatever rate the provider is actually sending (24 kHz for
- *     both Gemini Live and OpenAI Realtime today; the track rebuilds itself if
- *     that changes mid-stream).
+ *     Gemini Live today; the track rebuilds itself if that changes mid-stream).
  *   - AudioTrack in STREAM mode, USAGE_MEDIA so audio routes to earbuds at full
  *     clarity. No hardware AEC coupling: capture deliberately takes raw ambient
  *     audio, and echo is handled by the half-duplex mic gate in the session
  *     coordinator rather than by the platform reference mix.
- *   - An adaptive [JitterBuffer] starting at [startupLatencyMs] that only buys
- *     more latency when the network makes it necessary. (This said 40 ms long
- *     after the floor was raised to 180 ms for the reason documented there.)
+ *   - An adaptive [JitterBuffer] starting at [startupLatencyMs] — one Gemini
+ *     chunk plus a margin, so the first utterance is as smooth as the steady
+ *     state — that only buys more latency when the network makes it necessary.
  *   - A genuinely graceful stop that lets the last word finish.
  */
 interface AudioPlaybackEngine {
@@ -69,22 +68,26 @@ data class PlaybackSnapshot(
 class AndroidAudioPlaybackEngine(
     private val defaultSampleRateHz: Int = 24_000,
     /**
-     * Floor for the adaptive buffer.
+     * Startup cushion for the adaptive buffer, before it has seen a chunk and can
+     * apply its own 1.25×-chunk floor.
      *
-     * This was 40 ms, and that single number was the reason playback sounded like
-     * a bad phone call. The provider streams audio in chunks of ~100 ms, over
-     * mobile data, so 40 ms of cushion is less than half of one chunk: any chunk
-     * that arrives even slightly late finds the buffer already empty. The result
-     * was an underrun on virtually every utterance, and because each underrun
-     * disarms the buffer until the target refills, every one of them was an
-     * audible gap.
+     * This was 40 ms, then 180 ms, and both were below ONE Gemini chunk.
+     * [JitterBuffer] measured the chunk on-device (2026-07-27): 12000 bytes =
+     * **250 ms of audio**, arriving every ~248 ms. Its steady-state arm floor is
+     * 1.25× that (~312 ms). But the very first arm of a session runs on THIS
+     * number, before any chunk has been seen — so at 180 ms the first utterance
+     * armed below one chunk, played it, and starved before the second landed.
+     * Every session opened choppy and only smoothed out once adaptation learned
+     * the size. (The old "~100 ms chunk / two chunk periods" note here was simply
+     * wrong; the byte math above is the measured truth.)
      *
-     * 180 ms is a little under two chunk periods — enough that a single late or
-     * bursty chunk is absorbed silently. It costs nothing perceptible: the model
-     * itself takes on the order of a second to produce a translation, so 180 ms
-     * is well inside the noise of that. Smooth beats theoretically-snappy.
+     * 300 ms matches the chunk (250 ms) plus a margin, so the first utterance
+     * gets the same cushion the steady state settles on. It costs nothing
+     * perceptible: the model itself takes on the order of a second to produce a
+     * translation, so 300 ms is well inside the noise of that. Smooth beats
+     * theoretically-snappy — which is the whole point of this path.
      */
-    private val startupLatencyMs: Int = 180,
+    private val startupLatencyMs: Int = 300,
 ) : AudioPlaybackEngine {
 
     private val bytesPerSample = 2

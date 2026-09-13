@@ -43,7 +43,6 @@ private class RecordingStore(entries: Map<String, String?>) : SecretStore {
 }
 
 private const val GEMINI_ENTRY = "api_key_gemini"
-private const val OPENAI_ENTRY = "api_key_openai"
 
 class ProviderKeyStoreTest {
 
@@ -51,24 +50,20 @@ class ProviderKeyStoreTest {
      * The regression this file exists for.
      *
      * `has()` answered "is a key present?" by performing a full AES-GCM decrypt
-     * through AndroidKeyStore — a TEE, or StrongBox, round trip per provider.
-     * `MainActivity` calls `hasAnyKey()` during composition, so that ran inside
-     * a frame, twice, to answer a question about which entries exist in a
-     * preferences file. `KeyVault.contains()` was written for this and had zero
-     * callers.
+     * through AndroidKeyStore — a TEE, or StrongBox, round trip. `MainActivity`
+     * calls `hasAnyKey()` during composition, so that ran inside a frame to
+     * answer a question about which entries exist in a preferences file.
+     * `KeyVault.contains()` was written for this and had zero callers.
      */
     @Test
     fun `asking which keys exist never decrypts anything`() {
-        val store = RecordingStore(
-            mapOf(GEMINI_ENTRY to "AIza-real-key", OPENAI_ENTRY to "sk-real-key"),
-        )
+        val store = RecordingStore(mapOf(GEMINI_ENTRY to "AIza-real-key"))
         val keys = ProviderKeyStore(store)
 
         keys.hasAnyKey()
         keys.has(KeyProvider.GEMINI)
-        keys.has(KeyProvider.OPENAI)
         keys.configured()
-        keys.resolve(TranslationProvider.AUTOMATIC)
+        keys.resolve(TranslationProvider.GEMINI)
 
         assertEquals("existence checks must not touch the keystore", 0, store.decryptCalls)
     }
@@ -96,44 +91,32 @@ class ProviderKeyStoreTest {
         val keys = ProviderKeyStore(RecordingStore(emptyMap()))
 
         assertFalse(keys.has(KeyProvider.GEMINI))
-        assertFalse(keys.has(KeyProvider.OPENAI))
         assertFalse(keys.hasAnyKey())
         assertEquals(emptyList<KeyProvider>(), keys.configured())
-        assertNull(keys.resolve(TranslationProvider.AUTOMATIC))
+        assertNull(keys.resolve(TranslationProvider.GEMINI))
     }
 
     @Test
     fun `reading a key returns what was stored`() {
-        val keys = ProviderKeyStore(RecordingStore(mapOf(OPENAI_ENTRY to "sk-abcdefghijkl")))
+        val keys = ProviderKeyStore(RecordingStore(mapOf(GEMINI_ENTRY to "AIza-abcdefghijkl")))
 
-        assertEquals("sk-abcdefghijkl", keys.key(KeyProvider.OPENAI))
+        assertEquals("AIza-abcdefghijkl", keys.key(KeyProvider.GEMINI))
     }
 
     @Test
     fun `configured lists only the providers with an entry`() {
-        val keys = ProviderKeyStore(RecordingStore(mapOf(OPENAI_ENTRY to "sk-abcdefghijkl")))
+        val keys = ProviderKeyStore(RecordingStore(mapOf(GEMINI_ENTRY to "AIza-abcdefghijkl")))
 
-        assertEquals(listOf(KeyProvider.OPENAI), keys.configured())
+        assertEquals(listOf(KeyProvider.GEMINI), keys.configured())
         assertTrue(keys.hasAnyKey())
     }
 
-    /**
-     * Automatic prefers Gemini because it is the only provider that runs both
-     * translation directions. An explicit choice is never silently overridden.
-     */
     @Test
-    fun `resolve honours an explicit provider and falls back only for automatic`() {
-        val both = ProviderKeyStore(
-            RecordingStore(mapOf(GEMINI_ENTRY to "AIza-x", OPENAI_ENTRY to "sk-y")),
-        )
-        assertEquals(KeyProvider.OPENAI, both.resolve(TranslationProvider.OPENAI))
-        assertEquals(KeyProvider.GEMINI, both.resolve(TranslationProvider.AUTOMATIC))
+    fun `resolve returns the Gemini key when present and null when absent`() {
+        val present = ProviderKeyStore(RecordingStore(mapOf(GEMINI_ENTRY to "AIza-x")))
+        assertEquals(KeyProvider.GEMINI, present.resolve(TranslationProvider.GEMINI))
 
-        val openAiOnly = ProviderKeyStore(RecordingStore(mapOf(OPENAI_ENTRY to "sk-y")))
-        assertNull(
-            "an explicit Gemini choice with no Gemini key must not fall through",
-            openAiOnly.resolve(TranslationProvider.GEMINI),
-        )
-        assertEquals(KeyProvider.OPENAI, openAiOnly.resolve(TranslationProvider.AUTOMATIC))
+        val absent = ProviderKeyStore(RecordingStore(emptyMap()))
+        assertNull(absent.resolve(TranslationProvider.GEMINI))
     }
 }

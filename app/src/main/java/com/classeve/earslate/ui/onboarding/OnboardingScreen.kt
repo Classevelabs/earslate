@@ -262,12 +262,12 @@ private fun WelcomeStep() {
             // running the release APK, not by reading it.
             ValueProp(
                 title = "Free, on your own key",
-                body = "No price, no subscription, no account. You bring a Gemini or " +
-                    "OpenAI key, and sessions bill to that account at your provider's rates.",
+                body = "No price, no subscription, no account. You bring a Google Gemini " +
+                    "key, and sessions bill to that account at Google's rates.",
             )
             ValueProp(
                 title = "Private",
-                body = "Audio goes straight from your phone to the provider you chose. " +
+                body = "Audio goes straight from your phone to Google Gemini. " +
                     "There is no ClassEve server in the path, and we never receive or " +
                     "store your audio.",
             )
@@ -428,9 +428,9 @@ private fun HowStep(language: TargetLanguage) {
                 "as a stop button.",
         )
         ValueProp(
-            title = "Your audio, sent to your provider",
+            title = "Your audio, sent to Google Gemini",
             body = "Captured speech is streamed over an encrypted connection straight to " +
-                "Gemini or OpenAI to be translated, under that provider's terms. You will " +
+                "Google Gemini to be translated, under Google's terms. You will " +
                 "be asked to confirm this once, before the first session.",
         )
         Spacer(Modifier.height(4.dp))
@@ -474,14 +474,14 @@ private fun KeyStep(alreadySetUp: Boolean) {
         kicker = "Step 3 of 3",
         headline = "One key, and\nyou're done.",
         support = "earslate has no servers of its own, so translation runs directly between " +
-            "your phone and a provider you pay. Bring a Gemini or OpenAI key and sessions " +
-            "bill to that account at their rates.",
+            "your phone and Google Gemini. Bring a Gemini key and sessions " +
+            "bill to your Google account at Google's rates.",
     )
     FramedPanel {
         ValueProp(
             title = "It takes about a minute",
-            body = "The next screen has the steps for whichever provider you pick, and a " +
-                "button that opens the right console.",
+            body = "The next screen has the steps to get a Gemini key, and a " +
+                "button that opens the Google AI Studio console.",
         )
         ValueProp(
             title = "Checked before it is saved",

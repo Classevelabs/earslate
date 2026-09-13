@@ -8,15 +8,13 @@ import org.junit.Test
 class RuntimeStateTest {
 
     @Test
-    fun `IDLE and STOPPING are not active`() {
+    fun `IDLE is not active`() {
         assertFalse(RuntimeState.IDLE.isActive)
-        assertFalse(RuntimeState.STOPPING.isActive)
     }
 
     @Test
     fun `all other states are active`() {
-        val notActive = setOf(RuntimeState.IDLE, RuntimeState.STOPPING)
-        RuntimeState.entries.filterNot { it in notActive }.forEach {
+        RuntimeState.entries.filterNot { it == RuntimeState.IDLE }.forEach {
             assertTrue("$it should be active", it.isActive)
         }
     }
@@ -24,7 +22,6 @@ class RuntimeStateTest {
     @Test
     fun `recovery states are flagged`() {
         assertTrue(RuntimeState.RECONNECTING.isRecovering)
-        assertTrue(RuntimeState.RESUMING.isRecovering)
         assertTrue(RuntimeState.DEGRADED.isRecovering)
     }
 

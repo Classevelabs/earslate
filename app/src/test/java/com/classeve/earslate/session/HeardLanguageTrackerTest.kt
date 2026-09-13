@@ -31,19 +31,20 @@ class HeardLanguageTrackerTest {
     }
 
     /**
-     * The transcript arrives a word or two at a time. No single fragment of
-     * "hola que tal estas hoy" names a language on its own — "que" is Spanish,
-     * French and Portuguese — but the turn as a whole does. Detecting on each
-     * fragment separately is why Latin-script languages were never recognised.
+     * The transcript arrives a word or two at a time. A single word cannot name
+     * a language, so the fragments are accumulated and detection runs on the turn
+     * so far. Detecting on each fragment separately in isolation is why
+     * Latin-script languages were never recognised. Two clear function words are
+     * enough to commit — the outbound direction re-aims as soon as the evidence
+     * is unambiguous, rather than waiting for a whole sentence.
      */
     @Test
     fun `fragments accumulate across a turn until the language is clear`() {
         val t = tracker()
         assertFalse(t.turnStarted)
-        assertNull(t.observe("hola"))
+        assertNull("one word cannot name a language", t.observe("hola"))
         assertTrue(t.turnStarted)
-        assertNull(t.observe(" que"))
-        assertEquals("es-ES", them(t.observe(" tal estas hoy")).bcp47)
+        assertEquals("es-ES", them(t.observe(" que")).bcp47)
     }
 
     @Test
@@ -52,8 +53,8 @@ class HeardLanguageTrackerTest {
         t.observe("hola que")
         t.endTurn()
         assertFalse(t.turnStarted)
-        // "tal" alone is not three Spanish stopwords; if the previous turn's
-        // text had leaked, this would resolve.
+        // One leftover word cannot resolve; if the previous turn's text had
+        // leaked, "hola que tal" would.
         assertNull(t.observe(" tal"))
     }
 

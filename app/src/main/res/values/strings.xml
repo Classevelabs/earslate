@@ -16,9 +16,7 @@
     <string name="status_listening">Listening</string>
     <string name="status_playing">Translating</string>
     <string name="status_reconnecting">Reconnecting</string>
-    <string name="status_resuming">Resuming</string>
     <string name="status_degraded">Degraded</string>
-    <string name="status_stopping">Stopping</string>
 
     <!-- Route labels -->
     <string name="route_bluetooth">BLUETOOTH</string>
@@ -33,7 +31,7 @@
 
     <!-- Audio-egress prominent disclosure (Google Play User Data policy) -->
     <string name="audio_disclosure_title">How your audio is used</string>
-    <string name="audio_disclosure_body">To translate, earslate sends captured audio over an encrypted connection directly to your selected provider, Gemini or OpenAI. That provider processes the audio in real time under its terms. ClassEve never receives or stores the audio. Tap I agree to allow this, or open our privacy policy to learn more.</string>
+    <string name="audio_disclosure_body">To translate, earslate sends captured audio over an encrypted connection directly to Google Gemini. Google processes the audio in real time under its terms. ClassEve never receives or stores the audio. Tap I agree to allow this, or open our privacy policy to learn more.</string>
     <string name="audio_disclosure_agree">I agree</string>
     <string name="audio_disclosure_decline">Not now</string>
     <string name="audio_disclosure_privacy">Privacy policy</string>

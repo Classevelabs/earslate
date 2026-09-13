@@ -265,9 +265,8 @@ class EchoSuppressionTest {
     fun `an opening fragment does not name the speaker`() {
         val t = HeardLanguageTracker("en-US")
         assertNull("one word cannot decide who is talking", t.observe("hola"))
-        // ...and the very next fragments do.
-        assertNull(t.observe(" que"))
-        val heard = t.observe(" tal estas hoy")
+        // ...and two clear function words do.
+        val heard = t.observe(" que")
         assertTrue(heard is Heard.Them)
         assertEquals("es-ES", (heard as Heard.Them).bcp47)
     }

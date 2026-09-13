@@ -11,7 +11,6 @@ import com.classeve.earslate.audio.AudioCaptureEngine
 import com.classeve.earslate.audio.AudioDeviceMonitor
 import com.classeve.earslate.audio.AudioRoute
 import com.classeve.earslate.audio.AudioPlaybackEngine
-import com.classeve.earslate.bootstrap.InstallationId
 import com.classeve.earslate.bootstrap.LocalKeyBootstrapRepository
 import com.classeve.earslate.bootstrap.ProviderKeyVerifier
 import com.classeve.earslate.bootstrap.ProviderSessionMinter
@@ -63,16 +62,14 @@ object EarslateRuntime {
 
     @Volatile private var sessionMinter: ProviderSessionMinter? = null
 
-    private fun minter(context: Context): ProviderSessionMinter {
+    private fun minter(): ProviderSessionMinter {
         return sessionMinter ?: synchronized(this) {
-            sessionMinter ?: ProviderSessionMinter(
-                installId = InstallationId.loadOrCreate(context.applicationContext),
-            ).also { sessionMinter = it }
+            sessionMinter ?: ProviderSessionMinter().also { sessionMinter = it }
         }
     }
 
     /** Proves a pasted key works before it is saved. */
-    fun keyVerifier(context: Context): ProviderKeyVerifier = ProviderKeyVerifier(minter(context))
+    fun keyVerifier(context: Context): ProviderKeyVerifier = ProviderKeyVerifier(minter())
 
     @Volatile private var bootstrapRepo: SessionBootstrapRepository? = null
 
@@ -84,7 +81,7 @@ object EarslateRuntime {
         return bootstrapRepo ?: synchronized(this) {
             bootstrapRepo ?: LocalKeyBootstrapRepository(
                 keys = providerKeys(context),
-                minter = minter(context),
+                minter = minter(),
             ).also { bootstrapRepo = it }
         }
     }

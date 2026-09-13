@@ -1,10 +1,8 @@
 package com.classeve.earslate.bootstrap
 
-import android.content.Context
 import com.classeve.earslate.security.KeyProvider
 import com.classeve.earslate.security.ProviderKeyStore
 import com.classeve.earslate.session.TranslationProvider
-import java.util.UUID
 
 /**
  * Starts sessions from the key the user supplied, on the device, with no
@@ -41,24 +39,7 @@ class LocalKeyBootstrapRepository(
         // message for a key they can see listed in Settings.
         val apiKey = keys.key(chosen) ?: throw unreadableKey(chosen)
 
-        return try {
-            minter.mint(chosen, apiKey, targetLanguageCode, captionsEnabled)
-        } catch (primaryFailure: BootstrapException) {
-            // "Automatic" is a reliability promise, not a label. If the user
-            // has a second key and the first provider is refusing sessions,
-            // use it rather than failing the session in the user's face.
-            if (provider != TranslationProvider.AUTOMATIC) throw primaryFailure
-            val fallback = KeyProvider.entries
-                .firstOrNull { it != chosen && keys.has(it) }
-                ?: throw primaryFailure
-            val fallbackKey = keys.key(fallback) ?: throw primaryFailure
-            try {
-                minter.mint(fallback, fallbackKey, targetLanguageCode, captionsEnabled)
-            } catch (_: BootstrapException) {
-                // Report the provider the user would have expected to be used.
-                throw primaryFailure
-            }
-        }
+        return minter.mint(chosen, apiKey, targetLanguageCode, captionsEnabled)
     }
 
     /**
@@ -73,11 +54,10 @@ class LocalKeyBootstrapRepository(
      *
      * Every cause ends somewhere coherent from here. A destroyed keystore key
      * clears the store on the way through, so the next visit to key setup also
-     * explains itself via `wasResetByKeystore`. A single corrupt entry is
-     * dropped by `KeyVault.get`, so the following attempt simply uses the other
-     * provider. Secure storage that is merely unavailable keeps its ciphertext
-     * and may well work on the next boot — which is why nothing is deleted here
-     * and the user is asked rather than told their key is gone.
+     * explains itself via `wasResetByKeystore`. Secure storage that is merely
+     * unavailable keeps its ciphertext and may well work on the next boot —
+     * which is why nothing is deleted here and the user is asked rather than
+     * told their key is gone.
      */
     private fun unreadableKey(chosen: KeyProvider): BootstrapException = BootstrapException(
         "Your saved ${chosen.displayName} key can't be read on this device any more — " +
@@ -85,14 +65,10 @@ class LocalKeyBootstrapRepository(
     )
 
     private fun missingKey(requested: TranslationProvider): BootstrapException {
-        val named = KeyProvider.forProvider(requested)
-        return if (named != null) {
-            BootstrapException(
-                "No ${named.displayName} key is set up. Add one in Settings, or switch provider.",
-            )
-        } else {
-            BootstrapException("No API key is set up yet. Add one in Settings to start translating.")
-        }
+        val name = KeyProvider.forProvider(requested)?.displayName ?: "Gemini"
+        return BootstrapException(
+            "No $name key is set up. Add one in Settings to start translating.",
+        )
     }
 }
 
@@ -126,23 +102,5 @@ class ProviderKeyVerifier(private val minter: ProviderSessionMinter) {
         Result.Valid
     } catch (failure: BootstrapException) {
         Result.Rejected(failure.message ?: "That key could not be verified.")
-    }
-}
-
-/**
- * Per-installation identifier. Random, generated locally, never sent anywhere
- * except as a salted hash in OpenAI's safety-identifier header. It is not an
- * account, carries no entitlement, and identifies a device rather than a person.
- */
-object InstallationId {
-    private const val PREFS = "earslate_installation"
-    private const val KEY = "anonymous_install_id"
-
-    fun loadOrCreate(context: Context): String {
-        val prefs = context.applicationContext
-            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val existing = prefs.getString(KEY, null)
-        if (existing != null && runCatching { UUID.fromString(existing) }.isSuccess) return existing
-        return UUID.randomUUID().toString().also { prefs.edit().putString(KEY, it).apply() }
     }
 }

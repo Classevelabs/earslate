@@ -9,10 +9,10 @@ language while they are still speaking.
 
 ## How it works
 
-You supply an API key for **Google Gemini** or **OpenAI**. earslate uses it,
-once, over HTTPS, to mint a short-lived single-use session credential. The
-phone then opens a WebSocket **straight to the provider** with that credential
-and streams audio over it.
+You supply an API key for **Google Gemini**. earslate uses it, once, over
+HTTPS, to mint a short-lived single-use session credential. The phone then
+opens a WebSocket **straight to Google** with that credential and streams audio
+over it.
 
 That means:
 
@@ -20,22 +20,19 @@ That means:
   backend. Not a proxy, not a broker, not a relay.
 - **Your key never goes on the socket.** Only the short-lived credential does,
   so the long-lived key is never sitting on an open connection.
-- **Your usage is yours.** Sessions are billed to your own provider account, at
-  the provider's own rates. We never see them.
+- **Your usage is yours.** Sessions are billed to your own Google account, at
+  Google's own rates. We never see them.
 
-Gemini runs one leg per direction, so two people can talk normally; each leg
-stays silent unless the speaker is using the other language. OpenAI's
-translation endpoint has a single output language and no echo suppression, so
-it runs single-leg by design.
+Gemini runs one translate leg per direction, so two people can talk normally;
+each leg stays silent unless the speaker is using the other language. The other
+person's language is worked out by listening — you only pick your own.
 
 ## Getting a key
 
-In the app: **Settings → API keys**, or the setup screen on first launch. It
-walks you through it and opens the right console for you.
+In the app: **Settings → API key**, or the setup screen on first launch. It
+walks you through it and opens the console for you.
 
 - Gemini — [Google AI Studio](https://aistudio.google.com/apikey). Keys start `AIza`.
-- OpenAI — [API keys](https://platform.openai.com/api-keys). Keys start `sk-`.
-  The account needs billing enabled or live translation is refused.
 
 The key is checked against the provider before it is saved, so a wrong or
 unfunded key fails at setup rather than in the middle of a conversation.
@@ -71,18 +68,17 @@ runtime. Release builds additionally need signing coordinates in
 ## Architecture
 
 - Kotlin, Jetpack Compose, single activity.
-- `security/` — `KeyVault` (AndroidKeyStore AES-GCM) and `ProviderKeys` (which
-  providers exist, and the checks that name common paste mistakes).
+- `security/` — `KeyVault` (AndroidKeyStore AES-GCM) and `ProviderKeys` (whether
+  a key exists, and the checks that name common paste mistakes).
 - `bootstrap/` — `ProviderSessionMinter` performs the credential exchange with
-  Google or OpenAI; `LocalKeyBootstrapRepository` picks a provider and falls
-  back to the second when the first refuses.
-- `live/` — WebSocket transport and the provider wire protocols.
+  Google; `LocalKeyBootstrapRepository` reads the stored key and mints against it.
+- `live/` — WebSocket transport and the Gemini Live wire protocol.
 - `audio/` — capture at 16 kHz in 100 ms batches; playback through an adaptive
-  jitter buffer that starts at 40 ms, buys latency only when the network forces
+  jitter buffer that starts at 180 ms, buys latency only when the network forces
   it, and gives it back after a sustained clean run.
 - `session/` — `SessionCoordinator` owns session lifecycle, the half-duplex mic
   gate on speaker routes, and reconnection.
-- `ui/` — onboarding, key setup, main, settings, help, diagnostics.
+- `ui/` — onboarding, key setup, main, settings, help.
 
 No dependency-injection framework: `EarslateRuntime` is a plain holder of
 process singletons.
@@ -91,12 +87,7 @@ process singletons.
 
 No analytics SDK, no crash reporter, no advertising identifier, and no network
 call to any ClassEve service — the app has no address for one. The only
-outbound traffic is to the provider you chose.
-
-An install-scoped random UUID is generated locally and sent, hashed, as
-OpenAI's safety identifier. It attributes abuse signals to a device rather than
-to your whole OpenAI account. It is not an account, identifies no person, and
-is excluded from backup.
+outbound traffic is to Google, for the translation you asked for.
 
 Diagnostics are opt-in and never leave the device.
 
