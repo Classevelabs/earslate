@@ -84,6 +84,7 @@ jobs:
           name: lint-report
           path: app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload test report
         if: failure()
@@ -92,6 +93,7 @@ jobs:
           name: test-report
           path: app/build/reports/tests/testDebugUnitTest
           if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload debug APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -99,3 +101,4 @@ jobs:
           name: earslate-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+          retention-days: 14
