@@ -77,8 +77,11 @@ jobs:
             exit 1
           fi
 
+      # A report is a convenience, not a gate: a full account artifact quota must not turn a
+      # build whose tests and lint passed into a red one.
       - name: Upload lint report
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: lint-report
@@ -88,6 +91,7 @@ jobs:
 
       - name: Upload test report
         if: failure()
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: test-report
@@ -95,7 +99,10 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      # Stored on request only: a 15 MB debug APK kept for every push filled the account's
+      # 500 MB artifact quota, which every repository in the account shares.
       - name: Upload debug APK
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: earslate-debug-apk
