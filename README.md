@@ -78,11 +78,11 @@ runtime. Release builds additionally need signing coordinates in
   back to the second when the first refuses.
 - `live/` — WebSocket transport and the provider wire protocols.
 - `audio/` — capture at 16 kHz in 100 ms batches; playback through an adaptive
-  jitter buffer that starts at 40 ms, buys latency only when the network forces
-  it, and gives it back after a sustained clean run.
+  jitter buffer that starts just above one provider chunk, buys latency only when
+  the network forces it, and gives it back after a sustained clean run.
 - `session/` — `SessionCoordinator` owns session lifecycle, the half-duplex mic
   gate on speaker routes, and reconnection.
-- `ui/` — onboarding, key setup, main, settings, help, diagnostics.
+- `ui/` — onboarding, key setup, main, settings, help.
 
 No dependency-injection framework: `EarslateRuntime` is a plain holder of
 process singletons.
@@ -98,14 +98,12 @@ OpenAI's safety identifier. It attributes abuse signals to a device rather than
 to your whole OpenAI account. It is not an account, identifies no person, and
 is excluded from backup.
 
-Diagnostics are opt-in and never leave the device.
-
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Security reports go to
 **security@classeve.com** — please read [SECURITY.md](SECURITY.md) first.
 
-## Licence
+## License
 
 Apache-2.0. See [LICENSE](LICENSE).
 
