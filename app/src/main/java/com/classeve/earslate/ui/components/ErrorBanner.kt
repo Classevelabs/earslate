@@ -37,8 +37,8 @@ fun ErrorBanner(
     onDismiss: (() -> Unit)? = null,
 ) {
     val kickerLabel = when (error.kind) {
-        RuntimeError.Kind.BOOTSTRAP_FAILED -> "BOOTSTRAP FAILED"
-        RuntimeError.Kind.CONNECT_FAILED -> "CONNECT FAILED"
+        RuntimeError.Kind.BOOTSTRAP_FAILED -> "COULD NOT START"
+        RuntimeError.Kind.CONNECT_FAILED -> "COULD NOT CONNECT"
         RuntimeError.Kind.PERMISSION_DENIED -> "PERMISSION NEEDED"
         RuntimeError.Kind.PROVIDER_ERROR -> "PROVIDER REFUSED"
         RuntimeError.Kind.UNKNOWN -> "ERROR"

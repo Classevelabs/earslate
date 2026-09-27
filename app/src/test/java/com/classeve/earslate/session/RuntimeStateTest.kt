@@ -20,12 +20,6 @@ class RuntimeStateTest {
     }
 
     @Test
-    fun `recovery states are flagged`() {
-        assertTrue(RuntimeState.RECONNECTING.isRecovering)
-        assertTrue(RuntimeState.DEGRADED.isRecovering)
-    }
-
-    @Test
     fun `state store starts idle`() {
         val store = RuntimeStateStore()
         assertEquals(RuntimeState.IDLE, store.state.value)

@@ -76,7 +76,7 @@ def render_feature(W=1024, H=500, ss=2):
     d.rectangle([(TX, int(272*ss)), (TX+int(64*ss), int(279*ss))], fill=EMBER)
     d.text((TX, int(298*ss)), "Live speech translator", font=f_tag, fill=TEXT)
     d.text((TX, int(352*ss)), "Hear nearby speech in your language", font=f_sub, fill=SUBTLE)
-    d.text((TX, int(384*ss)), "150+ languages  ·  Real-time  ·  Earbud-ready", font=f_sub, fill=SUBTLE)
+    d.text((TX, int(384*ss)), "Real-time  ·  Earbud-ready  ·  Your own key", font=f_sub, fill=SUBTLE)
     img = img.resize((W, H), Image.LANCZOS)
     p = os.path.join(OUT, "earslate-feature-graphic-1024x500.png")
     img.save(p, "PNG", optimize=True)

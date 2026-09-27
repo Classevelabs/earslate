@@ -20,22 +20,16 @@ import com.classeve.earslate.session.TranslationProvider
  * provider is the only thing that actually knows. [ProviderKeyVerifier] mints a
  * real session before any key is saved, so a bad key still fails at setup —
  * just with the provider's verdict instead of our guess.
- *
- * [prefix] survives only as a display hint: it seeds the masked form. It never
- * blocks.
  */
 enum class KeyProvider(
     val provider: TranslationProvider,
     val displayName: String,
-    /** Historical prefix. A display hint only — never a gate. */
-    val prefix: String,
     val consoleName: String,
     val consoleUrl: String,
 ) {
     GEMINI(
         provider = TranslationProvider.GEMINI,
         displayName = "Google Gemini",
-        prefix = "AIza",
         consoleName = "Google AI Studio",
         consoleUrl = "https://aistudio.google.com/apikey",
     );
@@ -157,11 +151,4 @@ class ProviderKeyStore(private val vault: SecretStore) {
     fun wasResetByKeystore(): Boolean = vault.wasResetByKeystore
 
     fun acknowledgeKeystoreReset() = vault.acknowledgeKeystoreReset()
-
-    /** Masked form for display. Never render a whole key back to the screen. */
-    fun masked(of: KeyProvider): String? {
-        val key = key(of) ?: return null
-        if (key.length <= 10) return of.prefix + "…"
-        return key.take(6) + "…" + key.takeLast(4)
-    }
 }

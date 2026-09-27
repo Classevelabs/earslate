@@ -24,7 +24,3 @@ val RuntimeState.isActive: Boolean
         RuntimeState.IDLE -> false
         else -> true
     }
-
-val RuntimeState.isRecovering: Boolean
-    get() = this == RuntimeState.RECONNECTING ||
-        this == RuntimeState.DEGRADED

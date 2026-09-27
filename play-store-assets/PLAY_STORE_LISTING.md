@@ -15,7 +15,7 @@ earslate
 ## Short description
 
 ```
-Live speech translation with your own Google Gemini key. 150+ languages.
+Live speech translation into your earbuds, with your own Google Gemini key.
 ```
 
 ## Full description
@@ -30,7 +30,7 @@ HOW IT WORKS
 • Add your key once in Settings
 • Start a session with a tap or the Quick Settings tile
 • Read the translation on screen, or route it to your earbuds
-• Works across 150+ language pairs
+• Pick your language; theirs is detected as they speak
 
 YOUR KEY, YOUR AUDIO
 Your key is sealed by the Android keystore and goes only to Google, over HTTPS. While a session is active, ambient audio streams over an encrypted connection directly to Google Gemini; ClassEve never receives your audio. Google handles that audio under its own terms, so do not use earslate for confidential conversations. Details: https://classeve.com/privacy

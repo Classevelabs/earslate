@@ -64,7 +64,7 @@ fun HelpScreen(
                 )
                 HelpEntry(
                     title = "Speaking back",
-                    body = "What you say goes out in the language the other person was last heard speaking. Until something has been recognised, that is English.",
+                    body = "What you say goes out in the language the other person was last heard speaking. Until something has been recognized, that is English.",
                 )
                 HelpEntry(
                     title = "Audio output",
