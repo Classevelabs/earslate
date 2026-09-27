@@ -37,7 +37,7 @@ Your key is sealed by the Android keystore and goes only to Google, over HTTPS. 
 
 The microphone is active only while a session is running.
 
-Free, and open source: github.com/Classevelabs/earslate
+Free.
 
 By ClassEve.
 ```
