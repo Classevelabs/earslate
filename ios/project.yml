@@ -28,14 +28,12 @@ targets:
         # xcodegen leaves this unset while writing INFOPLIST_KEY_* entries, and
         # Xcode 16 then looks for an Info.plist file that nothing generates:
         # "Build input file cannot be found: .../Earslate.app/Info.plist".
-        # The same omission bit the Lven Instant macOS project, where it is
-        # documented in its project.yml for the same reason.
         GENERATE_INFOPLIST_FILE: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
-        INFOPLIST_KEY_CFBundleDisplayName: Earslate
+        INFOPLIST_KEY_CFBundleDisplayName: earslate
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: false
-        INFOPLIST_KEY_NSMicrophoneUsageDescription: Earslate captures speech only while live translation is running. Audio is sent directly to your selected provider, Gemini or OpenAI, and is not retained by the app.
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: earslate captures speech only while live translation is running. Audio is sent directly to your selected provider, Gemini or OpenAI, and is not retained by the app.
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: true
         INFOPLIST_KEY_UIBackgroundModes:
           - audio

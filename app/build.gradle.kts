@@ -34,10 +34,9 @@ val brandKeyPassword = localProperties.getProperty("EARSLATE_KEY_PASSWORD")?.tak
 // registered when the app was created and rejects anything else with a 403; Play
 // App Signing re-signs for users, so that upload certificate — and the legal
 // entity in its DN — never reaches a device and is not a user-facing leak. The
-// earslate upload key is earslate-release.keystore (alias earslate, SHA-256
-// pinned in verifyBundleIdentity); see _keystore-backups/README.txt. Signing the
-// AAB with the brand key builds cleanly and is then refused at upload, which is
-// exactly what blocked earslate on Play.
+// upload certificate's SHA-256 is pinned in classeveGates below and checked by
+// verifyBundleIdentity. Signing the AAB with the brand key builds cleanly and is
+// then refused at upload, which is exactly what blocked earslate on Play.
 val uploadStoreFile = localProperties.getProperty("PLAY_UPLOAD_STORE_FILE")?.takeIf { it.isNotBlank() }
 val uploadStorePassword = localProperties.getProperty("PLAY_UPLOAD_STORE_PASSWORD")?.takeIf { it.isNotBlank() }
 val uploadKeyAlias = localProperties.getProperty("PLAY_UPLOAD_KEY_ALIAS")?.takeIf { it.isNotBlank() }
@@ -67,6 +66,11 @@ val missingReleaseSigningProperties = releaseSigningProperties
     .keys
 val hasReleaseKeystore = missingReleaseSigningProperties.isEmpty()
 
+// The identity needles are release configuration, not source: this repository
+// is public, and a list here would publish the strings it keeps out of the APK.
+val identityNeedles = localProperties.getProperty("EARSLATE_IDENTITY_NEEDLES")
+    ?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }.orEmpty()
+
 if (bundleRequested && !hasUploadKeystore) {
     println(
         "WARNING: PLAY_UPLOAD_* is not configured, so this bundle would be signed with the brand key " +
@@ -83,17 +87,8 @@ android {
         applicationId = "com.classeve.earslate"
         minSdk = 29
         targetSdk = 36
-        // 0.4.5 — a session's configuration is now stated once rather than
-        // twice (captions-off minted a token that contradicted its own setup
-        // frame), a cold start no longer ignores the user's languages, a socket
-        // death no longer tears down the foreground service it needs to
-        // reconnect, and diagnosed failures are no longer laundered into
-        // "check your network". See the log between v0.4.4 and here.
-        //
-        // 0.4.4 — brand signing certificate (the 0.4.3 cert leaked the legal
-        // entity, city and state into every APK), BLUETOOTH_CONNECT removed,
-        // two audio-teardown races fixed. That certificate change is why an
-        // install signed by the old key cannot take these as an update.
+        // 0.4.4 moved the APK to the brand certificate, so an install signed by
+        // the older key cannot take a later version as an update.
         versionCode = 29
         versionName = "0.5.4"
 
@@ -186,6 +181,12 @@ val verifyReleaseSigning by tasks.registering {
                     ". Debug builds remain available, but release builds fail closed.",
             )
         }
+        if (identityNeedles.isEmpty()) {
+            throw GradleException(
+                "Release identity is not configured: set EARSLATE_IDENTITY_NEEDLES in local.properties. " +
+                    "Debug builds remain available.",
+            )
+        }
         if (!file(requireNotNull(releaseStoreFile)).isFile) {
             throw GradleException(
                 "Release signing is not configured: EARSLATE_STORE_FILE does not point " +
@@ -203,13 +204,11 @@ tasks.matching { it.name == "preReleaseBuild" }.configureEach {
 // SYSTEM/gradle-gates and held byte-identical by the drift check. Only what is
 // specific to THIS app lives here: the brand DN the direct-download APK must
 // carry, the Play upload certificate the AAB is pinned to, and the identity
-// needles, base64 so the list is not an index.
+// needles from local.properties.
 classeveGates {
     apkSignerDn.set("CN=Earslate, O=ClassEve, C=IN")
     bundleSignerSha256.set("06DC3708937740310F93D9EF6F400DE16D2619C95E76D0EA50B737B495F3F544")
-    forbiddenNeedlesBase64.set(
-        listOf("UHJpdmF0ZSBMaW1pdGVk", "UHZ0IEx0ZA==", "UHZ0LiBMdGQ=", "QmFybmFsYQ==", "QmVuZ2FsdXJ1"),
-    )
+    forbiddenNeedlesBase64.set(identityNeedles)
 }
 
 dependencies {

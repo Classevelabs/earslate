@@ -7,7 +7,7 @@ server anywhere in the path.**
 ## Status
 
 **Code-complete and unshipped.** Building and testing need no Apple account and
-run in CI on every change. Shipping to the App Store needs an Apple Developer
+run in CI when the iOS workflow is started by hand. Shipping to the App Store needs an Apple Developer
 Program membership that does not exist yet, so the target is simulator-only and
 unsigned on purpose.
 
@@ -33,9 +33,8 @@ expected work, not as a surprise.
 ## What changed in 0.4.4, and why it matters
 
 This client used to POST to `https://api.classeve.com/v1/earslate/session`.
-**That route was deleted in 0.4.0** when Android moved to bring-your-own-key:
-the Worker has no earslate handler and `00052_remove_earslate.sql` dropped the
-product. The endpoint answered 404, so the app could not start a single session.
+**That route was deleted in 0.4.0** when Android moved to bring-your-own-key.
+The endpoint answered 404, so the app could not start a single session.
 
 It compiled. Its tests passed. Its CI was green. The wire-format tests assert
 the *shape* of the setup frame and the build proves it compiles — neither has

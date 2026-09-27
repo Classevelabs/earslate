@@ -11,31 +11,31 @@ sdk.dir=/path/to/android-sdk
 # ──────────────────────────────────────────────────────────────────────
 
 # ──────────────────────────────────────────────────────────────────────
-# Release signing.
+# Release signing: two keys, because the APK and the AAB go to different places.
 #
-# All four properties must be set to produce a Play-uploadable release APK.
-# There is NO fallback: the `verifyReleaseSigning` task fails the build when any
-# of them is missing or when the keystore file does not exist. (This file
-# previously claimed the build falls back to the debug keystore. It does not,
-# and has not since that task was added — a debug-signed artifact that looks
-# like a release is exactly what fail-closed exists to prevent.)
+# The APK is the direct download. It is signed with the brand key, set by the
+# four EARSLATE_* properties, whose DN must be `CN=Earslate, O=ClassEve, C=IN`
+# and nothing else: `verifyReleaseIdentity` runs after every assembleRelease and
+# fails the build on any other DN, or on entity strings in the APK's bytes.
 #
-# The keystore must be the shared brand keystore, whose DN is
-# `CN=<App>, O=ClassEve, C=IN` and nothing else. `verifyReleaseIdentity` runs
-# after every assembleRelease and fails the build on any other DN, or on entity
-# strings anywhere in the APK's raw bytes.
+# The AAB goes to Google Play, which accepts only the upload certificate it
+# registered for this app. It is signed with the upload key, set by the four
+# PLAY_UPLOAD_* properties; `verifyBundleIdentity` checks the certificate's
+# SHA-256 against the pin in app/build.gradle.kts.
 #
-# Generate the keystore once with:
-#
-#   keytool -genkeypair -v \
-#     -keystore /absolute/path/to/earslate-release.keystore \
-#     -alias earslate \
-#     -keyalg RSA -keysize 2048 -validity 10000
-#
-# Use a strong password — back it up to a password manager. Losing this
-# keystore means losing the ability to ship updates of this app on Play.
+# There is no debug fallback: `verifyReleaseSigning` fails a release build when
+# a property is missing or the keystore file does not exist.
 # ──────────────────────────────────────────────────────────────────────
-# EARSLATE_STORE_FILE=/absolute/path/to/earslate-release.keystore
+# EARSLATE_STORE_FILE=/absolute/path/to/brand.keystore
 # EARSLATE_STORE_PASSWORD=...
-# EARSLATE_KEY_ALIAS=earslate
+# EARSLATE_KEY_ALIAS=...
 # EARSLATE_KEY_PASSWORD=...
+#
+# PLAY_UPLOAD_STORE_FILE=/absolute/path/to/upload.keystore
+# PLAY_UPLOAD_STORE_PASSWORD=...
+# PLAY_UPLOAD_KEY_ALIAS=...
+# PLAY_UPLOAD_KEY_PASSWORD=...
+#
+# Strings no release artifact may contain, base64 and comma-separated. A release
+# build fails without them; the gates scan every APK and AAB for each one.
+# EARSLATE_IDENTITY_NEEDLES=...

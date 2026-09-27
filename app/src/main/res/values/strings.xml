@@ -36,14 +36,6 @@
     <string name="audio_disclosure_decline">Not now</string>
     <string name="audio_disclosure_privacy">Privacy policy</string>
 
-    <!-- Settings screen -->
-
-    <!-- Language picker -->
-
-    <!-- Diagnostics -->
-
-    <!-- Error banners -->
-
     <!-- Notification -->
     <string name="notification_channel_name">Translator runtime</string>
     <string name="notification_channel_description">Keeps the translator active while the screen is off.</string>

@@ -22,10 +22,9 @@ AGENTS.md
 GEMINI.md
 CONTEXT.md
 
-# Internal Play Console handoff notes. Deleted from the public mirror once
-# already as a leak, then re-added and re-expanded, because nothing stopped it:
-# the mirror exclusion was a manual delete, not a rule. One ordinary push of
-# main republished it. Keep it on disk, out of the index.
+# Internal Play Console notes never enter the index: an ordinary push of main
+# once republished one to the public mirror, because only a manual delete kept
+# it out.
 play-store-assets/PLAY_STORE_HANDOFF.md
 
 # Local environment files. Never tracked; the .example template is the one exception.

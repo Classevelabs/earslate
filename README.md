@@ -74,8 +74,8 @@ runtime. Release builds additionally need signing coordinates in
   Google; `LocalKeyBootstrapRepository` reads the stored key and mints against it.
 - `live/` — WebSocket transport and the Gemini Live wire protocol.
 - `audio/` — capture at 16 kHz in 100 ms batches; playback through an adaptive
-  jitter buffer that starts at 180 ms, buys latency only when the network forces
-  it, and gives it back after a sustained clean run.
+  jitter buffer that starts just above one provider chunk, buys latency only when
+  the network forces it, and gives it back after a sustained clean run.
 - `session/` — `SessionCoordinator` owns session lifecycle, the half-duplex mic
   gate on speaker routes, and reconnection.
 - `ui/` — onboarding, key setup, main, settings, help.
@@ -89,14 +89,12 @@ No analytics SDK, no crash reporter, no advertising identifier, and no network
 call to any ClassEve service — the app has no address for one. The only
 outbound traffic is to Google, for the translation you asked for.
 
-Diagnostics are opt-in and never leave the device.
-
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Security reports go to
 **security@classeve.com** — please read [SECURITY.md](SECURITY.md) first.
 
-## Licence
+## License
 
 Apache-2.0. See [LICENSE](LICENSE).
 

@@ -66,13 +66,12 @@ its place by explaining a decision rather than narrating the next line.
 ## Reporting bugs
 
 Say what you did, what happened, and what you expected. For audio problems,
-Settings → Advanced → Diagnostics shows buffer health and latency; those
-numbers are far more useful than "it stutters". Diagnostics stay on your
-device, so paste what is relevant.
+say which headphones or speaker you used and how far away the other person
+was; that tells us far more than "it stutters".
 
 **Do not file security issues publicly** — see [SECURITY.md](SECURITY.md).
 
-## Licence
+## License
 
 Contributions are accepted under the Apache License 2.0, the same licence as
 the project. By opening a pull request you confirm you have the right to submit
