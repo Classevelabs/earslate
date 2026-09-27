@@ -66,6 +66,11 @@ val missingReleaseSigningProperties = releaseSigningProperties
     .keys
 val hasReleaseKeystore = missingReleaseSigningProperties.isEmpty()
 
+// The identity needles are release configuration, not source: this repository
+// is public, and a list here would publish the strings it keeps out of the APK.
+val identityNeedles = localProperties.getProperty("EARSLATE_IDENTITY_NEEDLES")
+    ?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }.orEmpty()
+
 if (bundleRequested && !hasUploadKeystore) {
     println(
         "WARNING: PLAY_UPLOAD_* is not configured, so this bundle would be signed with the brand key " +
@@ -176,6 +181,12 @@ val verifyReleaseSigning by tasks.registering {
                     ". Debug builds remain available, but release builds fail closed.",
             )
         }
+        if (identityNeedles.isEmpty()) {
+            throw GradleException(
+                "Release identity is not configured: set EARSLATE_IDENTITY_NEEDLES in local.properties. " +
+                    "Debug builds remain available.",
+            )
+        }
         if (!file(requireNotNull(releaseStoreFile)).isFile) {
             throw GradleException(
                 "Release signing is not configured: EARSLATE_STORE_FILE does not point " +
@@ -193,13 +204,11 @@ tasks.matching { it.name == "preReleaseBuild" }.configureEach {
 // SYSTEM/gradle-gates and held byte-identical by the drift check. Only what is
 // specific to THIS app lives here: the brand DN the direct-download APK must
 // carry, the Play upload certificate the AAB is pinned to, and the identity
-// needles, base64 so the list is not an index.
+// needles from local.properties.
 classeveGates {
     apkSignerDn.set("CN=Earslate, O=ClassEve, C=IN")
     bundleSignerSha256.set("06DC3708937740310F93D9EF6F400DE16D2619C95E76D0EA50B737B495F3F544")
-    forbiddenNeedlesBase64.set(
-        listOf("UHJpdmF0ZSBMaW1pdGVk", "UHZ0IEx0ZA==", "UHZ0LiBMdGQ=", "QmFybmFsYQ==", "QmVuZ2FsdXJ1"),
-    )
+    forbiddenNeedlesBase64.set(identityNeedles)
 }
 
 dependencies {
