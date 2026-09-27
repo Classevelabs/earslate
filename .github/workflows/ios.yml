@@ -1,10 +1,5 @@
 # earslate for iOS — build and wire-format tests.
 #
-# The iOS client lived only inside a personal backup repository: it was in no
-# product repo, had no CI, and had no tests. Nine hundred lines of working
-# app — live Gemini client, audio capture and playback — one disk failure from
-# gone, and unverifiable by anyone but the person holding that disk.
-#
 # The first cross-platform comparison found a bug that made Gemini translation
 # impossible: the setup frame put transcription inside generationConfig, which
 # the server rejects by closing the socket with 1007. Android had shipped the
@@ -17,11 +12,9 @@
 
 name: iOS
 
-# Manual dispatch only. macOS runners bill at a 10x minute multiplier; on
-# 2026-08-11 the account's monthly Actions allowance ran out and this workflow
-# was switched off at GitHub, where a disabled workflow reads as "CI present"
-# to anyone looking at the file. A release-tier build that runs when asked is
-# a live gate; one that is disabled is not (ENGINEERING-STANDARD II.7, II.8).
+# Manual dispatch only: macOS runners cost ten times the minutes. A build that
+# runs when asked is a live gate; a workflow switched off at GitHub still reads
+# as "CI present" to anyone looking at this file, and is not one.
 on:
   workflow_dispatch:
 

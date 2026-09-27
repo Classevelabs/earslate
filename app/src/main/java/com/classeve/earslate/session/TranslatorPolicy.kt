@@ -2,8 +2,8 @@ package com.classeve.earslate.session
 
 /**
  * Everything the translator runtime needs to configure a session, built from the
- * user's settings + the backend bootstrap response. Immutable — rebuilding the
- * session is how you change policy.
+ * user's settings and the session the app mints on the device. Immutable —
+ * rebuilding the session is how you change policy.
  *
  * The product is ALWAYS a bidirectional conversation translator (there are no
  * "modes"). It runs one translate leg per direction:

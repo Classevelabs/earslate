@@ -28,7 +28,7 @@
 # feedback the day one of them ever is added. Verified by a clean release build
 # after removal.
 
-# Strip android.util.Log calls in release builds — mirrors Lven-Android.
+# Strip android.util.Log calls in release builds.
 # Logcat is world-readable to any adb-attached host and to system bugreports;
 # parser/serialization error messages can embed frame excerpts (translated
 # conversation content) and network errors can embed request detail. Debug

@@ -131,7 +131,7 @@ class ProviderKeyVerifier(private val minter: ProviderSessionMinter) {
 
 /**
  * Per-installation identifier. Random, generated locally, never sent anywhere
- * except as a salted hash in OpenAI's safety-identifier header. It is not an
+ * except as a SHA-256 hash in OpenAI's safety-identifier header. It is not an
  * account, carries no entitlement, and identifies a device rather than a person.
  */
 object InstallationId {

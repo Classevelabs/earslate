@@ -52,7 +52,7 @@ interface AudioPlaybackEngine {
      */
     fun notifyTurnEnd()
 
-    /** Live buffer health for the diagnostics screen. */
+    /** Live buffer health, for the session's telemetry and its end-of-turn drain. */
     fun snapshot(): PlaybackSnapshot
 }
 
