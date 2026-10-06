@@ -39,7 +39,7 @@ internal object GeminiTranslationProtocol : TranslationLiveProtocol {
     }
 
     private val RATE = Regex("rate=(\\d+)")
-    private val LANGUAGE_TAG = Regex("^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
+    private val LANGUAGE_TAG = Regex("^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*$")
     private val TRADITIONAL_CHINESE = listOf("-tw", "-hk", "-mo", "hant")
     private val ENABLED = JsonObject(emptyMap())
 
@@ -50,7 +50,8 @@ internal object GeminiTranslationProtocol : TranslationLiveProtocol {
         if (!LANGUAGE_TAG.matches(tag)) return null
         val lower = tag.lowercase()
         return when (primarySubtag(tag)) {
-            "zh" -> if (TRADITIONAL_CHINESE.any { lower.contains(it) }) "zh-Hant" else "zh-Hans"
+            // A script that is named outranks what the region suggests.
+            "zh" -> if ("hans" !in lower && TRADITIONAL_CHINESE.any { lower.contains(it) }) "zh-Hant" else "zh-Hans"
             "pt" -> if (lower.startsWith("pt-pt")) "pt-PT" else "pt-BR"
             else -> primarySubtag(tag)
         }

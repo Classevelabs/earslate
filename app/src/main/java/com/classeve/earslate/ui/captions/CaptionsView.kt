@@ -2,6 +2,9 @@ package com.classeve.earslate.ui.captions
 
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.ScrollableState
+import androidx.compose.foundation.interaction.DragInteraction
+import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,7 +21,11 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -85,14 +92,17 @@ fun CaptionsView(
         if (lines.isEmpty() && pending.isEmpty()) {
             EmptyState(active = active)
         } else {
-            val listState = rememberLazyListState()
-
             // ONE list, used for both rendering and scrolling. The two used to
             // be computed separately and disagreed: the column emitted
             // `lines.size + 1` items whenever a partial line was in flight,
             // while the effect scrolled to `lines.lastIndex`.
             val rows = remember(lines, pending) { captionRows(lines, pending) }
             val target = captionScrollTarget(rows)
+
+            // Opened on a conversation already under way, the list starts at its end.
+            val listState = rememberLazyListState(initialFirstVisibleItemIndex = target.coerceAtLeast(0))
+
+            val following = keepsToItsEnd(listState, listState.interactionSource)
 
             // Keyed on the ROWS, not on their count.
             //
@@ -103,11 +113,12 @@ fun CaptionsView(
             // window, so once 48 lines have committed the count never changes
             // again — a size-keyed effect simply stopped firing for the rest of
             // the session.
-            LaunchedEffect(rows) {
-                val lastLaidOut = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-                if (shouldFollowCaptions(lastVisibleIndex = lastLaidOut, targetIndex = target)) {
-                    listState.animateScrollToItem(target)
-                }
+            LaunchedEffect(rows, following) {
+                if (!following || target < 0) return@LaunchedEffect
+                val layout = listState.layoutInfo
+                val row = layout.visibleItemsInfo.lastOrNull { it.index == target }
+                val panel = layout.viewportEndOffset - layout.viewportStartOffset
+                listState.animateScrollToItem(target, scrollOffset = captionEndOffset(row?.size, panel))
             }
 
             SelectionContainer {
@@ -153,6 +164,33 @@ fun CaptionsView(
             }
         }
     }
+}
+
+/**
+ * True while [scrolling] should keep to its end: until a hand moves it away,
+ * and again once it comes to rest there. [since] starts the question afresh.
+ */
+@Composable
+fun keepsToItsEnd(scrolling: ScrollableState, touches: InteractionSource, since: Any? = Unit): Boolean {
+    val follow = remember(scrolling, since) { CaptionFollow() }
+    var following by remember(follow) { mutableStateOf(follow.following) }
+    LaunchedEffect(follow) {
+        touches.interactions.collect {
+            if (it is DragInteraction.Start) {
+                follow.takenHold()
+                following = follow.following
+            }
+        }
+    }
+    LaunchedEffect(follow) {
+        snapshotFlow { scrolling.isScrollInProgress }.collect { moving ->
+            if (!moving) {
+                follow.cameToRest(atEnd = !scrolling.canScrollForward)
+                following = follow.following
+            }
+        }
+    }
+    return following
 }
 
 /**

@@ -52,7 +52,6 @@ class TranslatorService : Service() {
      * arriving first can cancel it instead of being overtaken by it.
      */
     private var startJob: Job? = null
-    private var sawActive = false
 
     override fun onCreate() {
         super.onCreate()
@@ -105,13 +104,6 @@ class TranslatorService : Service() {
                         this@TranslatorService, state, currentLanguageName(),
                     ),
                 )
-                if (state.isActive) {
-                    sawActive = true
-                } else if (sawActive && state == RuntimeState.IDLE) {
-                    Log.i(TAG, "runtime back to IDLE — stopping service")
-                    stopForegroundSmart()
-                    stopSelf()
-                }
             }
         }
     }
@@ -188,7 +180,19 @@ class TranslatorService : Service() {
                     // file already imports for RuntimeState — two extension
                     // properties of the same name cannot both be imported.
                     coroutineContext.ensureActive()
-                    EarslateRuntime.sessionCoordinator(this@TranslatorService).start(policy)
+                    // The service lasts exactly as long as the session. Watching
+                    // the state for IDLE is not enough: a session that fails at
+                    // once goes there and back between two looks, and the
+                    // microphone notification would then never be taken down.
+                    EarslateRuntime.sessionCoordinator(this@TranslatorService).start(policy).invokeOnCompletion {
+                        scope.launch {
+                            if (EarslateRuntime.stateStore.state.value == RuntimeState.IDLE) {
+                                Log.i(TAG, "session over; stopping service")
+                                stopForegroundSmart()
+                                stopSelf()
+                            }
+                        }
+                    }
                 }
             }
             ACTION_STOP -> {

@@ -13,12 +13,21 @@ class FloorControlTest {
     private var now = 10_000L
     private var lastSpeech = 0L
 
-    /** Advance [ms], with the room and the playback queue as described. */
-    private fun pass(ms: Int, talking: Boolean = false, waitingMs: Int = 0, audible: Boolean = false) {
+    /**
+     * Advance [ms], with the room and the playback queue as described. While
+     * someone talks, more of the translation keeps arriving.
+     */
+    private fun pass(
+        ms: Int,
+        talking: Boolean = false,
+        waitingMs: Int = 0,
+        audible: Boolean = false,
+        arriving: Boolean = talking,
+    ) {
         repeat(ms / 50) {
             now += 50
             if (talking) lastSpeech = now
-            floor.update(now, lastSpeech, waitingMs, audible)
+            floor.update(now, lastSpeech, waitingMs, audible, arriving)
         }
     }
 
@@ -77,6 +86,29 @@ class FloorControlTest {
         assertEquals("the second sentence is about to arrive", Floor.SPEAKING, floor.floor)
         pass(1_000, waitingMs = 1_000, audible = true)
         assertEquals(Floor.SPEAKING, floor.floor)
+    }
+
+    // Music, a television, a crowd: the microphone never hears a pause, and
+    // every translation used to wait the full twenty seconds.
+    @Test
+    fun `in a room that never sounds quiet, the translation is spoken once no more of it is arriving`() {
+        pass(5_000, talking = true, waitingMs = 4_000)
+        // The person has stopped; the room has not. The translation finishes arriving.
+        pass(FloorControl.NOTHING_MORE_MS.toInt() - 100, talking = true, waitingMs = 4_000, arriving = false)
+        assertEquals("they may only be drawing breath", Floor.LISTENING, floor.floor)
+        pass(200, talking = true, waitingMs = 4_000, arriving = false)
+
+        assertEquals(Floor.SPEAKING, floor.floor)
+    }
+
+    @Test
+    fun `while more of the translation keeps arriving, a noisy room goes on waiting`() {
+        pass(5_000, talking = true, waitingMs = 4_000)
+        pass(3_000, talking = true, waitingMs = 4_000, arriving = false)
+        // They carry on, and so does the translation.
+        pass(6_000, talking = true, waitingMs = 6_000, arriving = true)
+
+        assertEquals(Floor.LISTENING, floor.floor)
     }
 
     // A café is never quiet. The translation must still come out.

@@ -32,9 +32,9 @@ class PlayoutLaneTest {
             lane.offer(if (voiced) TestAudio.tone(ms, rate) else TestAudio.silence(ms, rate), voiced, now)
 
         /** Play until [untilMs], with blocks arriving at the given times. */
-        fun play(untilMs: Long, arrivals: Map<Long, Pair<Int, Boolean>> = emptyMap()) {
+        fun play(untilMs: Long, arrivals: Map<Long, List<Pair<Int, Boolean>>> = emptyMap()) {
             while (now < untilMs) {
-                arrivals[now]?.let { (ms, voiced) -> arrive(ms, voiced) }
+                arrivals[now]?.forEach { (ms, voiced) -> arrive(ms, voiced) }
                 if (lane.pull(frame, now)) {
                     voicedMs += frameMs
                     if (firstVoicedAtMs < 0) firstVoicedAtMs = now
@@ -48,9 +48,26 @@ class PlayoutLaneTest {
         }
     }
 
-    /** Blocks of [blockMs] arriving every [blockMs], each late by the given amount. */
-    private fun stream(count: Int, blockMs: Int = 250, voiced: (Int) -> Boolean = { true }, lateMs: (Int) -> Int = { 0 }) =
-        (0 until count).associate { i -> (i.toLong() * blockMs + lateMs(i)) / frameMs * frameMs to (blockMs to voiced(i)) }
+    /**
+     * Blocks of [blockMs] sent every [blockMs], each held up by the given
+     * amount. They arrive in order, as they do on a socket: a block held up
+     * holds up the ones behind it, and they land together.
+     */
+    private fun stream(
+        count: Int,
+        blockMs: Int = 250,
+        voiced: (Int) -> Boolean = { true },
+        lateMs: (Int) -> Int = { 0 },
+    ): Map<Long, List<Pair<Int, Boolean>>> {
+        var last = 0L
+        return (0 until count).groupBy(
+            keySelector = { i ->
+                last = maxOf(last, (i.toLong() * blockMs + lateMs(i)) / frameMs * frameMs)
+                last
+            },
+            valueTransform = { i -> blockMs to voiced(i) },
+        )
+    }
 
     @Test
     fun `speech starts after the start cushion and then never stops`() {
@@ -88,16 +105,100 @@ class PlayoutLaneTest {
     @Test
     fun `a block too late to play costs one short gap, and the cushion grows to cover the next`() {
         val player = Player()
-        // The fifth block is 300 ms late: later than the cushion can hide.
-        player.play(untilMs = 12_000, arrivals = stream(40, lateMs = { if (it == 4 || it == 20) 300 else 0 }))
+        // A stream that carries its own silence, as Gemini's does. The sixth
+        // block is 300 ms late: later than the cushion can hide.
+        player.play(untilMs = 12_000, arrivals = stream(41, voiced = { it > 0 }, lateMs = { if (it == 5 || it == 21) 300 else 0 }))
 
         val snapshot = player.lane.snapshot()
         assertEquals("the second late block was absorbed", 1, snapshot.underruns)
         assertTrue("cushion grew: ${snapshot.cushionMs}", snapshot.cushionMs > PlayoutLane.START_CUSHION_MS)
-        assertEquals("nothing was lost", 10_000, player.voicedMs)
+        // Counted in 20 ms frames, so the frame the speech starts in and the one it ends in round up.
+        assertTrue("nothing was lost: ${player.voicedMs} ms", player.voicedMs in 10_000..10_040)
         assertEquals("exactly one gap", 2, player.spoken.size)
         val gap = player.spoken[1][0] - player.spoken[0][1]
         assertTrue("the gap was $gap ms", gap in 100..260)
+    }
+
+    // Gemini opens every stream with two or three blocks at once.
+    @Test
+    fun `a stream that opens with a burst is heard at once`() {
+        val player = Player()
+        player.arrive(250)
+        player.arrive(250)
+        player.play(untilMs = 1_000, arrivals = mapOf(260L to listOf(250 to true), 500L to listOf(250 to true)))
+
+        assertEquals("no wait for a cushion that is already in hand", 0L, player.firstVoicedAtMs)
+        assertEquals(1, player.spoken.size)
+    }
+
+    // Giving back the surplus a burst left behind used to be charged to the
+    // cushion, which never held it: it read 60 ms with 300 ms queued.
+    @Test
+    fun `the cushion is not paid down for delay it never caused`() {
+        val player = Player()
+        // Three blocks at once, then a minute of a perfect stream that is mostly silence.
+        player.arrive(250)
+        player.arrive(250)
+        player.play(untilMs = 60_000, arrivals = stream(240, voiced = { it < 6 || it % 40 < 4 }))
+
+        val snapshot = player.lane.snapshot()
+        assertEquals(0, snapshot.underruns)
+        assertEquals("nothing was late, so nothing was learnt", PlayoutLane.START_CUSHION_MS, snapshot.cushionMs)
+    }
+
+    // OpenAI may send nothing at all between words. A gap is then a pause in
+    // the speech, and treating each one as a late block only added delay.
+    @Test
+    fun `a provider that sends no silence is not taken for a late network when the speaker pauses`() {
+        val player = Player()
+        // Three seconds of speech with a 400 ms pause after every second block.
+        val arrivals = (0 until 12).associate { i -> (i * 250L + (i / 2) * 400L) / frameMs * frameMs to listOf(250 to true) }
+        player.play(untilMs = 8_000, arrivals = arrivals)
+
+        val snapshot = player.lane.snapshot()
+        assertEquals(0, snapshot.underruns)
+        assertEquals(PlayoutLane.START_CUSHION_MS, snapshot.cushionMs)
+        assertEquals("every word came out", 3_000, player.voicedMs)
+    }
+
+    @Test
+    fun `a cushion grown by a late block is handed back at a later pause`() {
+        val player = Player()
+        // A stream with its own silence; one block 400 ms late.
+        player.play(untilMs = 3_000, arrivals = stream(10, voiced = { it > 0 }, lateMs = { if (it == 4) 400 else 0 }))
+        val grown = player.lane.snapshot().cushionMs
+        assertTrue("grew to $grown ms", grown > 400)
+
+        // Nothing arrives for twenty seconds, then a new sentence.
+        player.play(untilMs = 23_000)
+        player.arrive(250)
+        val settled = player.lane.snapshot().cushionMs
+        assertEquals(PlayoutLane.START_CUSHION_MS + (grown - PlayoutLane.START_CUSHION_MS) / 2, settled)
+    }
+
+    @Test
+    fun `a cushion is not handed back while blocks are still arriving late`() {
+        val player = Player()
+        player.play(untilMs = 3_000, arrivals = stream(10, voiced = { it > 0 }, lateMs = { if (it == 4) 400 else 0 }))
+        val grown = player.lane.snapshot().cushionMs
+
+        // Only two seconds later: too soon to call the network steady.
+        player.play(untilMs = 5_000)
+        player.arrive(250)
+        assertEquals(grown, player.lane.snapshot().cushionMs)
+    }
+
+    // A block of varying length may end half way through a sample.
+    @Test
+    fun `half a sample at the end of one block is joined to the start of the next`() {
+        val lane = PlayoutLane(rate)
+        lane.offer(byteArrayOf(1, 2, 3), voiced = true, nowMs = 0)
+        lane.offer(byteArrayOf(4, 5, 6), voiced = true, nowMs = 0)
+        lane.offer(ByteArray(2_000) { 9 }, voiced = true, nowMs = 0)
+
+        val out = ByteArray(8)
+        assertTrue(lane.pull(out, nowMs = 500))
+        assertEquals(listOf<Byte>(1, 2, 3, 4, 5, 6, 9, 9), out.toList())
     }
 
     // A provider that sends nothing while it has nothing to say.
@@ -118,7 +219,8 @@ class PlayoutLaneTest {
     @Test
     fun `the cushion never grows past its ceiling`() {
         val player = Player()
-        player.play(untilMs = 60_000, arrivals = stream(200, lateMs = { if (it % 4 == 3) 550 else 0 }))
+        player.play(untilMs = 60_000, arrivals = stream(200, voiced = { it > 0 }, lateMs = { if (it % 4 == 3) 550 else 0 }))
+        assertTrue("it did grow", player.lane.snapshot().cushionMs > PlayoutLane.START_CUSHION_MS)
         assertTrue(player.lane.snapshot().cushionMs <= PlayoutLane.MAX_CUSHION_MS)
     }
 
@@ -128,9 +230,10 @@ class PlayoutLaneTest {
         // One very late block early on, then two minutes of a perfect stream that is mostly silence.
         player.play(
             untilMs = 120_000,
-            arrivals = stream(470, voiced = { it < 8 || it % 40 < 4 }, lateMs = { if (it == 3) 420 else 0 }),
+            arrivals = stream(470, voiced = { it in 1..8 || (it >= 40 && it % 40 < 4) }, lateMs = { if (it == 4) 420 else 0 }),
         )
         val snapshot = player.lane.snapshot()
+        assertEquals("the bad moment happened", 1, snapshot.underruns)
         assertTrue("cushion settled back to ${snapshot.cushionMs} ms", snapshot.cushionMs <= PlayoutLane.START_CUSHION_MS)
         assertTrue("and never below the floor", snapshot.cushionMs >= PlayoutLane.MIN_CUSHION_MS)
         assertEquals("speech is never what gets skipped", 0, snapshot.droppedMs)
@@ -194,6 +297,23 @@ class PlayoutLaneTest {
 
         assertEquals(500, player.lane.snapshot().queuedVoicedMs)
         assertEquals(500 + PlayoutLane.HELD_PAUSE_MS, player.lane.snapshot().queuedMs)
+    }
+
+    // The first block to arrive after the release used to delete every pause
+    // between the sentences that had been held.
+    @Test
+    fun `the pauses between held sentences survive what arrives after the release`() {
+        val player = Player()
+        player.lane.setConsecutive(true, 0)
+        // Two sentences with seconds of the model's silence between them.
+        player.play(untilMs = 7_000, arrivals = stream(28, voiced = { it in 0..7 || it in 20..27 }))
+        player.lane.release(player.now)
+        // The stream goes on arriving, silent, while they play.
+        player.play(untilMs = 13_000, arrivals = stream(52, voiced = { false }).filterKeys { it >= 7_000 })
+
+        assertEquals(4_000, player.voicedMs)
+        assertEquals("two sentences, not one run-on", 2, player.spoken.size)
+        assertEquals(PlayoutLane.HELD_PAUSE_MS.toLong(), player.spoken[1][0] - player.spoken[0][1])
     }
 
     @Test

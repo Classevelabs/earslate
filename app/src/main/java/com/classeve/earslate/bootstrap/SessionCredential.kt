@@ -14,6 +14,8 @@ class SessionCredential(
     val model: String,
     val expiresAtMs: Long,
     val safetyIdentifier: String? = null,
+    /** How far the provider's clock is ahead of this phone's; its times are read through this. */
+    val serverAheadMs: Long = 0,
 ) {
     // Not a data class: a generated toString would print the secret.
     override fun toString(): String = "SessionCredential(${provider.wireValue})"
@@ -38,4 +40,6 @@ interface SessionCredentialSource {
 open class BootstrapException(
     message: String,
     cause: Throwable? = null,
+    /** True when asking again may work: the provider was not reached, or said to try later. */
+    val transient: Boolean = false,
 ) : RuntimeException(message, cause)

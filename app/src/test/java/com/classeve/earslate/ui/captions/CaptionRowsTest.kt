@@ -15,11 +15,9 @@ import org.junit.Test
  * reached it. For a user who cannot hear the speaker, that is the product not
  * working.
  *
- * These pin the arithmetic. They do **not** prove that Compose scrolls: this
- * module has no Compose test infrastructure, so the plumbing between these
- * functions and `LazyListState` is verified by reading, not by running. What
- * they do prove is that the index the view aims at is the last row the view
- * actually emits — which is the part that was wrong.
+ * These pin the arithmetic: the index the view aims at is the last row the
+ * view actually emits, which is the part that was wrong. Whether the list then
+ * goes there, on a real screen, is `CaptionsOnDeviceTest`'s to prove.
  */
 class CaptionRowsTest {
 
@@ -75,7 +73,6 @@ class CaptionRowsTest {
 
         assertEquals(1, rows.size)
         assertEquals(0, captionScrollTarget(rows))
-        assertTrue(shouldFollowCaptions(lastVisibleIndex = -1, targetIndex = 0))
     }
 
     /**
@@ -99,29 +96,49 @@ class CaptionRowsTest {
 
         assertEquals(0, rows.size)
         assertEquals(-1, captionScrollTarget(rows))
-        assertFalse(shouldFollowCaptions(lastVisibleIndex = -1, targetIndex = -1))
     }
 
     @Test
-    fun `a reader who has scrolled up is not dragged back down`() {
-        // 40 rows, the reader is looking at row 12. Captions keep arriving.
-        assertFalse(shouldFollowCaptions(lastVisibleIndex = 12, targetIndex = 39))
+    fun `a new list follows`() {
+        assertTrue(CaptionFollow().following)
+    }
+
+    // Whether the list was following used to be read off where it had got to.
+    // Two captions before it finished moving, and it never moved again.
+    @Test
+    fun `captions arriving faster than the list can scroll never stop it following`() {
+        val follow = CaptionFollow()
+        // It sets off, is overtaken by the next caption, and stops short of the end. Again and again.
+        repeat(5) { follow.cameToRest(atEnd = false) }
+        assertTrue(follow.following)
     }
 
     @Test
-    fun `a view already at the end keeps following`() {
-        // The new row has just been added, so the last row LAID OUT is still
-        // the previous one: one index behind the target.
-        assertTrue(shouldFollowCaptions(lastVisibleIndex = 38, targetIndex = 39))
-        // And when only the live row's text grew, the count did not move.
-        assertTrue(shouldFollowCaptions(lastVisibleIndex = 39, targetIndex = 39))
+    fun `a reader who has moved the list is not dragged back to the end`() {
+        val follow = CaptionFollow()
+        follow.takenHold()
+        assertFalse("not even while the finger is still down", follow.following)
+        follow.cameToRest(atEnd = false)
+        assertFalse(follow.following)
     }
 
     @Test
-    fun `a list that has not been laid out yet follows`() {
-        // First composition, or coming back to the screen with a transcript
-        // already in the store: without this the panel opens at the top.
-        assertTrue(shouldFollowCaptions(lastVisibleIndex = -1, targetIndex = 30))
+    fun `a reader who goes back to the end is followed again`() {
+        val follow = CaptionFollow()
+        follow.takenHold()
+        follow.cameToRest(atEnd = false)
+        follow.takenHold()
+        follow.cameToRest(atEnd = true)
+        assertTrue(follow.following)
+    }
+
+    // The list adds the offset to the row's position. Int.MAX_VALUE went in
+    // here once, and the sum wrapped round to a place above the top.
+    @Test
+    fun `the end of a row is reached by an offset no larger than the row`() {
+        assertEquals("a row that fits is shown whole", 0, captionEndOffset(rowHeight = 120, panelHeight = 880))
+        assertEquals("a row not laid out yet", 0, captionEndOffset(rowHeight = null, panelHeight = 880))
+        assertEquals("a line taller than the panel is entered by what does not fit", 320, captionEndOffset(rowHeight = 1_200, panelHeight = 880))
     }
 
     // Two people speaking close together each have a line in progress.

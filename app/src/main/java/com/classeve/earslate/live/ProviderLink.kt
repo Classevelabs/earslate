@@ -44,20 +44,32 @@ class ProviderLink(
 
         val early = ArrayList<LiveEvent>()
         var notice: String? = null
-        val acknowledged = withTimeoutOrNull(SETUP_TIMEOUT_MS) {
-            for (frame in socket.frames) {
-                val events = protocol.parse(frame)
+
+        suspend fun acknowledged(): Boolean {
+            while (true) {
+                // An error in answer to the setup means no acknowledgement is
+                // coming, so the wait for one is cut short.
+                val next = if (notice == null) {
+                    socket.frames.receiveCatching()
+                } else {
+                    withTimeoutOrNull(AFTER_NOTICE_MS) { socket.frames.receiveCatching() } ?: return false
+                }
+                val events = protocol.parse(next.getOrNull() ?: return false)
                 for (event in events) {
                     if (event is LiveEvent.ProviderNotice) notice = event.message
                     if (event !is LiveEvent.SetupComplete) early += event
                 }
-                if (events.any { it is LiveEvent.SetupComplete }) return@withTimeoutOrNull true
+                if (events.any { it is LiveEvent.SetupComplete }) return true
             }
-            false
         }
-        return when (acknowledged) {
+
+        return when (withTimeoutOrNull(SETUP_TIMEOUT_MS) { acknowledged() }) {
             true -> early
-            false -> throw refused(notice)
+            false -> {
+                val failure = refused(notice)
+                socket.close()
+                throw failure
+            }
             null -> {
                 socket.close()
                 // A refusal the provider explained beats "did not become ready".
@@ -75,6 +87,15 @@ class ProviderLink(
         return true
     }
 
+    /**
+     * Asks the provider to finish what it is saying and close.
+     * @return false when this provider has no such request, and can just be closed.
+     */
+    fun sayGoodbye(): Boolean {
+        val frame = protocol.gracefulCloseFrame() ?: return false
+        return socket.sendText(frame)
+    }
+
     fun close() {
         protocol.gracefulCloseFrame()?.let { socket.sendText(it) }
         socket.close()
@@ -89,6 +110,7 @@ class ProviderLink(
         // A busy provider can take several seconds to acknowledge. Giving up
         // early only starts the same wait again on a new socket.
         private const val SETUP_TIMEOUT_MS = 20_000L
+        private const val AFTER_NOTICE_MS = 2_000L
     }
 }
 
@@ -117,6 +139,8 @@ fun SocketClosure?.failure(provider: String, notice: String?): LinkFailure {
         )
         null -> reason?.let { LinkFailure("$provider ended the session. $provider said: $it", providerSpoke = true) }
             ?: LinkFailure("The connection to $provider was lost.", providerSpoke = false)
+        // A provider in trouble is worth another attempt; a refusal is not.
+        in 500..599 -> LinkFailure("$provider is having trouble right now.", providerSpoke = false)
         else -> LinkFailure(
             "$provider refused the connection (HTTP $httpStatus)." + reason?.let { " $provider said: $it" }.orEmpty(),
             providerSpoke = true,

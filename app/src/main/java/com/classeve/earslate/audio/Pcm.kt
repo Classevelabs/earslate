@@ -5,6 +5,19 @@ import kotlin.math.log10
 /** Measurements on PCM16 little-endian mono audio. */
 object Pcm {
 
+    /** Two interleaved channels of PCM16 as one. */
+    fun mono(stereo: ByteArray): ByteArray {
+        val out = ByteArray(stereo.size / 4 * 2)
+        for (i in 0 until out.size / 2) {
+            val left = (stereo[i * 4 + 1].toInt() shl 8) or (stereo[i * 4].toInt() and 0xff)
+            val right = (stereo[i * 4 + 3].toInt() shl 8) or (stereo[i * 4 + 2].toInt() and 0xff)
+            val mixed = (left + right) / 2
+            out[i * 2] = (mixed and 0xff).toByte()
+            out[i * 2 + 1] = ((mixed shr 8) and 0xff).toByte()
+        }
+        return out
+    }
+
     // The model's own silence is zero PCM with the odd stray bit; real speech
     // peaks in the thousands.
     private const val SILENCE_PEAK = 48

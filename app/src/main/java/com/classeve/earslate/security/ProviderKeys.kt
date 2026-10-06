@@ -54,7 +54,7 @@ enum class KeyProvider(
      * to live verification, because the provider decides, not us.
      */
     fun rejectionReason(candidate: String): String? {
-        val key = candidate.trim()
+        val key = tidy(candidate)
         return when {
             key.isEmpty() ->
                 "Paste your $displayName key first — it's the value $consoleName showed you."
@@ -69,6 +69,9 @@ enum class KeyProvider(
             key.any { it.isWhitespace() } ->
                 "That key has a space or line break in it. Copy it again without the surrounding text."
 
+            key.any { it !in '!'..'~' } ->
+                "That key has a character in it that no key contains. Copy only the key, without quotes or other text."
+
             // Nothing real is this short. Anything longer goes to the provider.
             key.length < 8 ->
                 "That looks too short to be a key. Copy the whole value from $consoleName."
@@ -80,6 +83,15 @@ enum class KeyProvider(
     fun isPlausible(candidate: String): Boolean = rejectionReason(candidate) == null
 
     companion object {
+        /**
+         * [candidate] without what a copy can add and nobody can see: the
+         * space around it, and marks such as a zero-width space inside it.
+         */
+        fun tidy(candidate: String): String = candidate.trim().filterNot {
+            val type = Character.getType(it).toByte()
+            type == Character.FORMAT || type == Character.CONTROL
+        }
+
         fun forProvider(provider: TranslationProvider): KeyProvider =
             entries.first { it.provider == provider }
     }
@@ -131,7 +143,7 @@ class ProviderKeyStore(private val vault: SecretStore) {
     fun has(of: KeyProvider): Boolean = vault.contains(of.vaultEntry)
 
     fun save(of: KeyProvider, key: String) {
-        vault.put(of.vaultEntry, key.trim())
+        vault.put(of.vaultEntry, KeyProvider.tidy(key))
     }
 
     fun forget(of: KeyProvider) {

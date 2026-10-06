@@ -1,10 +1,10 @@
 package com.classeve.earslate.live
 
+import com.classeve.earslate.audio.Pcm
 import com.classeve.earslate.bootstrap.SessionCredential
 import com.classeve.earslate.session.TranslationProvider
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
@@ -49,23 +49,25 @@ internal object OpenAiTranslationProtocol : TranslationLiveProtocol {
     }
 
     override fun setupFrame(credential: SessionCredential, targetWireLanguage: String): String =
-        sessionUpdate {
-            put("input", buildJsonObject {
-                // The source transcript is how the app learns whose voice it heard.
-                put("transcription", buildJsonObject { put("model", INPUT_TRANSCRIPTION_MODEL) })
-                // A phone between two people is a far-field microphone.
-                put("noise_reduction", buildJsonObject { put("type", "far_field") })
-            })
-            put("output", buildJsonObject { put("language", targetWireLanguage) })
-        }
+        sessionUpdate(targetWireLanguage)
 
-    override fun retargetFrame(targetWireLanguage: String): String = sessionUpdate {
-        put("output", buildJsonObject { put("language", targetWireLanguage) })
-    }
+    // The whole configuration again, as OpenAI's own clients send it: nothing
+    // says a setting left out of an update is kept.
+    override fun retargetFrame(targetWireLanguage: String): String = sessionUpdate(targetWireLanguage)
 
-    private fun sessionUpdate(audio: JsonObjectBuilder.() -> Unit): String = buildJsonObject {
+    private fun sessionUpdate(targetWireLanguage: String): String = buildJsonObject {
         put("type", "session.update")
-        put("session", buildJsonObject { put("audio", buildJsonObject(audio)) })
+        put("session", buildJsonObject {
+            put("audio", buildJsonObject {
+                put("input", buildJsonObject {
+                    // The source transcript is how the app learns whose voice it heard.
+                    put("transcription", buildJsonObject { put("model", INPUT_TRANSCRIPTION_MODEL) })
+                    // A phone between two people is a far-field microphone.
+                    put("noise_reduction", buildJsonObject { put("type", "far_field") })
+                })
+                put("output", buildJsonObject { put("language", targetWireLanguage) })
+            })
+        })
     }.toString()
 
     override fun audioFrame(pcm: ByteArray): String = buildJsonObject {
@@ -92,7 +94,8 @@ internal object OpenAiTranslationProtocol : TranslationLiveProtocol {
                     ?: return emptyList()
                 val rate = runCatching { event["sample_rate"]?.jsonPrimitive?.intOrNull }.getOrNull()
                     ?: OUTPUT_RATE_HZ
-                listOf(LiveEvent.AudioChunk(pcm, rate))
+                val channels = runCatching { event["channels"]?.jsonPrimitive?.intOrNull }.getOrNull() ?: 1
+                listOf(LiveEvent.AudioChunk(if (channels == 2) Pcm.mono(pcm) else pcm, rate))
             }
 
             // Deltas are append-only, so one that is only a space is kept.

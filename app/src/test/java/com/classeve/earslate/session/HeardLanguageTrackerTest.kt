@@ -70,6 +70,25 @@ class HeardLanguageTrackerTest {
         assertEquals(Heard.Them("hi", changed = true), t.report("hi"))
     }
 
+    // What the translate model reported on 2026-10-06 for speech in each of these.
+    @Test
+    fun `a language is itself under the name the model gives it`() {
+        assertTrue("Norwegian", HeardLanguageTracker.sameLanguage("no", "nb-NO"))
+        assertTrue("Filipino", HeardLanguageTracker.sameLanguage("tl", "fil-PH"))
+        assertTrue("Malay, which the model hears as Indonesian", HeardLanguageTracker.sameLanguage("id", "ms-MY"))
+        assertTrue(HeardLanguageTracker.sameLanguage("nb-NO", "no"))
+        assertFalse("Swedish is not Norwegian", HeardLanguageTracker.sameLanguage("sv", "nb-NO"))
+        assertFalse("Danish is not Norwegian", HeardLanguageTracker.sameLanguage("da", "nb-NO"))
+        assertFalse(HeardLanguageTracker.sameLanguage("tl", "id-ID"))
+    }
+
+    @Test
+    fun `a Norwegian speaker is not taken for the other person`() {
+        val tracker = HeardLanguageTracker(myLanguage = "nb-NO", initialTheirs = "en-US")
+        assertEquals(HeardLanguageTracker.Heard.Me, tracker.report("no"))
+        assertEquals("en-US", tracker.current)
+    }
+
     @Test
     fun `language comparison ignores region and case, and nothing matches an empty tag`() {
         assertTrue(HeardLanguageTracker.sameLanguage("es", "es-ES"))
@@ -86,6 +105,27 @@ class RecentWordsTest {
         val words = RecentWords()
         assertNull(words.observe("que"))
         assertEquals("es-ES", words.observe(" no está con nosotros porque"))
+    }
+
+    // "Clients should not insert unconditional spaces between deltas."
+    @Test
+    fun `a word cut across two fragments is one word`() {
+        val words = RecentWords()
+        words.observe("que no est")
+        // "es" and "ta" on their own would be two stray words, and "es" is Spanish for "is".
+        assertEquals("es-ES", words.observe("á con noso"))
+        assertEquals("es-ES", words.observe("tros porque"))
+
+        val english = RecentWords()
+        english.observe("yes th")
+        english.observe("at is wh")
+        assertEquals("en-US", english.observe("at they have and there was"))
+
+        // With a space put between the pieces this is "th e an d": no words at all.
+        val pieces = RecentWords()
+        pieces.observe("th")
+        pieces.observe("e an")
+        assertEquals("en-US", pieces.observe("d"))
     }
 
     @Test

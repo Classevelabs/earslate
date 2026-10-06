@@ -102,9 +102,13 @@ class OkHttpLiveSocketClient(
     override fun close(code: Int, reason: String) {
         val s = socket ?: return
         closedByClient = true
-        if (_state.value == LiveSocketState.OPEN || _state.value == LiveSocketState.CONNECTING) {
-            _state.value = LiveSocketState.CLOSING
+        // Before the handshake finishes there is nothing to say goodbye to,
+        // and a polite close would wait on a connection that may never answer.
+        if (_state.value == LiveSocketState.CONNECTING) {
+            s.cancel()
+            return
         }
+        if (_state.value == LiveSocketState.OPEN) _state.value = LiveSocketState.CLOSING
         s.close(code, reason)
     }
 
@@ -172,8 +176,10 @@ class OkHttpLiveSocketClient(
         /** The client every live socket and credential request shares. */
         fun newHttpClient(): OkHttpClient = OkHttpClient.Builder()
             .pingInterval(PING_INTERVAL_SECONDS, TimeUnit.SECONDS)
-            // A provider with nothing to say is silent for as long as the room is.
-            .readTimeout(0, TimeUnit.MILLISECONDS)
+            // For the handshake only: an open socket is never timed out by the
+            // library, and a provider with nothing to say is silent as long as
+            // the room is. Twice the ping, so a pong always arrives inside it.
+            .readTimeout(2 * PING_INTERVAL_SECONDS, TimeUnit.SECONDS)
             .socketFactory(ImmediateSockets)
             .build()
     }

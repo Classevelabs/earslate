@@ -178,12 +178,11 @@ class ConversationEngine(
         hearing(legId, leg, if (sameLanguage(language, myLanguage)) Speaker.ME else Speaker.THEM, nowMs)
 
         // One leg's hearing is enough to follow their language; two would
-        // count every fragment as its own second opinion.
-        if (leg.role != LegRole.INBOUND) return
+        // count every fragment as its own second opinion. A language fixed by
+        // hand is not followed at all, or it would drift while it looked fixed.
+        if (leg.role != LegRole.INBOUND || !followsTheirLanguage) return
         val verdict = following.report(language)
-        if (verdict is HeardLanguageTracker.Heard.Them && verdict.changed && followsTheirLanguage) {
-            sink.theirLanguageHeard(verdict.language)
-        }
+        if (verdict is HeardLanguageTracker.Heard.Them && verdict.changed) sink.theirLanguageHeard(verdict.language)
     }
 
     private fun hearing(legId: Int, leg: Leg, next: Speaker, nowMs: Long) {
@@ -209,17 +208,17 @@ class ConversationEngine(
 
     /**
      * Ends what the audio alone cannot: an utterance from a provider that sends
-     * nothing while silent. One that sends silence is left to say so itself —
-     * a gap in its arrivals is the network, not the end of a sentence.
+     * nothing while silent. One that sends silence is given far longer — a gap
+     * in its arrivals is usually the network, not the end of a sentence — but
+     * not for ever, or one that stopped sending it would never finish.
      */
     fun onTick(nowMs: Long) {
         for ((id, leg) in legs.entries.toList()) {
             val run = leg.run
             if (run != null) {
                 val quietFor = nowMs - run.lastVoicedAtMs
-                if (!leg.sendsSilence && quietFor >= RUN_END_MS + ARRIVAL_SLACK_MS ||
-                    (run.stale && nowMs >= run.staleUntilMs && quietFor >= STALE_RUN_END_MS)
-                ) {
+                val limit = if (leg.sendsSilence) STALLED_RUN_END_MS else (RUN_END_MS + ARRIVAL_SLACK_MS).toLong()
+                if (quietFor >= limit || (run.stale && nowMs >= run.staleUntilMs && quietFor >= STALE_RUN_END_MS)) {
                     end(id, leg)
                 }
             } else if (leg.staged.isNotEmpty() && nowMs - leg.stagedAtMs >= STAGED_TEXT_TTL_MS) {
@@ -252,6 +251,9 @@ class ConversationEngine(
         const val STALE_RUN_MAX_MS = 1_500L
 
         private const val ARRIVAL_SLACK_MS = 300
+
+        /** Longer than any stall a living connection has shown; the ping gives up on a dead one soon after. */
+        const val STALLED_RUN_END_MS = 5_000L
         private const val STAGED_TEXT_TTL_MS = 2_500L
         private const val INPUT_IDLE_MS = 1_500L
 

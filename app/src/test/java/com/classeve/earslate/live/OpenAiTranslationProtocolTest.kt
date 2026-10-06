@@ -2,6 +2,7 @@ package com.classeve.earslate.live
 
 import com.classeve.earslate.bootstrap.SessionCredential
 import com.classeve.earslate.session.TranslationProvider
+import com.classeve.earslate.testing.TestAudio
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -46,14 +47,21 @@ class OpenAiTranslationProtocolTest {
         assertFalse(JSONObject(protocol.setupFrame(credential, "es")).getJSONObject("session").has("model"))
     }
 
+    // Nothing in the reference says a setting left out of an update is kept,
+    // and OpenAI's own clients send the whole configuration every time.
     @Test
-    fun `a running session is re-aimed with one message`() {
+    fun `a running session is re-aimed by sending its whole configuration again`() {
         assertTrue(protocol.retargetsInPlace)
         val frame = JSONObject(protocol.retargetFrame("fr"))
         assertEquals("session.update", frame.getString("type"))
         val audio = frame.getJSONObject("session").getJSONObject("audio")
         assertEquals("fr", audio.getJSONObject("output").getString("language"))
-        assertFalse("re-aiming must not touch the input settings", audio.has("input"))
+        assertEquals(
+            "a change of language must not switch the source transcript off",
+            "gpt-realtime-whisper",
+            audio.getJSONObject("input").getJSONObject("transcription").getString("model"),
+        )
+        assertEquals("far_field", audio.getJSONObject("input").getJSONObject("noise_reduction").getString("type"))
     }
 
     @Test
@@ -115,6 +123,17 @@ class OpenAiTranslationProtocolTest {
 
         val bare = protocol.parse("""{"type":"session.output_audio.delta","delta":"$encoded"}""").single() as LiveEvent.AudioChunk
         assertEquals(24_000, bare.sampleRateHz)
+    }
+
+    @Test
+    fun `two channels are mixed down to the one the app plays`() {
+        // Left and right, twice over.
+        val stereo = TestAudio.samples(1_000, 3_000, -2_000, -4_000)
+        val encoded = Base64.getEncoder().encodeToString(stereo)
+        val chunk = protocol.parse(
+            """{"type":"session.output_audio.delta","delta":"$encoded","sample_rate":24000,"channels":2}""",
+        ).single() as LiveEvent.AudioChunk
+        assertTrue(TestAudio.samples(2_000, -3_000).contentEquals(chunk.pcm))
     }
 
     // "Clients should not insert unconditional spaces between deltas."

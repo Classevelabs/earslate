@@ -63,14 +63,18 @@ missing.
 ## Each direction plays on a continuous lane of its own
 
 **Decision.** Each session's audio goes to its own `PlayoutLane` and its own
-audio track, and the phone mixes them. A lane starts with 160 ms in hand,
-grows that cushion only when a block arrives too late to play, and gives the
-delay back by shortening silence after a clean run.
+audio track, and the phone mixes them. A lane starts with 160 ms in hand and
+grows that cushion only when a block arrives too late to play. It gives the
+delay back after fifteen clean seconds: by shortening silence while the stream
+runs, and by half of what it grew at the next pause. A stream that opens with
+more than the cushion already in hand is played at once.
 
 **Symptom.** The buffer this replaced treated the stream as bursts that begin
 and end. On a stream that never ends it waited for a second block before
 playing the first and its delay only grew. Two directions sharing one queue
-meant whichever spoke first owned the loudspeaker.
+meant whichever spoke first owned the loudspeaker. A connection's first audio
+often arrives as two or three blocks together (measured 2026-10-06), and
+waiting out the cushion on top of that added delay for nothing.
 
 **Verified against.** `PlayoutLaneTest`, including a recorded 50-second
 session, and `AudioTeardownTest` on a device.
@@ -83,17 +87,24 @@ longer the conversation runs.
 **Decision.** When the translation comes out of a loudspeaker the microphone
 can hear, `FloorControl` holds it until the person pauses, plays it in one
 piece, and sends the provider silence only while it plays. In earbuds nothing
-is held and the microphone never closes.
+is held and the microphone never closes. `PlayoutDeck` keeps every lane and
+the state of the floor together, so a direction that first speaks while the
+phone is already talking is let through with the rest. In a room that never
+sounds quiet, the translation is spoken once no more of it has arrived for
+four seconds.
 
 **Symptom.** The model starts speaking a few seconds into a sentence. The old
 gate closed the microphone whenever the phone spoke, so half of what a person
 said was never sent: in one recording 9.7 of 19.4 seconds were dropped, and
-the model translated the fragments it had left.
+the model translated the fragments it had left. A lane made while the phone
+was talking was made held and never released: nothing came out of it, the
+phone never finished its turn, and the microphone stayed closed.
 
-**Verified against.** `FloorControlTest` and `SessionCoordinatorTest`.
+**Verified against.** `FloorControlTest`, `PlayoutDeckTest`, and
+`SessionCoordinatorTest` on real lanes.
 
-**If regressed.** On speaker, the translation is of half-heard sentences, or
-the phone translates its own voice.
+**If regressed.** On speaker, the translation is of half-heard sentences, the
+phone translates its own voice, or it goes silent and stops listening.
 
 ## One credential opens every connection in a conversation
 
@@ -114,19 +125,43 @@ with captions on a fresh install could not connect.
 **If regressed.** Starting takes seconds longer, and a reconnect can fail on
 a spent credential.
 
+## A credential's life is counted on the provider's clock
+
+**Decision.** Every reply from a provider carries the provider's time.
+`ProviderSessionMinter` works out how far the phone's clock is from it, asks
+for a credential that ends thirty minutes from now by the provider's clock,
+and asks once more when the first reply shows the phone was more than two
+minutes out. The time a provider gives for a credential's end is read against
+the provider's clock, never the phone's.
+
+**Symptom.** Google gives out a credential whose end is already in the past
+without complaint, and refuses one that ends more than twenty hours ahead
+(observed 2026-10-06). A phone whose clock ran slow was given a credential
+that could open nothing, and one whose clock ran a day fast was refused.
+
+**Verified against.** `ProviderSessionMinterTest` and `SessionCoordinatorTest`.
+
+**If regressed.** On a phone with the wrong time the app cannot connect.
+
 ## A connection is replaced before the provider closes it
 
 **Decision.** Gemini warns about fifty seconds before it closes a connection,
 a little under ten minutes after it opened. On that warning
 `SessionCoordinator` opens the replacement, moves the microphone across at a
-pause, and lets the old connection finish its sentence before closing it.
+pause, and lets the old connection finish its sentence before closing it. The
+old connection is sent silence until then. A replacement that will not open is
+tried again, and one that died while it waited is never put to use.
 
 **Symptom.** Every conversation stopped at ten minutes and started again from
-nothing: seconds of silence, and the other person's language forgotten.
+nothing: seconds of silence, and the other person's language forgotten. A
+connection that is simply sent nothing more never says its last word: three
+rounds out of three against Gemini on 2026-10-06.
 
-**Verified against.** `SessionCoordinatorTest`.
+**Verified against.** `SessionCoordinatorTest`, and the ten-minute run in
+`LiveGeminiSessionTest` against Gemini.
 
-**If regressed.** A long conversation breaks off every ten minutes.
+**If regressed.** A long conversation breaks off every ten minutes, or loses
+the end of a sentence each time.
 
 ## Silence from the provider is not a dead connection
 
@@ -179,6 +214,115 @@ credential it does not accept, were observed on 2026-10-06; a whole session
 has not been run against OpenAI's service.
 
 **If regressed.** A working key that appears not to work.
+
+## One language can go by two names
+
+**Decision.** Two language codes are the same language when their first parts
+match, and `no`/`nb`, `tl`/`fil` and `ms`/`id` are one language each
+(`HeardLanguageTracker.sameLanguage`). The pickers, the first-run default and
+the provider's own reports all go through that one comparison.
+
+**Symptom.** The translate model reports Norwegian as `no` and Filipino as
+`tl`, and hears Malay as Indonesian, while the pickers say `nb`, `fil` and
+`ms`. Every language in the pickers was spoken to it on 2026-10-06, and all
+but these three came back under the picker's code. The app took a Norwegian or
+Malay speaker for the other person: in the recordings, everything they said
+was played back to them, 10.5 of 10.5 seconds and 16 of 16, and a Filipino
+speaker's sentences were not translated for the other person at all. A Finnish
+phone, `fi`, was matched against `fil` on first run and started in Filipino.
+
+**Verified against.** `RecordedConversationTest` over the three recordings,
+`HeardLanguageTrackerTest`, `TargetLanguageTest` and `SettingsRepositoryTest`.
+
+**If regressed.** People who speak those languages hear themselves repeated
+and are not translated.
+
+## What is wrong but still running is said, and tried again
+
+**Decision.** A direction that cannot be set up, or a language the provider
+cannot speak, is shown as a notice on the screen while everything else keeps
+running. `SessionCoordinator.sync` compares what the person asked for with
+what each connection was last told, tries again for as long as the session
+lasts, and takes the notice away when it succeeds. Only what stops the session
+is an error.
+
+**Symptom.** A change of language that failed once was never tried again and
+nothing said so. A change made while the app was still connecting, or just
+before a reconnect, was lost. The person went on speaking and the other heard
+nothing.
+
+**Verified against.** `SessionCoordinatorTest`.
+
+**If regressed.** A conversation that looks live and translates in one
+direction only.
+
+## A reconnect is given up only when the provider says no
+
+**Decision.** While a session is being brought back, a failure to reach the
+provider is one more attempt, not the end. The session ends when a provider
+refuses the key, or after six attempts in a row.
+
+**Symptom.** A phone that lost its network was told the session was over on
+the first attempt that could not reach the provider, although the attempts
+that remained would have found the network back.
+
+**Verified against.** `SessionCoordinatorTest` and
+`ProviderSessionMinterTest`.
+
+**If regressed.** Any short gap in the network ends the conversation.
+
+## A pasted key is cleaned before it is used
+
+**Decision.** `KeyProvider.tidy` removes the spaces and invisible characters a
+copy can pick up, and a key that still holds a character no key contains is
+refused before it reaches the network library.
+
+**Symptom.** A key copied with an invisible character in it made the network
+library throw while building the request. The app stopped, and the library's
+message quoted the key.
+
+**Verified against.** `KeyProviderTest` and `ProviderSessionMinterTest`.
+
+**If regressed.** The app closes on a pasted key, and the key appears in an
+error.
+
+## Settings made in 0.5.3 are still read
+
+**Decision.** `SettingsRepository` reads the pair of languages 0.5.3 saved
+under its own names, and stops reading them once the person chooses again.
+
+**Symptom.** 0.5.3 kept "their language" and "fixed by hand" under names the
+new settings do not use. An update would have put a pair chosen by hand back
+to following, without a word.
+
+**Verified against.** `SettingsRepositoryTest`, and the 0.6.0 build installed
+over a set-up 0.5.3 on an emulator: the languages, the provider and both saved
+keys were still there, and the saved key could still be read.
+
+**If regressed.** After updating, the app translates into a language the
+person did not choose.
+
+## The newest caption stays on the screen until a hand moves it
+
+**Decision.** The captions list keeps to its newest row, and while a session
+runs the page keeps its foot, where the captions stand, in view. Each stops
+when a finger drags it away and starts again when it comes to rest at its
+end. Whether it is following is a fact that is kept (`CaptionFollow`), never
+worked out from where the list happens to be.
+
+**Symptom.** Whether to follow was read off the list's position each time a
+caption arrived. Two captions arriving before the list had finished moving to
+the first left it short of the end, which looked like somebody having
+scrolled up, and it never moved again: on a device, forty lines in, the list
+still showed the first six. The panel also stands at the foot of a page
+taller than the screen, so its newest lines were below the screen's edge even
+when the list had followed.
+
+**Verified against.** `CaptionRowsTest`, and `CaptionsOnDeviceTest` on a
+device.
+
+**If regressed.** The captions stop at some line and the conversation goes on
+unseen below it.
 
 ## The APK and the AAB carry different certificates
 

@@ -66,6 +66,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -90,6 +91,7 @@ import com.classeve.earslate.session.TargetLanguage
 import com.classeve.earslate.session.isActive
 import com.classeve.earslate.settings.OnboardingPrefs
 import com.classeve.earslate.ui.captions.CaptionsView
+import com.classeve.earslate.ui.captions.keepsToItsEnd
 import com.classeve.earslate.ui.components.ErrorBanner
 import com.classeve.earslate.ui.help.HelpScreen
 import com.classeve.earslate.security.KeyProvider
@@ -105,6 +107,7 @@ import com.classeve.earslate.ui.theme.MotionFastMs
 import com.classeve.earslate.ui.theme.PreciseEasing
 import com.classeve.earslate.ui.theme.rememberReducedMotion
 import com.classeve.earslate.service.NotificationControlService
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -601,9 +604,19 @@ private fun MainScreen(
     val captionLines by EarslateRuntime.captionsStore.lines.collectAsState()
     val captionPending by EarslateRuntime.captionsStore.pending.collectAsState()
     val lastError by EarslateRuntime.stateStore.lastError.collectAsState()
+    val notice by EarslateRuntime.stateStore.notice.collectAsState()
     val heard by EarslateRuntime.stateStore.heardLanguage.collectAsState()
     val heardPinned by EarslateRuntime.stateStore.theirLanguagePinned.collectAsState()
     var showCorrection by remember { mutableStateOf(false) }
+
+    // The captions stand at the foot of the page, and as they fill, the foot
+    // moves below the screen. While a session runs the page keeps it in view.
+    val page = rememberScrollState()
+    val pageFollows = keepsToItsEnd(page, page.interactionSource, since = state.isActive)
+    LaunchedEffect(state.isActive, pageFollows) {
+        if (!state.isActive || !pageFollows) return@LaunchedEffect
+        snapshotFlow { page.maxValue }.collectLatest { foot -> page.animateScrollTo(foot) }
+    }
 
     if (showCorrection) {
         LanguagePickerDialog(
@@ -629,7 +642,7 @@ private fun MainScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(page)
                 .padding(horizontal = 24.dp, vertical = 40.dp),
             horizontalAlignment = Alignment.Start,
             verticalArrangement = Arrangement.spacedBy(24.dp),
@@ -662,7 +675,18 @@ private fun MainScreen(
                 enter = expandVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeIn(tween(MotionBaseMs)),
                 exit = shrinkVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeOut(tween(MotionBaseMs)),
             ) {
-                SpeakerTurnsNotice()
+                NoticePlate(stringResource(R.string.route_speaker_turns))
+            }
+
+            AnimatedVisibility(
+                visible = state.isActive && notice != null,
+                enter = expandVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeIn(tween(MotionBaseMs)),
+                exit = shrinkVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeOut(tween(MotionBaseMs)),
+            ) {
+                // Kept while it fades out, so the plate does not empty before it goes.
+                val shown = remember { mutableStateOf("") }
+                notice?.let { shown.value = it }
+                NoticePlate(shown.value)
             }
 
             // Not a control — a readout. There is nothing to pick here any
@@ -1088,8 +1112,8 @@ private fun RoutePill(route: AudioRoute) {
 }
 
 @Composable
-private fun SpeakerTurnsNotice() {
-    // Speaker notice — flat bg-elev-1 plate, no border.
+private fun NoticePlate(text: String) {
+    // Flat bg-elev-1 plate, no border.
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1107,7 +1131,7 @@ private fun SpeakerTurnsNotice() {
                 .background(color = EarslateTheme.colors.ember, shape = CircleShape),
         )
         Text(
-            text = stringResource(R.string.route_speaker_turns),
+            text = text,
             style = EarslateTheme.textStyles.body,
             color = EarslateTheme.colors.textSecondary,
         )

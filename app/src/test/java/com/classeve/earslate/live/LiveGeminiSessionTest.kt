@@ -1,20 +1,26 @@
 package com.classeve.earslate.live
 
+import com.classeve.earslate.audio.AudioPlaybackEngine
 import com.classeve.earslate.audio.AudioRoute
 import com.classeve.earslate.bootstrap.LocalKeyBootstrapRepository
 import com.classeve.earslate.bootstrap.ProviderSessionMinter
+import com.classeve.earslate.security.KeyProvider
 import com.classeve.earslate.security.ProviderKeyStore
 import com.classeve.earslate.security.SecretStore
+import com.classeve.earslate.session.HeardLanguageTracker
 import com.classeve.earslate.session.RuntimeState
 import com.classeve.earslate.session.RuntimeStateStore
 import com.classeve.earslate.session.SessionCoordinator
+import com.classeve.earslate.session.SupportedLanguages
 import com.classeve.earslate.session.TargetLanguage
 import com.classeve.earslate.session.TranslatorPolicy
 import com.classeve.earslate.testing.FakeCapture
 import com.classeve.earslate.testing.FakeFocus
 import com.classeve.earslate.testing.FakePlayback
+import com.classeve.earslate.testing.LanePlayback
 import com.classeve.earslate.ui.captions.CaptionsStore
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.runBlocking
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -58,6 +64,11 @@ class LiveGeminiSessionTest {
 
     private companion object {
         val TTS_MODELS = listOf("gemini-3.8-flash-tts", "gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts")
+
+        // A phone's own output path, and the room, between them. EARSLATE_LIVE_ECHO_MS
+        // tries another: it is how far that can stretch before the phone hears itself.
+        val ECHO_DELAY_MS = System.getenv("EARSLATE_LIVE_ECHO_MS")?.toIntOrNull() ?: 150
+        const val KEPT_BYTES = 2_000 * 32
     }
 
     /** Passes a socket through untouched, noting what the model said it heard and said. */
@@ -71,7 +82,10 @@ class LiveGeminiSessionTest {
                     for (frame in socket.frames) {
                         for (event in GeminiTranslationProtocol.parse(frame)) {
                             when (event) {
-                                is LiveEvent.SourceTranscript -> if (event.text.isNotBlank()) trace += "${now()} #$index heard[${event.languageCode}] ${event.text}"
+                                is LiveEvent.SourceTranscript -> if (event.text.isNotBlank()) {
+                                    trace += "${now()} #$index heard[${event.languageCode}] ${event.text}"
+                                    sources += Source(now(), event.languageCode.orEmpty(), event.text)
+                                }
                                 is LiveEvent.CaptionDelta -> trace += "${now()} #$index said ${event.text}"
                                 is LiveEvent.GoAway -> trace += "${now()} #$index goAway ${event.timeLeftMs}"
                                 else -> Unit
@@ -87,6 +101,42 @@ class LiveGeminiSessionTest {
 
     private val trace = CopyOnWriteArrayList<String>()
 
+    /** Something a provider said it heard through the microphone. */
+    private class Source(val atMs: Long, val language: String, val text: String)
+
+    private val sources = CopyOnWriteArrayList<Source>()
+
+    /**
+     * A room with a loudspeaker in it: whatever the loudspeaker says reaches
+     * the microphone a moment later, on top of whoever is speaking.
+     */
+    private inner class Room {
+        private var said = ByteArray(0)
+
+        @Synchronized
+        fun sounds(pcm24k: ByteArray) {
+            val all = said + to16k(pcm24k)
+            said = if (all.size > KEPT_BYTES) all.copyOfRange(all.size - KEPT_BYTES, all.size) else all
+        }
+
+        /** What the microphone picks up now: its own [frame], and the loudspeaker as it was [ECHO_DELAY_MS] ago. */
+        @Synchronized
+        fun reaches(frame: ByteArray): ByteArray {
+            val until = said.size - ECHO_DELAY_MS * 32
+            val echo = if (until >= frame.size) said.copyOfRange(until - frame.size, until) else return frame
+            val out = frame.copyOf()
+            for (i in 0 until out.size / 2) {
+                fun sample(of: ByteArray) = (((of[i * 2 + 1].toInt() and 0xff) shl 8) or (of[i * 2].toInt() and 0xff)).toShort().toInt()
+                val mixed = (sample(out) + sample(echo)).coerceIn(-32768, 32767)
+                out[i * 2] = (mixed and 0xff).toByte()
+                out[i * 2 + 1] = ((mixed shr 8) and 0xff).toByte()
+            }
+            return out
+        }
+    }
+
+    private var room: Room? = null
+
     private class OneKey(private val key: String) : SecretStore {
         override fun contains(name: String) = name == "api_key_gemini"
         override fun get(name: String) = key.takeIf { name == "api_key_gemini" }
@@ -96,7 +146,11 @@ class LiveGeminiSessionTest {
         override fun acknowledgeKeystoreReset() = Unit
     }
 
-    private fun start(policy: TranslatorPolicy) {
+    private fun start(
+        policy: TranslatorPolicy,
+        loudspeaker: AudioPlaybackEngine = playback,
+        route: AudioRoute = AudioRoute.BLUETOOTH,
+    ) {
         coordinator = SessionCoordinator(
             credentials = LocalKeyBootstrapRepository(
                 keys = ProviderKeyStore(OneKey(key)),
@@ -104,11 +158,11 @@ class LiveGeminiSessionTest {
             ),
             socketFactory = { Tapped(OkHttpLiveSocketClient(http).also { sockets += it to now() }, sockets.size) },
             captureEngine = capture,
-            playbackEngine = playback,
+            playbackEngine = loudspeaker,
             captionsStore = captions,
             stateStore = state,
             audioFocus = FakeFocus(),
-            route = MutableStateFlow(AudioRoute.BLUETOOTH),
+            route = MutableStateFlow(route),
             now = ::now,
         ).also { it.start(policy) }
         await("the session to listen", 15_000) { state.state.value == RuntimeState.LISTENING && capture.listening }
@@ -224,7 +278,8 @@ class LiveGeminiSessionTest {
         var sent = 0
         var offset = 0
         while (offset < pcm.size) {
-            capture.hear(pcm.copyOfRange(offset, minOf(pcm.size, offset + frameBytes)).copyOf(frameBytes))
+            val frame = pcm.copyOfRange(offset, minOf(pcm.size, offset + frameBytes)).copyOf(frameBytes)
+            capture.hear(room?.reaches(frame) ?: frame)
             offset += frameBytes
             sent++
             watch()
@@ -305,6 +360,104 @@ class LiveGeminiSessionTest {
 
         assertNull(state.lastError.value)
         assertFalse("never dropped", RuntimeState.RECONNECTING in seen)
+    }
+
+    // On a loudspeaker the microphone hears the phone. Whatever the phone
+    // says must stay in the room: sent on, it would be translated back, and
+    // that translation heard and translated again, without end.
+    @Test
+    fun `on a loudspeaker the phone takes turns and never translates its own voice`() {
+        assumeTrue("EARSLATE_LIVE_GEMINI_KEY is not set", key.isNotEmpty())
+        val spanish = say("es1", "Hola, buenos días. ¿Me puede decir dónde está la estación de tren más cercana? Necesito llegar antes de las cinco.", "Puck")
+        val more = say("es2", "Muchas gracias. ¿Y sabe si hay algún restaurante bueno cerca de la estación?", "Puck")
+        val english = say("en1", "Sure. It is about ten minutes from here. Go straight down this street and turn left at the bank.", "Kore")
+
+        val loudspeaker = LanePlayback()
+        val air = Room().also { room = it }
+        loudspeaker.onSound = { sound, _ -> air.sounds(sound) }
+        fun words(language: String, fromMs: Long, toMs: Long = Long.MAX_VALUE) = sources
+            .filter { it.atMs in fromMs until toMs && HeardLanguageTracker.sameLanguage(it.language, language) }
+            .joinToString(" ") { it.text.trim() }.split(' ').filter { it.isNotBlank() }
+        fun turnOver(what: String) = quietUntil("$what, and the phone to listen again", 40_000) {
+            val now = loudspeaker.snapshot()
+            state.state.value == RuntimeState.LISTENING && now.waitingMs == 0 && !now.audible
+        }
+
+        try {
+            start(TranslatorPolicy(TargetLanguage("English", "en-US")), loudspeaker, AudioRoute.SPEAKER)
+            quiet(1_000)
+
+            // They speak Spanish, twice. The second time proves the microphone opened again.
+            speak(spanish)
+            quietUntil("their translation to be said", 40_000) { loudspeaker.totalHeardMs >= 2_000 }
+            turnOver("their translation to end")
+            quiet(3_000)
+            val afterFirst = loudspeaker.totalHeardMs
+            println("LIVE speaker: first translation said, ${afterFirst} ms; captions ${captions.lines.value}")
+
+            speak(more)
+            quietUntil("their second translation to be said", 40_000) { loudspeaker.totalHeardMs - afterFirst >= 1_500 }
+            turnOver("their second translation to end")
+            quiet(3_000)
+            val afterSecond = loudspeaker.totalHeardMs
+            val answeredAt = now()
+            val englishSaid = captions.lines.value.joinToString(" ").lowercase()
+            println("LIVE speaker: second translation said, ${afterSecond - afterFirst} ms; captions ${captions.lines.value}")
+
+            assertTrue("the first was translated: $englishSaid", englishSaid.contains("train") || englishSaid.contains("station"))
+            assertTrue("and the second: $englishSaid", englishSaid.contains("restaurant"))
+            val ownEnglish = words("en", 0, answeredAt)
+            assertTrue("the phone's English never reached the provider: $ownEnglish", ownEnglish.size < 3)
+            assertEquals("their language was recognised", "es-ES", state.heardLanguage.value?.bcp47)
+
+            // I answer in English.
+            speak(english)
+            quietUntil("my answer to be said for them", 40_000) { loudspeaker.totalHeardMs - afterSecond >= 2_000 }
+            turnOver("my answer to end")
+            quiet(5_000)
+            val spanishSaid = captions.lines.value.joinToString(" ").lowercase()
+            println("LIVE speaker: answer said, ${loudspeaker.totalHeardMs - afterSecond} ms; captions ${captions.lines.value}")
+
+            assertTrue("my answer was translated for them: $spanishSaid", spanishSaid.contains("minutos") || spanishSaid.contains("banco"))
+            val ownSpanish = words("es", answeredAt)
+            assertTrue("the phone's Spanish never reached the provider: $ownSpanish", ownSpanish.size < 3)
+            // Nothing set the phone talking again once the conversation had stopped.
+            val settled = loudspeaker.totalHeardMs
+            quiet(6_000)
+            assertEquals("the phone said nothing more on its own", settled, loudspeaker.totalHeardMs)
+
+            assertNull(state.lastError.value)
+            assertNull(state.notice.value)
+            assertFalse("never dropped", RuntimeState.RECONNECTING in seen)
+            assertEquals(1, capture.starts.get())
+            assertEquals("nothing was dropped from a lane", 0, loudspeaker.snapshot().droppedMs)
+        } finally {
+            room = null
+            loudspeaker.shutDown()
+        }
+    }
+
+    // A language Google stops accepting, or renames, is otherwise found by
+    // the first person who picks it.
+    @Test
+    fun `every language in the pickers opens a session`() {
+        assumeTrue("EARSLATE_LIVE_GEMINI_KEY is not set", key.isNotEmpty())
+        val credential = runBlocking { ProviderSessionMinter(http, installId = "live-test").mint(KeyProvider.GEMINI, key) }
+        val refused = SupportedLanguages.mapNotNull { language ->
+            val wire = GeminiTranslationProtocol.wireLanguage(language.bcp47)
+                ?: return@mapNotNull "${language.bcp47}: no code for it"
+            val link = ProviderLink(credential, GeminiTranslationProtocol, OkHttpLiveSocketClient(http))
+            try {
+                runBlocking { link.open(wire) }
+                null
+            } catch (failure: LinkFailure) {
+                "${language.bcp47} as $wire: ${failure.message}"
+            } finally {
+                link.close()
+            }
+        }
+        println("LIVE languages opened: ${SupportedLanguages.size - refused.size} of ${SupportedLanguages.size}")
+        assertEquals(emptyList<String>(), refused)
     }
 
     @Test

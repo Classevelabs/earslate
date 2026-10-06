@@ -58,22 +58,16 @@ class AndroidAudioPlaybackEngine(
     private val now: () -> Long = SystemClock::elapsedRealtime,
 ) : AudioPlaybackEngine {
 
-    private val outputs = ConcurrentHashMap<Int, Output>()
+    private val deck = PlayoutDeck(now, AUDIBLE_FOR_MS)
+    private val players = ConcurrentHashMap<PlayoutDeck.Slot, Player>()
     @Volatile private var running = false
-    @Volatile private var consecutive = false
 
-    /** One lane, the track it plays on, and the thread that feeds it. */
-    private inner class Output(val id: Int, val sampleRateHz: Int, private val track: AudioTrack) {
-        val lane = PlayoutLane(sampleRateHz)
-
-        @Volatile private var finishing = false
+    /** One lane's output stream and the thread that feeds it. */
+    private inner class Player(val slot: PlayoutDeck.Slot, private val track: AudioTrack) {
         @Volatile private var abandoned = false
         @Volatile private var deadlineMs = Long.MAX_VALUE
-        @Volatile private var lastVoicedAtMs = NEVER
 
-        val audible: Boolean get() = lastVoicedAtMs.let { it != NEVER && now() - it < AUDIBLE_FOR_MS }
-
-        private val frame = ByteArray(sampleRateHz * FRAME_MS / 1000 * 2)
+        private val frame = ByteArray(slot.sampleRateHz * FRAME_MS / 1000 * 2)
 
         // The thread that writes is the only one that ever releases the track:
         // freeing it under a blocking write crashes the process.
@@ -81,27 +75,38 @@ class AndroidAudioPlaybackEngine(
             runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO) }
             try {
                 track.play()
-                while (!abandoned) {
-                    if (finishing && (lane.snapshot().queuedVoicedMs == 0 || now() >= deadlineMs)) break
-                    if (lane.pull(frame, now())) lastVoicedAtMs = now()
+                while (!abandoned && !slot.finished && now() < deadlineMs) {
+                    slot.pull(frame)
                     // A track that is always fed never has to restart, which
                     // is what makes the start of each sentence immediate.
-                    if (track.write(frame, 0, frame.size, AudioTrack.WRITE_BLOCKING) < 0) break
+                    val written = track.write(frame, 0, frame.size, AudioTrack.WRITE_BLOCKING)
+                    if (written < 0) break
+                    // A track that takes nothing is not playing; do not spin on it.
+                    if (written == 0) Thread.sleep(FRAME_MS.toLong())
+                }
+                // The last words are still inside the track. Silence pushes
+                // them out before the track is let go.
+                if (!abandoned) {
+                    frame.fill(0)
+                    var tail = TRACK_BUFFER_MS / FRAME_MS + 1
+                    while (tail-- > 0 && !abandoned && track.write(frame, 0, frame.size, AudioTrack.WRITE_BLOCKING) > 0) Unit
                 }
             } catch (t: IllegalStateException) {
                 Log.w(TAG, "playout stopped: ${t.message}")
+            } catch (_: InterruptedException) {
+                // abandoned
             } finally {
-                outputs.remove(id, this)
+                players.remove(slot)
+                deck.remove(slot)
                 runCatching { if (abandoned) track.pause() else track.stop() }
                 runCatching { track.release() }
             }
-        }, "earslate-playout-$id")
+        }, "earslate-playout-${slot.id}")
 
         fun begin() = thread.start()
 
-        fun finish(withinMs: Long) {
-            deadlineMs = now() + withinMs
-            finishing = true
+        fun finishWithin(ms: Long) {
+            deadlineMs = now() + ms
         }
 
         fun abandon() {
@@ -117,27 +122,20 @@ class AndroidAudioPlaybackEngine(
 
     override fun write(lane: Int, pcm: ByteArray, sampleRateHz: Int, voiced: Boolean) {
         if (!running || sampleRateHz <= 0) return
-        var output = outputs[lane]
-        if (output != null && output.sampleRateHz != sampleRateHz) {
-            outputs.remove(lane, output)
-            output.finish(RETIRE_WITHIN_MS)
-            output = null
+        val made = deck.write(lane, pcm, sampleRateHz, voiced) ?: return
+        val track = open(sampleRateHz)
+        if (track == null) {
+            deck.remove(made)
+            return
         }
-        if (output == null) {
-            output = open(lane, sampleRateHz) ?: return
-            output.lane.setConsecutive(consecutive, now())
-            outputs[lane] = output
-            output.begin()
-            // A stop that ran while this lane was being built did not see it.
-            if (!running) {
-                output.abandon()
-                return
-            }
-        }
-        output.lane.offer(pcm, voiced, now())
+        val player = Player(made, track)
+        players[made] = player
+        player.begin()
+        // A stop that ran while this lane was being built did not see it.
+        if (!running) player.abandon()
     }
 
-    private fun open(lane: Int, sampleRateHz: Int): Output? {
+    private fun open(sampleRateHz: Int): AudioTrack? {
         val minBuffer = AudioTrack.getMinBufferSize(
             sampleRateHz,
             AudioFormat.CHANNEL_OUT_MONO,
@@ -175,64 +173,40 @@ class AndroidAudioPlaybackEngine(
             runCatching { track.release() }
             return null
         }
-        return Output(lane, sampleRateHz, track)
+        return track
     }
 
-    override fun muteQueued(lane: Int) {
-        outputs[lane]?.lane?.muteQueued()
-    }
+    override fun muteQueued(lane: Int) = deck.muteQueued(lane)
 
-    // Stays in the map until it has finished, so held speech on a lane whose
-    // session has been replaced is still released with the rest.
-    override fun retire(lane: Int) {
-        outputs[lane]?.finish(RETIRE_WITHIN_MS)
-    }
+    // No deadline: speech held for the floor on a lane whose session has been
+    // replaced is still said, however long the floor takes to come.
+    override fun retire(lane: Int) = deck.retire(lane)
 
-    override fun setConsecutive(enabled: Boolean) {
-        consecutive = enabled
-        for (output in outputs.values) output.lane.setConsecutive(enabled, now())
-    }
+    override fun setConsecutive(enabled: Boolean) = deck.setConsecutive(enabled)
 
-    override fun release() {
-        for (output in outputs.values) output.lane.release(now())
-    }
+    override fun release() = deck.release()
 
-    override fun hold() {
-        for (output in outputs.values) output.lane.hold()
-    }
+    override fun hold() = deck.hold()
 
-    override fun snapshot(): PlaybackSnapshot {
-        val live = outputs.values.toList()
-        val lanes = live.map { it.lane.snapshot() }
-        return PlaybackSnapshot(
-            running = running,
-            lanes = lanes.size,
-            waitingMs = lanes.sumOf { it.queuedVoicedMs },
-            audible = live.any { it.audible },
-            cushionMs = lanes.maxOfOrNull { it.cushionMs } ?: 0,
-            underruns = lanes.sumOf { it.underruns },
-            droppedMs = lanes.sumOf { it.droppedMs },
-        )
-    }
+    override fun snapshot(): PlaybackSnapshot = deck.snapshot(running)
 
     override fun stop(graceful: Boolean) {
         running = false
-        for (output in outputs.values.toList()) {
+        deck.retireAll()
+        for (player in players.values.toList()) {
             // Speech still being held was never going to be said now.
-            if (graceful && !output.lane.snapshot().held) output.finish(DRAIN_WITHIN_MS) else output.abandon()
+            if (graceful && !player.slot.held) player.finishWithin(DRAIN_WITHIN_MS) else player.abandon()
         }
     }
 
     companion object {
         private const val TAG = "AudioPlayback"
-        private const val NEVER = -1L
         private const val FRAME_MS = 20
         private const val TRACK_BUFFER_MS = 80
 
         /** Speech written this recently is still in the track and the room. */
-        private const val AUDIBLE_FOR_MS = TRACK_BUFFER_MS + 2 * FRAME_MS
+        private const val AUDIBLE_FOR_MS = TRACK_BUFFER_MS + 2L * FRAME_MS
 
         private const val DRAIN_WITHIN_MS = 1_500L
-        private const val RETIRE_WITHIN_MS = 6_000L
     }
 }

@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.classeve.earslate.session.HeardLanguageTracker
 import com.classeve.earslate.session.SupportedLanguages
 import com.classeve.earslate.session.TargetLanguage
 import com.classeve.earslate.session.TranslationProvider
@@ -53,9 +54,12 @@ class SettingsRepository(
         // NOTE: key string kept as the historical "target_language_bcp47" so an
         // existing install's chosen language survives the upgrade.
         val MY_LANGUAGE = stringPreferencesKey("target_language_bcp47")
-        // A fresh key, not the old manual-mode "their_language_bcp47": absent
-        // means Automatic, which is the default the product ships on.
+        // Absent means Automatic, which is the default the product ships on.
         val OTHER_LANGUAGE = stringPreferencesKey("other_language_bcp47")
+        // What 0.5.3 wrote when someone fixed the pair by hand. Read so that
+        // choice survives the update; never written again.
+        val FIXED_PAIR_0_5_3 = booleanPreferencesKey("manual_languages")
+        val THEIR_LANGUAGE_0_5_3 = stringPreferencesKey("their_language_bcp47")
         val PERSISTENT_NOTIFICATION = booleanPreferencesKey("persistent_notification")
         // The key 0.5.3 wrote. Its "auto" reads as no choice, which means the same.
         val PROVIDER = stringPreferencesKey("translation_provider")
@@ -65,7 +69,8 @@ class SettingsRepository(
 
     private fun read(prefs: Preferences) = UserSettings(
         myLanguageBcp47 = prefs[Keys.MY_LANGUAGE] ?: defaults.myLanguageBcp47,
-        otherLanguageBcp47 = prefs[Keys.OTHER_LANGUAGE],
+        otherLanguageBcp47 = prefs[Keys.OTHER_LANGUAGE]
+            ?: prefs[Keys.THEIR_LANGUAGE_0_5_3].takeIf { prefs[Keys.FIXED_PAIR_0_5_3] == true },
         persistentNotification = prefs[Keys.PERSISTENT_NOTIFICATION] ?: defaults.persistentNotification,
         provider = TranslationProvider.fromWireValue(prefs[Keys.PROVIDER]),
     )
@@ -107,6 +112,8 @@ class SettingsRepository(
     /** [bcp47] null resets to Automatic (the session learns the other language). */
     suspend fun setOtherLanguage(bcp47: String?) {
         dataStore.edit { prefs ->
+            // A choice made now replaces a pair fixed in 0.5.3 for good.
+            prefs.remove(Keys.FIXED_PAIR_0_5_3)
             if (bcp47 == null) prefs.remove(Keys.OTHER_LANGUAGE) else prefs[Keys.OTHER_LANGUAGE] = bcp47
         }
     }
@@ -124,20 +131,21 @@ class SettingsRepository(
      * default is still en-US, so the picker starts on a sensible language for
      * non-English users.
      */
-    suspend fun initializeFromLocaleIfNeeded() {
+    suspend fun initializeFromLocaleIfNeeded(device: java.util.Locale = java.util.Locale.getDefault()) {
         // awaitSettings, NOT settings.value. The seed reports "en-US" before the
         // disk read lands, so reading the StateFlow here could see a default,
         // decide the user had never chosen a language, and overwrite a real
         // saved choice with the device locale. This method WRITES, so a wrong
         // read is not a stale label — it is silent data loss.
         val current = awaitSettings()
-        if (current.myLanguageBcp47 == "en-US") {
-            val deviceLang = java.util.Locale.getDefault().language // "hi", "es", ...
-            val match = SupportedLanguages.firstOrNull { it.bcp47.startsWith(deviceLang) }
-            if (match != null && match.bcp47 != "en-US") {
-                setMyLanguage(match.bcp47)
-            }
-        }
+        if (current.myLanguageBcp47 != "en-US") return
+        // The tag, not getLanguage(): before Android 14 that still answers
+        // "iw" and "in" for Hebrew and Indonesian.
+        val language = device.toLanguageTag().substringBefore('-')
+        val match = SupportedLanguages.firstOrNull { it.bcp47.equals("$language-${device.country}", ignoreCase = true) }
+            // The whole language, not its first letters: "fil" begins with "fi".
+            ?: SupportedLanguages.firstOrNull { HeardLanguageTracker.sameLanguage(it.bcp47, language) }
+        if (match != null && match.bcp47 != "en-US") setMyLanguage(match.bcp47)
     }
 }
 

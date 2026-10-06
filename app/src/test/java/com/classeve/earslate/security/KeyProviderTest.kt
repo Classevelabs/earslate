@@ -50,6 +50,23 @@ class KeyProviderTest {
         assertNull("must not block", KeyProvider.GEMINI.rejectionReason("sk-" + "f".repeat(40)))
     }
 
+    // Copied out of a chat or a PDF, a key can carry marks that cannot be seen.
+    // They used to reach the network library, which crashed the app.
+    @Test
+    fun `what a copy adds and nobody can see is taken off, not blamed on the user`() {
+        val real = "AIza" + "b".repeat(35)
+        val pasted = "\u200B" + real.take(10) + "\u200B" + real.drop(10) + "\uFEFF\n"
+        assertEquals(real, KeyProvider.tidy(pasted))
+        assertNull(KeyProvider.GEMINI.rejectionReason(pasted))
+    }
+
+    @Test
+    fun `quotes or other marks pasted with a key are named as such`() {
+        val reason = KeyProvider.GEMINI.rejectionReason("\u201CAIza" + "b".repeat(35) + "\u201D")
+        assertNotNull(reason)
+        assertTrue(reason!!, reason.contains("no key contains"))
+    }
+
     @Test
     fun `pasting the console URL is named as such`() {
         val reason = KeyProvider.GEMINI.rejectionReason("https://aistudio.google.com/apikey")

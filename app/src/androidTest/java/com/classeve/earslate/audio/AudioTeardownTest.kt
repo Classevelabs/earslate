@@ -80,6 +80,29 @@ class AudioTeardownTest {
         engine.stop(graceful = false)
     }
 
+    // It was made waiting, after the word to speak had already been given,
+    // and waited for ever with the microphone closed.
+    @Test
+    fun aLaneThatJoinsWhileTheOthersAreSpeakingIsHeardWithThem() {
+        val engine = AndroidAudioPlaybackEngine()
+        engine.start()
+        engine.setConsecutive(true)
+        repeat(4) { engine.write(lane = 1, speech(), 24_000, voiced = true) }
+        engine.release()
+        await("the first lane to be heard") { engine.snapshot().audible }
+
+        repeat(4) { engine.write(lane = 2, speech(), 24_000, voiced = true) }
+        await("both lanes to say everything", 8_000) { engine.snapshot().waitingMs == 0 }
+        await("the loudspeaker to fall silent") { !engine.snapshot().audible }
+
+        // Holding again is what the next sentence waits behind.
+        engine.hold()
+        repeat(4) { engine.write(lane = 2, speech(), 24_000, voiced = true) }
+        Thread.sleep(600)
+        assertEquals("held again until the next release", 1_000, engine.snapshot().waitingMs)
+        engine.stop(graceful = false)
+    }
+
     // A restart with no pause between is the reconnect path.
     @Test
     fun playbackSurvivesImmediateRestartAfterGracefulStop() {

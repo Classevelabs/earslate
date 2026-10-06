@@ -56,6 +56,7 @@ class FakePlayback : AudioPlaybackEngine {
     val muted = CopyOnWriteArrayList<Int>()
     val releases = AtomicInteger()
     val holds = AtomicInteger()
+    val stops = AtomicInteger()
     @Volatile var running = false
     @Volatile var takingTurns = false
     @Volatile var waitingMs = 0
@@ -93,6 +94,7 @@ class FakePlayback : AudioPlaybackEngine {
 
     override fun stop(graceful: Boolean) {
         running = false
+        stops.incrementAndGet()
     }
 
     fun heardMs(lane: Int): Int = written.filter { it.lane == lane && it.voiced }.sumOf { it.ms }

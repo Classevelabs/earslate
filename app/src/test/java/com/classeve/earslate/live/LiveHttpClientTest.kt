@@ -13,9 +13,12 @@ class LiveHttpClientTest {
         client.socketFactory.createSocket().use { assertTrue(it.tcpNoDelay) }
     }
 
+    // The library stops timing reads once a socket is open; this covers the
+    // handshake, which used to be able to hang for ever.
     @Test
-    fun `a socket with nothing to read is never timed out`() {
-        assertEquals(0, client.readTimeoutMillis)
+    fun `a handshake that gets no answer is given up on, and never sooner than a pong can arrive`() {
+        assertEquals(20_000, client.readTimeoutMillis)
+        assertTrue(client.readTimeoutMillis >= 2 * client.pingIntervalMillis)
     }
 
     @Test

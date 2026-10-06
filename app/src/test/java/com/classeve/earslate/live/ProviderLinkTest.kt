@@ -137,6 +137,48 @@ class ProviderLinkTest {
         assertTrue("nothing is sent to a socket that has hung up", socket.sent.isEmpty())
     }
 
+    // "session.updated: returned when a translation session is updated … unless there is an error."
+    @Test
+    fun `an error in answer to the setup ends the wait instead of running out the clock`() {
+        val socket = FakeSocket(
+            onConnect = {
+                accept()
+                serve("""{"type":"session.created","session":{}}""")
+            },
+            onSend = { serve("""{"type":"error","error":{"message":"Unsupported output language: xx."}}""") },
+        )
+        val began = System.currentTimeMillis()
+        val failure = failureOf(openAi(socket))
+
+        assertTrue("answered in ${System.currentTimeMillis() - began} ms", System.currentTimeMillis() - began < 6_000)
+        assertEquals("OpenAI said: Unsupported output language: xx.", failure.message)
+        assertTrue("and the socket is not left open", socket.closedByApp)
+    }
+
+    @Test
+    fun `a provider in trouble is worth another attempt, and a refusal is not`() {
+        assertFalse(failureOf(gemini(FakeSocket(onConnect = { fails(httpStatus = 503) }))).providerSpoke)
+        assertTrue(failureOf(gemini(FakeSocket(onConnect = { fails(httpStatus = 403) }))).providerSpoke)
+    }
+
+    @Test
+    fun `OpenAI can be asked to finish before it is closed, and Gemini has no such request`() = runBlocking {
+        val openAiSocket = FakeSocket(
+            onSend = { if (it.contains("session.update")) serve("""{"type":"session.updated","session":{}}""") },
+        )
+        val link = openAi(openAiSocket)
+        link.open("es")
+        assertTrue(link.sayGoodbye())
+        assertEquals("session.close", JSONObject(openAiSocket.sent.last()).getString("type"))
+        assertFalse("it is not closed yet: its last words are still to come", openAiSocket.closedByApp)
+
+        val geminiSocket = FakeSocket(onSend = { if (it.contains("\"setup\"")) serve("""{"setupComplete":{}}""") })
+        val other = gemini(geminiSocket)
+        other.open("es")
+        assertFalse(other.sayGoodbye())
+        assertEquals(1, geminiSocket.sent.size)
+    }
+
     @Test
     fun `a secret echoed back by the provider never reaches the screen`() {
         val key = "AIzaSyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY"

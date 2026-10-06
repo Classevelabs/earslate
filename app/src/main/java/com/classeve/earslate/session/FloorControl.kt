@@ -20,6 +20,7 @@ class FloorControl {
         private set
 
     private var waitingSinceMs = NEVER
+    private var arrivedAtMs = NEVER
     private var idleSinceMs = NEVER
     private var settledAtMs = NEVER
 
@@ -33,19 +34,26 @@ class FloorControl {
      * @param lastMicSpeechAtMs when the microphone last heard a voice.
      * @param waitingMs translated speech queued and not yet played.
      * @param audible true while translated speech is still coming out of the loudspeaker.
+     * @param arriving true while more of the translation is still arriving.
      */
-    fun update(nowMs: Long, lastMicSpeechAtMs: Long, waitingMs: Int, audible: Boolean) {
+    fun update(nowMs: Long, lastMicSpeechAtMs: Long, waitingMs: Int, audible: Boolean, arriving: Boolean) {
         when (floor) {
             Floor.LISTENING -> {
                 if (waitingMs <= 0) {
                     waitingSinceMs = NEVER
+                    arrivedAtMs = NEVER
                     return
                 }
                 if (waitingSinceMs == NEVER) waitingSinceMs = nowMs
+                if (arriving) arrivedAtMs = NEVER else if (arrivedAtMs == NEVER) arrivedAtMs = nowMs
                 val roomQuiet = nowMs - lastMicSpeechAtMs >= QUIET_MS
+                // Music or a crowd never sounds quiet. The translation itself
+                // then says when the person stopped: had they gone on, more of
+                // it would have started arriving by now.
+                val nothingMoreComing = arrivedAtMs != NEVER && nowMs - arrivedAtMs >= NOTHING_MORE_MS
                 // A room that is never quiet must not hold a translation forever.
                 val heldTooLong = nowMs - waitingSinceMs >= MAX_HOLD_MS
-                if (roomQuiet || heldTooLong) {
+                if (roomQuiet || nothingMoreComing || heldTooLong) {
                     floor = Floor.SPEAKING
                     idleSinceMs = NEVER
                 }
@@ -68,6 +76,7 @@ class FloorControl {
             Floor.SETTLING -> if (nowMs >= settledAtMs) {
                 floor = Floor.LISTENING
                 waitingSinceMs = NEVER
+                arrivedAtMs = NEVER
             }
         }
     }
@@ -75,6 +84,7 @@ class FloorControl {
     fun reset() {
         floor = Floor.LISTENING
         waitingSinceMs = NEVER
+        arrivedAtMs = NEVER
         idleSinceMs = NEVER
         settledAtMs = NEVER
     }
@@ -85,6 +95,9 @@ class FloorControl {
         /** A pause this long means the person has stopped, not drawn breath. */
         const val QUIET_MS = 700L
         const val MAX_HOLD_MS = 20_000L
+
+        /** The model starts on new speech within about three seconds of hearing it. */
+        const val NOTHING_MORE_MS = 4_000L
         const val SPEECH_END_MS = 500L
 
         /** The room, and the loudspeaker's own buffer, need this long to fall silent. */

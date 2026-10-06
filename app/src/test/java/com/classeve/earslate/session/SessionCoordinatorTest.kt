@@ -1,12 +1,15 @@
 package com.classeve.earslate.session
 
+import com.classeve.earslate.audio.AudioPlaybackEngine
 import com.classeve.earslate.audio.AudioRoute
 import com.classeve.earslate.bootstrap.BootstrapException
+import com.classeve.earslate.live.LiveSocketState
 import com.classeve.earslate.testing.FakeCapture
 import com.classeve.earslate.testing.FakeCredentials
 import com.classeve.earslate.testing.FakeFocus
 import com.classeve.earslate.testing.FakePlayback
 import com.classeve.earslate.testing.FakeSocket
+import com.classeve.earslate.testing.LanePlayback
 import com.classeve.earslate.testing.TestAudio
 import com.classeve.earslate.ui.captions.CaptionsStore
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -32,6 +35,8 @@ class SessionCoordinatorTest {
     private val english = TargetLanguage("English", "en-US")
     private val spanish = TargetLanguage("Español", "es-ES")
     private val punjabi = TargetLanguage("ਪੰਜਾਬੀ", "pa-IN")
+    private val hindi = TargetLanguage("हिन्दी", "hi-IN")
+    private val french = TargetLanguage("Français", "fr-FR")
 
     private val sockets = CopyOnWriteArrayList<FakeSocket>()
     private val capture = FakeCapture()
@@ -56,11 +61,11 @@ class SessionCoordinatorTest {
         onSend = { if (it.contains("session.update")) serve("""{"type":"session.updated","session":{}}""") },
     )
 
-    private fun coordinator(credentials: FakeCredentials = FakeCredentials()) = SessionCoordinator(
+    private fun coordinator(credentials: FakeCredentials, playbackEngine: AudioPlaybackEngine) = SessionCoordinator(
         credentials = credentials,
         socketFactory = { server().also { sockets += it } },
         captureEngine = capture,
-        playbackEngine = playback,
+        playbackEngine = playbackEngine,
         captionsStore = captions,
         stateStore = state,
         audioFocus = focus,
@@ -71,8 +76,12 @@ class SessionCoordinatorTest {
 
     private var running: SessionCoordinator? = null
 
-    private fun start(policy: TranslatorPolicy, credentials: FakeCredentials = FakeCredentials()): SessionCoordinator {
-        val coordinator = coordinator(credentials)
+    private fun start(
+        policy: TranslatorPolicy,
+        credentials: FakeCredentials = FakeCredentials(),
+        playbackEngine: AudioPlaybackEngine = playback,
+    ): SessionCoordinator {
+        val coordinator = coordinator(credentials, playbackEngine)
         running = coordinator
         coordinator.start(policy)
         return coordinator
@@ -198,6 +207,41 @@ class SessionCoordinatorTest {
         assertTrue(captions.pending.value.isEmpty())
     }
 
+    // The lines stay on the screen after the session. One left half said
+    // would look as if it were still coming.
+    @Test
+    fun `a sentence still being shown when the session is stopped is finished off`() {
+        val coordinator = start(TranslatorPolicy(english, otherLanguage = spanish))
+        awaitListening()
+        val inbound = socketFor("en")
+        inbound.serve(heard("Hola", "es"))
+        inbound.serve(audio())
+        inbound.serve("""{"serverContent":{"outputTranscription":{"text":" Hello there.","languageCode":"en"}}}""")
+        await("the live caption") { captions.pending.value == listOf("Hello there.") }
+
+        coordinator.stop()
+        await("the session to end") { state.state.value == RuntimeState.IDLE }
+        assertEquals(listOf("Hello there."), captions.lines.value)
+        assertTrue("nothing is left looking as if it were still being said", captions.pending.value.isEmpty())
+    }
+
+    @Test
+    fun `a sentence still being shown when the connection is replaced is finished off`() {
+        start(TranslatorPolicy(english, otherLanguage = spanish))
+        awaitListening()
+        val inbound = socketFor("en")
+        inbound.serve(heard("Hola", "es"))
+        inbound.serve(audio())
+        inbound.serve("""{"serverContent":{"outputTranscription":{"text":" Hello there.","languageCode":"en"}}}""")
+        await("the live caption") { captions.pending.value == listOf("Hello there.") }
+
+        networkChanged.tryEmit(Unit)
+        await("the half-said line to be finished") { captions.pending.value.isEmpty() }
+        assertEquals(listOf("Hello there."), captions.lines.value)
+        await("the session to be back") { sockets.size >= 4 && state.state.value == RuntimeState.LISTENING }
+        assertTrue("and it stays finished", captions.pending.value.isEmpty())
+    }
+
     @Test
     fun `the state follows what is being heard`() {
         start(TranslatorPolicy(english, otherLanguage = spanish))
@@ -256,13 +300,17 @@ class SessionCoordinatorTest {
             capture.hear(speech)
             micFrames(fresh).isNotEmpty()
         }
+        // Measured against Gemini: a session that simply stops being sent
+        // audio drops the last word of what it was translating.
         val sentToOld = micFrames(old).size
         capture.hear(speech)
         capture.hear(speech)
-        assertEquals("the old socket hears nothing more", sentToOld, micFrames(old).size)
-        assertFalse("it is left open to finish its sentence", old.closedByApp)
+        val afterwards = micFrames(old).drop(sentToOld)
+        assertEquals("the old socket goes on being sent audio", 2, afterwards.size)
+        assertTrue("silence, so that it finishes its sentence and starts no other", afterwards.all { f -> f.all { it == 0.toByte() } })
+        assertFalse("and it is left open to finish", old.closedByApp)
 
-        await("the old socket to be closed once it has finished", timeoutMs = 9_000) { old.closedByApp }
+        await("the old socket to be closed once it has finished", timeoutMs = 13_000) { old.closedByApp }
         assertEquals(RuntimeState.LISTENING, state.state.value)
         assertFalse("the user never saw a reconnect", RuntimeState.RECONNECTING in seen)
         assertEquals("and no second credential was needed", 1, credentials.minted.get())
@@ -280,6 +328,9 @@ class SessionCoordinatorTest {
         await("a fresh pair of sockets") { sockets.size == 4 && state.state.value == RuntimeState.LISTENING && capture.starts.get() == 2 }
         assertTrue(RuntimeState.RECONNECTING in seen || state.state.value == RuntimeState.LISTENING)
         assertEquals(1, credentials.minted.get())
+        // What the lost connection still had to say is kept, not thrown away with it.
+        assertEquals("the loudspeaker is not shut down in between", 0, playback.stops.get())
+        assertTrue("its lanes are left to finish", playback.retired.size >= 2)
         assertTrue("the first session's sockets were closed", sockets.take(2).all { it.closedByApp || it.closure != null })
         assertNull(state.lastError.value)
     }
@@ -349,19 +400,29 @@ class SessionCoordinatorTest {
         assertNull(state.lastError.value)
     }
 
+    // It used to give up after four tries, say "yet", and never try again.
     @Test
-    fun `when the direction back to them cannot be opened at all, the user is told`() {
+    fun `when the direction back to them will not open the user is told, and told no more once it does`() {
         var opened = 0
-        server = { if (++opened >= 2) FakeSocket(onConnect = { fails(httpStatus = 429) }) else gemini() }
+        var refusing = true
+        server = { if (++opened >= 2 && refusing) FakeSocket(onConnect = { fails(httpStatus = 429) }) else gemini() }
         start(TranslatorPolicy(english))
         awaitListening()
         sockets.single().serve(heard("Hola, buenos días", "es"))
 
-        await("the notice", timeoutMs = 15_000) { state.lastError.value != null }
-        val message = state.lastError.value!!.message
+        await("the notice", timeoutMs = 15_000) { state.notice.value != null }
+        val message = state.notice.value!!
         assertTrue(message, message.startsWith("What you say is not being translated for them yet."))
         assertTrue(message, message.contains("quota"))
+        assertNull("it is not an error: the session goes on", state.lastError.value)
         assertEquals("the half that works keeps working", RuntimeState.LISTENING, state.state.value)
+
+        refusing = false
+        await("the direction to open at last", timeoutMs = 12_000) {
+            capture.hear(speech)
+            sockets.any { it.sent.isNotEmpty() && target(it) == "es" && micFrames(it).isNotEmpty() }
+        }
+        await("the notice to be taken away") { state.notice.value == null }
     }
 
     // ── refusals ────────────────────────────────────────────────────────
@@ -445,6 +506,7 @@ class SessionCoordinatorTest {
         awaitListening()
         assertTrue(playback.takingTurns)
         val inbound = socketFor("en")
+        val holdsAtStart = playback.holds.get()
 
         // They are talking, and a few words in the translation starts to arrive.
         val talkUntil = System.currentTimeMillis() + 1_500
@@ -469,7 +531,7 @@ class SessionCoordinatorTest {
         // The phone finishes.
         playback.waitingMs = 0
         playback.audible = false
-        await("the microphone to open again") { playback.holds.get() == 1 }
+        await("the microphone to open again") { playback.holds.get() == holdsAtStart + 1 }
         val after = micFrames(inbound).size
         capture.hear(speech)
         assertTrue(micFrames(inbound).drop(after).single().any { it != 0.toByte() })
@@ -484,7 +546,275 @@ class SessionCoordinatorTest {
         await("live playback") { !playback.takingTurns }
     }
 
+    // The second direction's first audio arrived while the phone was already
+    // speaking. Its lane began by waiting for a turn that had been given, the
+    // phone showed "playing" for ever, and the microphone never opened again.
+    @Test
+    fun `on a loudspeaker a direction that first speaks while the phone is talking is still heard`() {
+        val lanes = LanePlayback()
+        try {
+            route.value = AudioRoute.SPEAKER
+            start(TranslatorPolicy(english, otherLanguage = spanish), playbackEngine = lanes)
+            awaitListening()
+            val inbound = socketFor("en")
+            val outbound = socketFor("es")
+
+            // Two seconds of their translation arrive. The room is quiet, so the phone speaks.
+            inbound.serve(heard("Hola, buenos días", "es"))
+            repeat(8) { inbound.serve(audio()) }
+            await("the phone to start speaking") { state.state.value == RuntimeState.PLAYING }
+
+            // While it speaks, the other direction says its first words.
+            outbound.serve(heard("Hello there", "en"))
+            repeat(4) { outbound.serve(audio()) }
+
+            await("everything to have been said", timeoutMs = 10_000) {
+                lanes.snapshot().waitingMs == 0 && lanes.totalHeardMs >= 3_000
+            }
+            await("the phone to be listening again") { state.state.value == RuntimeState.LISTENING }
+            val frame = speech
+            capture.hear(frame)
+            assertTrue("and the microphone is open", micFrames(inbound).last().contentEquals(frame))
+        } finally {
+            lanes.shutDown()
+        }
+    }
+
+    // ── the network ─────────────────────────────────────────────────────
+
+    // The first retry used to end the session if the network was not back yet.
+    @Test
+    fun `a reconnect that finds the network still down keeps trying until it is back`() {
+        val credentials = FakeCredentials()
+        start(TranslatorPolicy(english, otherLanguage = spanish), credentials)
+        awaitListening()
+
+        // The network goes: nothing connects, and the provider cannot be asked for a credential either.
+        server = { FakeSocket(onConnect = { fails() }) }
+        credentials.failure = BootstrapException("Couldn't reach Google Gemini. Check your connection and try again.", transient = true)
+        sockets.first().fails()
+        await("reconnecting") { state.state.value == RuntimeState.RECONNECTING }
+        Thread.sleep(1_200)
+        assertNull("still trying, not given up", state.lastError.value)
+        assertTrue(state.state.value != RuntimeState.IDLE)
+
+        // And comes back.
+        credentials.failure = null
+        server = ::gemini
+        await("the session to be listening again", timeoutMs = 12_000) {
+            state.state.value == RuntimeState.LISTENING && capture.listening
+        }
+        assertNull(state.lastError.value)
+    }
+
+    @Test
+    fun `a refusal while reconnecting is final`() {
+        val credentials = FakeCredentials()
+        start(TranslatorPolicy(english, otherLanguage = spanish), credentials)
+        awaitListening()
+        credentials.failure = BootstrapException("Google Gemini did not accept that key.")
+        sockets.first().fails()
+
+        await("the session to end") { state.state.value == RuntimeState.IDLE }
+        assertEquals("Google Gemini did not accept that key.", state.lastError.value?.message)
+    }
+
+    @Test
+    fun `a network that never comes back ends the session after a bounded number of tries`() {
+        start(TranslatorPolicy(english, otherLanguage = spanish))
+        awaitListening()
+        server = { FakeSocket(onConnect = { fails() }) }
+        sockets.first().fails()
+
+        await("the session to give up", timeoutMs = 25_000) { state.state.value == RuntimeState.IDLE }
+        assertEquals("Lost connection and could not reconnect. Tap start to try again.", state.lastError.value?.message)
+        assertTrue("it tried more than once and not for ever: ${sockets.size} sockets", sockets.size in 6..16)
+    }
+
+    @Test
+    fun `a sentence half shown when the connection goes is finished off, not left looking live`() {
+        start(TranslatorPolicy(english, otherLanguage = spanish))
+        awaitListening()
+        val inbound = socketFor("en")
+        inbound.serve(heard("Hola", "es"))
+        inbound.serve(audio())
+        inbound.serve("""{"serverContent":{"outputTranscription":{"text":" Hello there","languageCode":"en"}}}""")
+        await("the live caption") { captions.pending.value == listOf("Hello there") }
+
+        inbound.fails()
+        await("the line to be finished") { captions.pending.value.isEmpty() }
+        assertEquals(listOf("Hello there"), captions.lines.value)
+    }
+
+    // ── replacing a connection ──────────────────────────────────────────
+
+    private fun whileSomeoneTalks(block: () -> Unit) {
+        val talking = Thread {
+            while (true) {
+                capture.hear(TestAudio.speech(100, rateHz = 16_000, peak = 9_000, seed = 7))
+                try {
+                    Thread.sleep(50)
+                } catch (_: InterruptedException) {
+                    return@Thread
+                }
+            }
+        }.also { it.start() }
+        try {
+            // Long enough for the session to have heard them.
+            Thread.sleep(300)
+            block()
+        } finally {
+            talking.interrupt()
+            talking.join()
+        }
+    }
+
+    @Test
+    fun `a replacement still waiting for a pause is closed when the session stops`() {
+        val coordinator = start(TranslatorPolicy(english, otherLanguage = spanish))
+        awaitListening()
+        whileSomeoneTalks {
+            socketFor("en").serve("""{"goAway":{"timeLeft":"50s"}}""")
+            await("the replacement to be opened") { sockets.size == 3 && sockets[2].state.value == LiveSocketState.OPEN }
+            Thread.sleep(200)
+            assertFalse("it waits for a pause before it is put to use", micFrames(sockets[2]).isNotEmpty())
+
+            coordinator.stop()
+            await("the unused replacement to be closed") { sockets[2].closedByApp }
+        }
+    }
+
+    @Test
+    fun `a replacement that does not survive the wait is not put to use`() {
+        start(TranslatorPolicy(english, otherLanguage = spanish))
+        awaitListening()
+        whileSomeoneTalks {
+            socketFor("en").serve("""{"goAway":{"timeLeft":"50s"}}""")
+            await("the replacement to be opened") { sockets.size == 3 && sockets[2].state.value == LiveSocketState.OPEN }
+            sockets[2].serverCloses(1001, "")
+            await("another to be opened in its place") { sockets.size == 4 && sockets[3].state.value == LiveSocketState.OPEN }
+        }
+        // They pause, and the switch is made in the pause.
+        Thread.sleep(700)
+        await("the microphone to move to the one that lived") {
+            capture.hear(speech)
+            micFrames(sockets[3]).isNotEmpty()
+        }
+        assertFalse("the user never saw a reconnect", RuntimeState.RECONNECTING in seen)
+        assertEquals(RuntimeState.LISTENING, state.state.value)
+    }
+
+    // ── changing a language while it runs ───────────────────────────────
+
+    @Test
+    fun `a language changed mid-session is still the language after a reconnect`() {
+        val coordinator = start(TranslatorPolicy(english, otherLanguage = spanish))
+        awaitListening()
+        coordinator.setLanguages(my = hindi)
+        socketFor("hi")
+
+        val before = sockets.size
+        socketFor("es").fails()
+        await("a fresh pair of sockets") { sockets.size >= before + 2 && state.state.value == RuntimeState.LISTENING }
+        await("both to be set up") { sockets.drop(before).all { it.sent.isNotEmpty() } }
+        assertEquals(
+            "the language chosen, not the one the session started with",
+            setOf("hi", "es"),
+            sockets.drop(before).map(::target).toSet(),
+        )
+    }
+
+    @Test
+    fun `a language changed while the session is still connecting is the one it ends up with`() {
+        // The provider takes a moment to acknowledge.
+        server = {
+            FakeSocket(
+                onSend = {
+                    if (it.contains("\"setup\"")) {
+                        Thread {
+                            Thread.sleep(400)
+                            serve("""{"setupComplete":{}}""")
+                        }.start()
+                    }
+                },
+            )
+        }
+        val coordinator = start(TranslatorPolicy(english, otherLanguage = spanish))
+        await("connecting") { state.state.value == RuntimeState.CONNECTING }
+        coordinator.setLanguages(their = french)
+        awaitListening()
+
+        val outbound = socketFor("fr")
+        await("the microphone to reach the new direction") {
+            capture.hear(speech)
+            micFrames(outbound).isNotEmpty()
+        }
+        val frame = speech
+        capture.hear(frame)
+        val fed = sockets.filter { micFrames(it).lastOrNull()?.contentEquals(frame) == true }
+        assertEquals("one direction each way, and no third", setOf("en", "fr"), fed.map(::target).toSet())
+        assertEquals(2, fed.size)
+    }
+
+    // The follower kept following while the language was fixed, so letting go
+    // of it found nothing new in what it heard next.
+    @Test
+    fun `going back to following picks up the next language heard`() {
+        val coordinator = start(TranslatorPolicy(english, otherLanguage = spanish))
+        awaitListening()
+        val inbound = socketFor("en")
+        repeat(3) { inbound.serve(heard("bom dia tudo bem", "pt")) }
+        Thread.sleep(200)
+        coordinator.setLanguages(follow = true)
+        await("no longer fixed") { !state.theirLanguagePinned.value }
+        inbound.serve(heard("obrigado pela ajuda", "pt"))
+
+        socketFor("pt-BR")
+        await("the language to be shown") { state.heardLanguage.value?.bcp47 == "pt-BR" }
+    }
+
     // ── OpenAI ──────────────────────────────────────────────────────────
+
+    @Test
+    fun `OpenAI told to answer in a language it cannot speak says so from the start`() {
+        server = ::openAi
+        start(TranslatorPolicy(english, otherLanguage = punjabi), FakeCredentials(TranslationProvider.OPENAI))
+        awaitListening()
+
+        await("the notice") { state.notice.value != null }
+        assertEquals(
+            "OpenAI can't translate into ਪੰਜਾਬੀ, so what you say is not being translated for them.",
+            state.notice.value,
+        )
+        assertEquals("only the direction that can work is open", 1, sockets.size)
+        assertNull(state.lastError.value)
+    }
+
+    // Inside its last seconds, every failed attempt used to be followed by another at once.
+    @Test
+    fun `an expiring OpenAI session whose replacement will not open is tried again without hammering`() {
+        var opened = 0
+        val expiresAt = System.currentTimeMillis() / 1000 + 20
+        server = {
+            if (++opened > 2) {
+                FakeSocket(onConnect = { fails() })
+            } else {
+                FakeSocket(
+                    onConnect = {
+                        accept()
+                        serve("""{"type":"session.created","session":{"expires_at":$expiresAt}}""")
+                    },
+                    onSend = { if (it.contains("session.update")) serve("""{"type":"session.updated","session":{}}""") },
+                )
+            }
+        }
+        start(TranslatorPolicy(english, otherLanguage = spanish), FakeCredentials(TranslationProvider.OPENAI))
+        awaitListening()
+        Thread.sleep(4_000)
+
+        assertTrue("replacements attempted in four seconds: ${sockets.size - 2}", sockets.size - 2 in 2..8)
+        assertEquals(RuntimeState.LISTENING, state.state.value)
+    }
 
     @Test
     fun `an OpenAI session opens, captures at 24 kHz in 200 ms frames, and sends them as translation audio`() {

@@ -88,6 +88,25 @@ class GeminiTranslationProtocolTest {
         assertEquals("pt-BR", protocol.wireLanguage("pt"))
     }
 
+    @Test
+    fun `a script that is named outranks what the region suggests`() {
+        assertEquals("zh-Hans", protocol.wireLanguage("zh-Hans-TW"))
+        assertEquals("zh-Hant", protocol.wireLanguage("zh-Hant-CN"))
+    }
+
+    // The model says "no" and "tl" for Norwegian and Filipino, and takes both back as targets.
+    @Test
+    fun `the model's own names for a language are sent back as it gave them`() {
+        assertEquals("no", protocol.wireLanguage("no"))
+        assertEquals("tl", protocol.wireLanguage("tl"))
+        assertEquals("nb", protocol.wireLanguage("nb-NO"))
+    }
+
+    @Test
+    fun `a tag with an extension is still its language`() {
+        assertEquals("en", protocol.wireLanguage("en-US-u-hc-h23"))
+    }
+
     // It used to answer "en", so a broken setting translated into the wrong language without a word.
     @Test
     fun `a tag that is not a language is refused, not turned into English`() {

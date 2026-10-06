@@ -59,30 +59,6 @@ class AudioDeviceMonitor(context: Context) {
         } else {
             audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).toList()
         }
-        var hasBluetooth = false
-        var hasWired = false
-        var hasSpeaker = false
-        for (d in outputs) {
-            when (d.type) {
-                AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
-                AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
-                AudioDeviceInfo.TYPE_BLE_HEADSET,
-                AudioDeviceInfo.TYPE_HEARING_AID -> hasBluetooth = true
-                AudioDeviceInfo.TYPE_WIRED_HEADSET,
-                AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
-                AudioDeviceInfo.TYPE_USB_HEADSET,
-                AudioDeviceInfo.TYPE_USB_DEVICE -> hasWired = true
-                // A Bluetooth speaker fills the room like the built-in one.
-                AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
-                AudioDeviceInfo.TYPE_BLE_SPEAKER -> hasSpeaker = true
-                else -> Unit
-            }
-        }
-        return when {
-            hasBluetooth -> AudioRoute.BLUETOOTH
-            hasWired -> AudioRoute.WIRED
-            hasSpeaker -> AudioRoute.SPEAKER
-            else -> AudioRoute.UNKNOWN
-        }
+        return AudioRoute.of(outputs.map { it.type })
     }
 }

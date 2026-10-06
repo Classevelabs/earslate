@@ -17,9 +17,9 @@ class ConversationEngineTest {
     private val inbound = 1
     private val outbound = 2
 
-    private inner class Scene(follows: Boolean = true, theirs: String = "es") {
+    private inner class Scene(follows: Boolean = true, theirs: String = "es", mine: String = "en") {
         val sink = RecordingSink()
-        val engine = ConversationEngine("en", theirs, follows, sink)
+        val engine = ConversationEngine(mine, theirs, follows, sink)
         var now = 0L
 
         init {
@@ -80,6 +80,19 @@ class ConversationEngineTest {
 
         assertEquals(1_500, s.sink.heardMs(outbound))
         assertEquals(0, s.sink.heardMs(inbound))
+    }
+
+    // The model reports Norwegian as "no"; the user's language is saved as nb-NO.
+    @Test
+    fun `my language under the model's own name for it is still my language`() {
+        val s = Scene(mine = "nb-NO", theirs = "en")
+        s.heard("God dag, kan du si meg", "no")
+        s.speaks(inbound, 4)
+        s.speaks(outbound, 4)
+
+        assertEquals("my own Norwegian repeated back to me", 0, s.sink.heardMs(inbound))
+        assertEquals("my words in English, for them", 1_000, s.sink.heardMs(outbound))
+        assertTrue("my language is not taken for theirs: ${s.sink.heard}", s.sink.heard.isEmpty())
     }
 
     @Test
@@ -304,6 +317,23 @@ class ConversationEngineTest {
         assertEquals(listOf(inbound to "Can you tell me where the station is?"), s.sink.lines)
     }
 
+    // A provider that pads a sentence with a moment of silence and then sends
+    // nothing would otherwise never be seen to finish it.
+    @Test
+    fun `a provider that sent some silence and then stopped has still finished its sentence`() {
+        val s = Scene()
+        s.heard("Hola", "es")
+        s.speaks(inbound, 2)
+        s.caption(inbound, "Hello.")
+        s.quiet(inbound, 1)
+        s.pass(ConversationEngine.STALLED_RUN_END_MS.toInt() - 600)
+        assertTrue("not yet", s.sink.lines.isEmpty())
+        s.pass(700)
+
+        assertEquals(listOf(inbound to "Hello."), s.sink.lines)
+        assertEquals("and the state is quiet again", false, s.sink.speaking.last())
+    }
+
     @Test
     fun `with words but no language code, each leg works out the speaker from the words it heard`() {
         val s = Scene()
@@ -362,6 +392,18 @@ class ConversationEngineTest {
         s.heard("बता सकते हैं", "hi")
         assertTrue(s.sink.heard.isEmpty())
         assertEquals("but it is still known to be them", Speaker.THEM, s.engine.hears(inbound))
+        assertEquals("and the language fixed by hand has not drifted", "es", s.engine.theirLanguage)
+    }
+
+    @Test
+    fun `going back to following starts from the language that was fixed`() {
+        val s = Scene(follows = false)
+        s.heard("नमस्ते", "hi")
+        s.heard("क्या आप", "hi")
+        s.engine.followsTheirLanguage = true
+        s.heard("बता सकते हैं", "hi")
+
+        assertEquals("heard once they are being followed again", listOf("hi"), s.sink.heard)
     }
 
     // ── state ───────────────────────────────────────────────────────────

@@ -46,7 +46,8 @@ data class TargetLanguage(
          */
         fun forCode(code: String): TargetLanguage {
             val primary = code.trim().substringBefore('-')
-            SupportedLanguages.firstOrNull { it.bcp47.substringBefore('-').equals(primary, ignoreCase = true) }
+            (SupportedLanguages.firstOrNull { it.bcp47.substringBefore('-').equals(primary, ignoreCase = true) }
+                ?: SupportedLanguages.firstOrNull { HeardLanguageTracker.sameLanguage(it.bcp47, code) })
                 ?.let { return it }
             val locale = Locale.forLanguageTag(code)
             val name = locale.getDisplayLanguage(locale).ifBlank { code }

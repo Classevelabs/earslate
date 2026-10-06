@@ -18,6 +18,30 @@ To actually run a translation you will need your own Gemini or OpenAI key,
 entered in the app at runtime. It is billed to your account, so develop with a
 key you are happy to spend a little on.
 
+## Tests that need a key or a device
+
+The command above needs neither. Three more sets of tests are skipped unless
+you ask for them, and the ones that take a key spend a little on it.
+
+**Against the real provider, from your computer.** Set
+`EARSLATE_LIVE_GEMINI_KEY` and run `LiveGeminiSessionTest`: a two-way
+conversation, a conversation on a loudspeaker with the microphone hearing
+everything the loudspeaker says, and every language in the pickers.
+`EARSLATE_LIVE_LONG=1` adds an eleven-minute run across the provider's own
+disconnect. `EARSLATE_LIVE_AUDIO_DIR` keeps the synthesized speech between
+runs. `EARSLATE_LIVE_OPENAI_KEY` runs `LiveOpenAiSessionTest`.
+
+**On a device or emulator.** `./gradlew connectedDebugAndroidTest` runs the
+audio engines against the real framework and the captions on a real screen.
+
+**On a device, against the real provider.** Add
+`-Pandroid.testInstrumentationRunnerArguments.geminiKey=…` and two more run:
+a real session (`LiveSessionOnDeviceTest`) and the whole app through its own
+screen, service and microphone (`WholeAppOnDeviceTest`). Both look for a
+recording of Spanish speech pushed to the device; each says where.
+
+A key given to a test is used from memory and is never stored.
+
 ## What makes a change easy to accept
 
 **Say why, not what.** The diff shows what changed. The commit message and the
@@ -40,16 +64,21 @@ never merge. Send the part that is done.
 **Audio.** The playback path is latency-sensitive and easy to make worse by
 accident. Each direction plays on a continuous lane of its own, with a small
 cushion of queued audio. The cushion grows only when a block arrives too late
-to play, and gives the delay back, by shortening silence, only after a
-sustained clean run. A conversation is mostly silence, so a lane that has
-simply run out of things to say must never be counted as a late network. If
-you change the adaptation, `PlayoutLaneTest` should tell you immediately.
+to play, and gives the delay back only after a sustained clean run: by
+shortening silence, or at the next pause. A conversation is mostly silence, so
+a lane that has simply run out of things to say must never be counted as a
+late network. If you change the adaptation, `PlayoutLaneTest` should tell you
+immediately. On a loudspeaker the lanes are held and let go together by
+`PlayoutDeck`; a lane that joins late has to be let through with the rest,
+and `PlayoutDeckTest` covers it.
 
 **Who is heard.** Two sessions listen to one microphone, and
 `ConversationEngine` decides which may speak. The providers do not mark where
 an utterance ends, so nothing in the app may wait for them to. A change here
 wants a recorded session replayed through it: `RecordedConversationTest` runs
-real provider traffic through the engine.
+real provider traffic through the engine. Compare languages with
+`HeardLanguageTracker.sameLanguage`, never with `==`: the model has its own
+names for some of them.
 
 **Anything touching a key.** Keys must never be logged, never leave `KeyVault`
 in plaintext beyond the moment of use, never be written to a file, and never be

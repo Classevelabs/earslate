@@ -10,7 +10,7 @@ import com.classeve.earslate.bootstrap.LocalKeyBootstrapRepository
 import com.classeve.earslate.bootstrap.ProviderSessionMinter
 import com.classeve.earslate.live.OkHttpLiveSocketClient
 import com.classeve.earslate.security.ProviderKeyStore
-import com.classeve.earslate.security.SecretStore
+import com.classeve.earslate.testing.OneKey
 import com.classeve.earslate.ui.captions.CaptionsStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Assert.assertEquals
@@ -31,15 +31,6 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidJUnit4::class)
 class LiveSessionOnDeviceTest {
-
-    private class OneKey(private val key: String) : SecretStore {
-        override fun contains(name: String) = name == "api_key_gemini"
-        override fun get(name: String) = key.takeIf { name == "api_key_gemini" }
-        override fun put(name: String, secret: String) = Unit
-        override fun remove(name: String) = Unit
-        override val wasResetByKeystore = false
-        override fun acknowledgeKeystoreReset() = Unit
-    }
 
     /** Plays a recording in as the microphone, at real time. */
     private class RecordedMicrophone : AudioCaptureEngine {

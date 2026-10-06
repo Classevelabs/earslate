@@ -40,10 +40,19 @@ class PlayoutLane(private val sampleRateHz: Int) {
     private var primeUntilMs = UNSET
     private var dryAtMs = UNSET
     private var cushionMs = START_CUSHION_MS
+    private var lastBlockBytes = 0
+
+    // Only a stream that carries its own silence can be called late when the
+    // lane runs dry; one that stops between sentences is simply pausing.
+    private var continuous = false
+    private var lastLateAtMs = UNSET
 
     private var windowStartMs = UNSET
     private var windowMinBytes = Int.MAX_VALUE
     private var pendingTrimBytes = 0
+    private var troughBytes = 0
+
+    private var halfSample: Byte? = null
 
     private var underruns = 0
     private var droppedBytes = 0
@@ -53,27 +62,51 @@ class PlayoutLane(private val sampleRateHz: Int) {
 
     /** Queue one block. [voiced] false queues silence of the same length. */
     fun offer(pcm: ByteArray, voiced: Boolean, nowMs: Long) {
-        if (pcm.size < 2) return
         synchronized(lock) {
+            val block = wholeSamples(pcm) ?: return
+            if (!voiced) continuous = true
             if (held) {
-                offerHeld(pcm, voiced)
+                offerHeld(block, voiced)
                 return
             }
-            append(Segment(if (voiced) pcm else null, pcm.size))
+            append(Segment(if (voiced) block else null, block.size))
+            lastBlockBytes = block.size
             if (!flowing) {
-                if (dryAtMs != UNSET && nowMs - dryAtMs <= UNDERRUN_MAX_MS) {
+                if (continuous && dryAtMs != UNSET && nowMs - dryAtMs <= UNDERRUN_MAX_MS) {
                     // A late block, not a new stream: remember how late, and
                     // start again with a little in hand.
                     underruns++
+                    lastLateAtMs = nowMs
                     cushionMs = minOf(MAX_CUSHION_MS, cushionMs + (nowMs - dryAtMs).toInt() + UNDERRUN_MARGIN_MS)
                     primeUntilMs = nowMs + UNDERRUN_MARGIN_MS
+                    pendingTrimBytes = 0
                 } else if (primeUntilMs == UNSET) {
+                    settleCushion(nowMs)
                     primeUntilMs = nowMs + cushionMs
                 }
                 dryAtMs = UNSET
             }
             trimBacklog()
         }
+    }
+
+    // A sample split across two blocks is put back together: half a sample
+    // would turn everything after it into noise.
+    private fun wholeSamples(pcm: ByteArray): ByteArray? {
+        val carried = halfSample
+        if (carried == null && pcm.size % 2 == 0) return pcm.takeIf { it.size >= 2 }
+        val joined = if (carried != null) byteArrayOf(carried) + pcm else pcm
+        halfSample = if (joined.size % 2 == 1) joined[joined.size - 1] else null
+        val whole = joined.size and 1.inv()
+        return if (whole >= 2) joined.copyOf(whole) else null
+    }
+
+    // A cushion bought by a late block is handed back, half at a time, at a
+    // pause once nothing has been late for a while.
+    private fun settleCushion(nowMs: Long) {
+        if (cushionMs <= START_CUSHION_MS) return
+        if (lastLateAtMs != UNSET && nowMs - lastLateAtMs < SHRINK_WINDOW_MS) return
+        cushionMs = START_CUSHION_MS + (cushionMs - START_CUSHION_MS) / 2
     }
 
     // Held speech has no real-time meaning, so the silence around it is
@@ -97,7 +130,10 @@ class PlayoutLane(private val sampleRateHz: Int) {
             return false
         }
         if (!flowing) {
-            if (queuedBytes == 0 || primeUntilMs == UNSET || nowMs < primeUntilMs) {
+            // A stream that opens with a burst already has its cushion in
+            // hand, over and above the block the next arrival will replace.
+            val inHand = queuedBytes >= bytesFor(cushionMs) + lastBlockBytes
+            if (queuedBytes == 0 || primeUntilMs == UNSET || (nowMs < primeUntilMs && !inHand)) {
                 out.fill(0)
                 return false
             }
@@ -127,13 +163,15 @@ class PlayoutLane(private val sampleRateHz: Int) {
     }
 
     // A window whose lowest level stayed well above what is needed means the
-    // cushion is larger than this network requires. A quarter of the surplus
-    // goes back; giving it all back at once just buys the next underrun.
+    // lane runs further behind than this network requires. A quarter of the
+    // surplus goes back; giving it all back at once just buys the next
+    // underrun.
     private fun planShrink() {
         if (windowMinBytes == Int.MAX_VALUE) return
         val surplus = windowMinBytes - bytesFor(TARGET_TROUGH_MS)
         if (surplus <= bytesFor(SHRINK_HYSTERESIS_MS)) return
         pendingTrimBytes = (surplus / 4) and 1.inv()
+        troughBytes = windowMinBytes
     }
 
     private fun skipSilence() {
@@ -146,15 +184,20 @@ class PlayoutLane(private val sampleRateHz: Int) {
             head.offset += take
             queuedBytes -= take
             pendingTrimBytes -= take
-            cushionMs = maxOf(MIN_CUSHION_MS, cushionMs - msFor(take))
+            troughBytes -= take
+            // The cushion is what a new stream starts with: never more than
+            // the lane now runs with at its lowest.
+            cushionMs = maxOf(MIN_CUSHION_MS, minOf(cushionMs, msFor(troughBytes)))
             if (head.remaining == 0) queue.removeFirst()
         }
     }
 
     // After a network stall a burst arrives at once and playback would run
     // that far behind for good. Pauses are shortened first; speech is cut only
-    // when the lane is seconds behind, and never when it was held on purpose.
+    // when the lane is seconds behind. Speech held on purpose is left alone,
+    // pauses and all.
     private fun trimBacklog() {
+        if (consecutive) return
         var excess = queuedBytes - bytesFor(cushionMs + BACKLOG_SLACK_MS)
         if (excess <= 0) return
         val kept = ArrayDeque<Segment>(queue.size)
@@ -170,7 +213,6 @@ class PlayoutLane(private val sampleRateHz: Int) {
         }
         queue.clear()
         queue.addAll(kept)
-        if (consecutive) return
         while (queuedBytes > bytesFor(MAX_BACKLOG_MS) && queue.size > 1) drop(queue.removeFirst())
     }
 
@@ -233,6 +275,7 @@ class PlayoutLane(private val sampleRateHz: Int) {
         flowing = false
         primeUntilMs = UNSET
         dryAtMs = UNSET
+        pendingTrimBytes = 0
         // Whatever is played next should start with speech, not a pause.
         while (queue.firstOrNull()?.voiced == false) queuedBytes -= queue.removeFirst().remaining
     }
@@ -241,6 +284,7 @@ class PlayoutLane(private val sampleRateHz: Int) {
     fun release(nowMs: Long) = synchronized(lock) {
         if (!held) return@synchronized
         held = false
+        settleCushion(nowMs)
         // With little in hand the rest is still arriving at real time, so it
         // needs the same cushion a live stream starts with.
         primeUntilMs = when {
@@ -248,16 +292,6 @@ class PlayoutLane(private val sampleRateHz: Int) {
             queuedBytes >= bytesFor(cushionMs + BACKLOG_SLACK_MS) -> nowMs
             else -> nowMs + cushionMs
         }
-    }
-
-    fun clear() = synchronized(lock) {
-        queue.clear()
-        queuedBytes = 0
-        queuedVoicedBytes = 0
-        flowing = false
-        primeUntilMs = UNSET
-        dryAtMs = UNSET
-        pendingTrimBytes = 0
     }
 
     fun snapshot(): Snapshot = synchronized(lock) {

@@ -129,7 +129,7 @@ fun ApiKeySetupScreen(
     LaunchedEffect(keyText, provider) { problem = null }
 
     fun submit() {
-        val candidate = keyText.trim()
+        val candidate = KeyProvider.tidy(keyText)
         val formatProblem = provider.rejectionReason(candidate)
         if (formatProblem != null) {
             problem = formatProblem

@@ -50,6 +50,19 @@ class RuntimeStateStore {
         _lastError.value = error
     }
 
+    /**
+     * Something a running session wants known that has not stopped it: one
+     * direction that cannot be opened yet, a language the provider cannot
+     * speak. The session sets it and takes it away again; unlike an error it
+     * asks nothing of the user.
+     */
+    private val _notice = MutableStateFlow<String?>(null)
+    val notice: StateFlow<String?> = _notice.asStateFlow()
+
+    fun setNotice(message: String?) {
+        _notice.value = message
+    }
+
     fun clearError() {
         _lastError.value = null
     }

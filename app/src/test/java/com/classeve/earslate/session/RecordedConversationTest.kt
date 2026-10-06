@@ -122,6 +122,35 @@ class RecordedConversationTest {
         replay.assertEveryUtteranceWasTranslated()
     }
 
+    // The model names Norwegian "no"; the picker names it nb.
+    @Test
+    fun `Norwegian and English - the model's own name for the user's language is still theirs`() {
+        val replay = replay("conversation-nb-en.jsonl")
+        replay.assertNothingButTranslationIsHeard()
+        replay.assertEveryUtteranceWasTranslated()
+        assertEquals("the user's own language is never taken for the other person's", emptyList<String>(), replay.sink.heard)
+    }
+
+    // The model hears Malay as Indonesian.
+    @Test
+    fun `Malay and English - a language the model hears under another name is still the user's`() {
+        val replay = replay("conversation-ms-en.jsonl")
+        replay.assertNothingButTranslationIsHeard()
+        replay.assertEveryUtteranceWasTranslated()
+        assertEquals(emptyList<String>(), replay.sink.heard)
+    }
+
+    // The model names Filipino "tl". In this recording it did not repeat the
+    // user's words, so what is measured is that every sentence was translated.
+    @Test
+    fun `Filipino and English - every sentence is translated for the other person`() {
+        val replay = replay("conversation-fil-en.jsonl")
+        replay.assertEveryUtteranceWasTranslated()
+        val echoHeard = replay.sink.played.filter { it.voiced && !replay.belongs(it.atMs, it.leg) }.sumOf { it.ms }
+        assertTrue("the user's own words played back: $echoHeard ms", echoHeard <= 500)
+        assertEquals(emptyList<String>(), replay.sink.heard)
+    }
+
     // The app waited for the model to say a sentence had ended. It never does.
     @Test
     fun `captions are committed line by line, in the language each listener reads`() {

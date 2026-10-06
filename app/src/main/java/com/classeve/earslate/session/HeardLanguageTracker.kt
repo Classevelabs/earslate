@@ -50,9 +50,15 @@ class HeardLanguageTracker(
     }
 
     companion object {
-        /** Regional variants are one language on the wire. */
-        fun sameLanguage(a: String, b: String): Boolean =
-            a.isNotEmpty() && a.substringBefore('-').equals(b.substringBefore('-'), ignoreCase = true)
+        /** Regional variants are one language, and so are the names one language goes by. */
+        fun sameLanguage(a: String, b: String): Boolean = a.isNotEmpty() && nameOf(a) == nameOf(b)
+
+        private fun nameOf(tag: String): String =
+            tag.trim().substringBefore('-').lowercase().let { OTHER_NAMES[it] ?: it }
+
+        // The translate model reports Norwegian as "no" and Filipino as "tl", and
+        // hears Malay as Indonesian. The pickers say nb, fil, ms and id.
+        private val OTHER_NAMES = mapOf("no" to "nb", "tl" to "fil", "ms" to "id")
     }
 }
 
@@ -62,17 +68,25 @@ class HeardLanguageTracker(
  * of speaker the old language would otherwise outvote the new one.
  */
 class RecentWords {
-    private val words = ArrayDeque<String>()
+    private val text = StringBuilder()
 
     /** The language of what was just said, or null while there is too little to tell. */
     fun observe(fragment: String): String? {
-        fragment.split(WHITESPACE).filterTo(words) { it.isNotEmpty() }
-        while (words.size > WINDOW) words.removeFirst()
-        return LanguageDetector.detect(words.joinToString(" "))
+        // Joined exactly as it came: a provider may cut a word across two
+        // fragments, and two halves of a word are not two words.
+        text.append(fragment)
+        val words = text.trim().split(WHITESPACE)
+        if (words.size > WINDOW) {
+            val midWord = !text.last().isWhitespace()
+            text.setLength(0)
+            text.append(words.takeLast(WINDOW).joinToString(" "))
+            if (!midWord) text.append(' ')
+        }
+        return LanguageDetector.detect(text.toString().trim())
     }
 
     /** Nobody has spoken for a while; what comes next is judged on its own words. */
-    fun clear() = words.clear()
+    fun clear() = text.setLength(0)
 
     private companion object {
         const val WINDOW = 12

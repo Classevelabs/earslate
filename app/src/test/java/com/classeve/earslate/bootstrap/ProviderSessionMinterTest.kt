@@ -2,6 +2,10 @@ package com.classeve.earslate.bootstrap
 
 import com.classeve.earslate.security.KeyProvider
 import com.classeve.earslate.session.TranslationProvider
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
@@ -29,9 +33,10 @@ class ProviderSessionMinterTest {
     private val now = 1_790_000_000_000L
     private val key = "AIzaSyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY"
 
-    private class Exchange(val status: Int, val body: String) {
+    private class Exchange(val status: Int, val body: String, val date: String? = null) {
         var request: Request? = null
         var sent: String = ""
+        val all = ArrayList<String>()
     }
 
     private fun minter(exchange: Exchange, failWith: IOException? = null): ProviderSessionMinter {
@@ -41,11 +46,13 @@ class ProviderSessionMinterTest {
                 val request = chain.request()
                 exchange.request = request
                 exchange.sent = Buffer().also { request.body?.writeTo(it) }.readUtf8()
+                exchange.all += exchange.sent
                 Response.Builder()
                     .request(request)
                     .protocol(Protocol.HTTP_1_1)
                     .code(exchange.status)
                     .message("")
+                    .apply { exchange.date?.let { header("Date", it) } }
                     .body(exchange.body.toResponseBody("application/json".toMediaType()))
                     .build()
             },
@@ -102,7 +109,39 @@ class ProviderSessionMinterTest {
         assertFalse("printing a credential must not print its secret", credential.toString().contains("auth_tokens/abc"))
     }
 
+    // The request carries absolute times. Asked on a slow clock, Google issues
+    // a token that has already expired, without a word; measured 2026-10-06.
+    @Test
+    fun `a phone whose clock is wrong asks again on the provider's clock`() = runBlocking {
+        // The phone thinks it is 14:13:20. The reply is dated forty minutes later.
+        val exchange = Exchange(200, """{"name":"auth_tokens/abc"}""", date = "Mon, 21 Sep 2026 14:53:20 GMT")
+        val credential = minter(exchange).mint(KeyProvider.GEMINI, key)
+
+        assertEquals("asked twice", 2, exchange.all.size)
+        assertEquals("first by its own clock", "2026-09-21T14:43:20Z", JSONObject(exchange.all[0]).getString("expireTime"))
+        assertEquals("then by the provider's", "2026-09-21T15:23:20Z", JSONObject(exchange.all[1]).getString("expireTime"))
+        assertEquals("good for the full half hour from now", now + 30 * 60_000L, credential.expiresAtMs)
+        assertEquals(40 * 60_000L, credential.serverAheadMs)
+    }
+
+    @Test
+    fun `a phone whose clock is right asks once`() = runBlocking {
+        val exchange = Exchange(200, """{"name":"auth_tokens/abc"}""", date = "Mon, 21 Sep 2026 14:13:50 GMT")
+        minter(exchange).mint(KeyProvider.GEMINI, key)
+        assertEquals(1, exchange.all.size)
+    }
+
     // ── OpenAI ──────────────────────────────────────────────────────────
+
+    @Test
+    fun `OpenAI's expiry is read on the provider's clock, not the phone's`() = runBlocking {
+        // The reply is dated ten minutes ahead of the phone; the secret expires half an hour after that.
+        val exchange = Exchange(200, """{"value":"ek_123","expires_at":1790002400}""", date = "Mon, 21 Sep 2026 14:23:20 GMT")
+        val credential = minter(exchange).mint(KeyProvider.OPENAI, "sk-test")
+
+        assertEquals("half an hour from now, on this phone", now + 30 * 60_000L, credential.expiresAtMs)
+        assertEquals(10 * 60_000L, credential.serverAheadMs)
+    }
 
     @Test
     fun `the OpenAI secret is asked for on the translations endpoint, for the translate model`() = runBlocking {
@@ -192,6 +231,57 @@ class ProviderSessionMinterTest {
             "Google Gemini is having trouble right now. Try again in a moment.",
             refusal(KeyProvider.GEMINI, 503, ""),
         )
+    }
+
+    // The first retry of a lost connection used to end the session on any of these.
+    @Test
+    fun `only what another attempt could cure is marked as worth one`() {
+        fun failure(status: Int, io: IOException? = null): BootstrapException = runBlocking {
+            runCatching { minter(Exchange(status, "{}"), io).mint(KeyProvider.GEMINI, key) }.exceptionOrNull() as BootstrapException
+        }
+        assertTrue("no network", failure(200, IOException("unreachable")).transient)
+        assertTrue("the provider is in trouble", failure(503).transient)
+        assertFalse("a refused key", failure(403).transient)
+        assertFalse("out of quota", failure(429).transient)
+    }
+
+    // A zero-width space survives trim() and every check for spaces, and the
+    // library's complaint about such a header quotes the whole key.
+    @Test
+    fun `a key carrying a character no header can hold is refused before it is sent, and never quoted`() = runBlocking {
+        val exchange = Exchange(200, """{"name":"auth_tokens/abc"}""")
+        val pasted = key.take(16) + "\u200B" + key.drop(16)
+        val message = try {
+            minter(exchange).mint(KeyProvider.GEMINI, pasted)
+            fail("it was sent")
+            ""
+        } catch (failure: BootstrapException) {
+            failure.message.orEmpty()
+        }
+        assertTrue(message, message.startsWith("That key has a character in it"))
+        assertFalse(message, message.contains(key.take(16)))
+        assertNull("nothing was sent", exchange.request)
+    }
+
+    // Stop used to wait out the whole request, up to twenty-five seconds.
+    @Test
+    fun `a request nobody is waiting for any more is let go at once`() {
+        val never = OkHttpClient.Builder().addInterceptor(
+            Interceptor { chain ->
+                Thread.sleep(4_000)
+                Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("")
+                    .body("{}".toResponseBody("application/json".toMediaType())).build()
+            },
+        ).build()
+        val began = System.currentTimeMillis()
+        runBlocking {
+            val asking = launch(Dispatchers.Default) {
+                runCatching { ProviderSessionMinter(never, installId = "i").mint(KeyProvider.GEMINI, key) }
+            }
+            delay(200)
+            asking.cancelAndJoin()
+        }
+        assertTrue("let go after ${System.currentTimeMillis() - began} ms", System.currentTimeMillis() - began < 2_000)
     }
 
     @Test
