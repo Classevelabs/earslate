@@ -675,7 +675,8 @@ class SessionCoordinatorTest {
         awaitListening()
         whileSomeoneTalks {
             socketFor("en").serve("""{"goAway":{"timeLeft":"50s"}}""")
-            await("the replacement to be opened") { sockets.size == 3 && sockets[2].state.value == LiveSocketState.OPEN }
+            // Set up, not merely open: one ended sooner than that never was a replacement.
+            await("the replacement to be set up") { sockets.size == 3 && sockets[2].sent.isNotEmpty() }
             Thread.sleep(200)
             assertFalse("it waits for a pause before it is put to use", micFrames(sockets[2]).isNotEmpty())
 
@@ -690,7 +691,8 @@ class SessionCoordinatorTest {
         awaitListening()
         whileSomeoneTalks {
             socketFor("en").serve("""{"goAway":{"timeLeft":"50s"}}""")
-            await("the replacement to be opened") { sockets.size == 3 && sockets[2].state.value == LiveSocketState.OPEN }
+            // Set up, not merely open: one ended sooner than that never was a replacement.
+            await("the replacement to be set up") { sockets.size == 3 && sockets[2].sent.isNotEmpty() }
             sockets[2].serverCloses(1001, "")
             await("another to be opened in its place") { sockets.size == 4 && sockets[3].state.value == LiveSocketState.OPEN }
         }
@@ -702,6 +704,10 @@ class SessionCoordinatorTest {
         }
         assertFalse("the user never saw a reconnect", RuntimeState.RECONNECTING in seen)
         assertEquals(RuntimeState.LISTENING, state.state.value)
+        // A reconnect can come and go between two looks at the state. What it
+        // leaves behind is a microphone opened twice and a fresh pair of sockets.
+        assertEquals("the session was never started again", 1, capture.starts.get())
+        assertEquals("one replacement died, one lived, and nothing else was opened", 4, sockets.size)
     }
 
     // ── changing a language while it runs ───────────────────────────────
