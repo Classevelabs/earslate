@@ -68,7 +68,7 @@ fun HelpScreen(
                 )
                 HelpEntry(
                     title = "Audio output",
-                    body = "Translated speech plays through your earbuds or speaker as it arrives. There is a brief delay while the translation processes.",
+                    body = "In earbuds, translated speech plays while the other person is still talking, a few seconds behind them. On the phone's speaker it plays when they pause.",
                 )
                 HelpEntry(
                     title = "Captions",
@@ -86,11 +86,11 @@ fun HelpScreen(
             FramedPanel {
                 HelpEntry(
                     title = "Earbuds recommended",
-                    body = "Bluetooth or wired earbuds give the best experience. They eliminate echo from the speaker feeding back into the microphone.",
+                    body = "Bluetooth or wired earbuds give the best experience: you hear the translation while the other person is still speaking.",
                 )
                 HelpEntry(
                     title = "Speaker mode",
-                    body = "Works but less reliable. The microphone may pick up translated audio and re-translate it. The app uses a playback gate to reduce this, but earbuds are always better.",
+                    body = "The phone waits until the person pauses, then speaks the translation. The microphone is closed while the phone is speaking, so let it finish before you talk.",
                 )
             }
 
@@ -117,7 +117,7 @@ fun HelpScreen(
                 // broken app rather than as stale help.
                 HelpEntry(
                     title = "Two-way translation",
-                    body = "Always on, and both directions are decided by listening — foreign speech arrives in your language, and yours goes out in theirs. If you would rather fix their side yourself, Settings → Advanced has the switch.",
+                    body = "Always on, and both directions are decided by listening — foreign speech arrives in your language, and yours goes out in theirs. If you would rather fix their side yourself, set Other language in Settings.",
                 )
                 HelpEntry(
                     title = "Changing your own language",
@@ -137,23 +137,17 @@ fun HelpScreen(
                     title = "No translation happening",
                     body = "Check that microphone permission is granted, and that someone is speaking a language other than yours. Your own speech is never repeated back to you — it goes out in the language the other person was last heard speaking, so until somebody else has been heard there is nothing for it to go out in.",
                 )
-                // This had the mechanism backwards. On SPEAKER the mic is always
-                // muted while the translator talks \u2014 shouldGateMic() returns
-                // true for that route unconditionally \u2014 so there was nothing to
-                // enable, and the setting it named had no control in Settings at
-                // all. "External only" is the OPT-IN for earbud routes, which is
-                // the opposite case, and it now exists as a real toggle.
                 HelpEntry(
                     title = "Echo or repeated translations",
-                    body = "On speaker, the microphone is already muted while the translator is speaking. On earbuds it stays open, which is right for most earbuds but can echo with open or leaky ones \u2014 turn on External only in Settings to mute it there too.",
+                    body = "Your own words are never played back to you. A separate Bluetooth speaker is the exception: the microphone can hear it and translate the translation. Use earbuds, or the phone's own speaker.",
                 )
                 HelpEntry(
                     title = "High latency",
-                    body = "Translation speed depends on your network connection. Wi-Fi typically gives lower latency than mobile data. earbuds also reduce processing overhead.",
+                    body = "The translation follows the speaker by a few seconds, because the model waits to hear enough of a sentence to translate it. A weak connection adds to that.",
                 )
                 HelpEntry(
                     title = "Connection drops",
-                    body = "The translator automatically reconnects up to 4 times with increasing delays. If it fails, tap Start again. Check your internet connection.",
+                    body = "The translator reconnects by itself, with increasing delays. If it gives up, check your internet connection and tap Start again.",
                 )
             }
         }

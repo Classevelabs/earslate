@@ -43,13 +43,20 @@ unreadable. The app reports this and asks for the key again.
 
 ### 2. The credential exchange
 
-The long-lived key is used exactly once, over HTTPS, to mint a short-lived
-single-use session credential. Only that credential goes on the WebSocket. A
-key is therefore never resident on a long-lived connection, and a leaked socket
-URL does not leak the user's key.
+The long-lived key is used only over HTTPS, to mint a short-lived session
+credential that the provider ties to its translation model. Only that
+credential goes on the WebSocket, in a header. A key is therefore never
+resident on a long-lived connection, and a leaked socket URL leaks neither the
+key nor the credential.
 
-Provider error text is deliberately **not** surfaced verbatim — it is written
-for API developers and occasionally echoes the request back.
+The credential lasts thirty minutes and is reused within that time, so both
+directions of a conversation and every replacement connection open without
+another use of the key. It is held in memory only.
+
+A provider's own error text is shown to the user, because it is the diagnosis.
+It is written for API developers and occasionally echoes the request back, so
+`ProviderMessage` first removes anything shaped like a key or a token and cuts
+the text to a line.
 
 ### 3. Audio handling
 

@@ -1,106 +1,122 @@
 package com.classeve.earslate.bootstrap
 
+import android.content.Context
+import com.classeve.earslate.live.LinkFailure
+import com.classeve.earslate.live.LiveSocketClient
+import com.classeve.earslate.live.ProviderLink
+import com.classeve.earslate.live.TranslationLiveProtocols
 import com.classeve.earslate.security.KeyProvider
 import com.classeve.earslate.security.ProviderKeyStore
 import com.classeve.earslate.session.TranslationProvider
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.security.MessageDigest
+import java.util.UUID
 
 /**
- * Starts sessions from the key the user supplied, on the device, with no
- * server of ours involved at any point.
- *
- * This replaces the hosted broker earslate used through 0.3.x. It keeps the
- * same [SessionBootstrapRepository] shape on purpose: everything downstream —
- * the session coordinator, the socket client, reconnect — already speaks this
- * language, and swapping where a credential comes from should not ripple
- * through the runtime.
+ * Session credentials from the key the user supplied, minted on the device
+ * with no server of ours involved.
  */
 class LocalKeyBootstrapRepository(
     private val keys: ProviderKeyStore,
     private val minter: ProviderSessionMinter,
-) : SessionBootstrapRepository {
+    private val now: () -> Long = System::currentTimeMillis,
+) : SessionCredentialSource {
 
-    override suspend fun bootstrap(
-        provider: TranslationProvider,
-        targetLanguageCode: String,
-        captionsEnabled: Boolean,
-    ): SessionBootstrap {
-        val chosen = keys.resolve(provider)
-            ?: throw missingKey(provider)
-        // resolve() answers from the cheap "is a key stored" check, so reaching
-        // this line means the ciphertext EXISTS. A null now therefore means it
-        // could not be DECRYPTED — an invalidated keystore, a tampered or
-        // truncated entry, or secure storage that will not open — and never
-        // "no key was set up".
-        //
-        // Deliberately NOT re-reading keys.has(chosen) to choose the message.
-        // Reading the key is what discovers an invalidated keystore, and
-        // KeyVault clears the store when it finds one, so a second has() here
-        // would answer false and hand the user the "you never added a key"
-        // message for a key they can see listed in Settings.
-        val apiKey = keys.key(chosen) ?: throw unreadableKey(chosen)
+    private class Held(val credential: SessionCredential, val keyFingerprint: String)
 
-        return minter.mint(chosen, apiKey, targetLanguageCode, captionsEnabled)
+    private val lock = Mutex()
+    @Volatile private var held: Held? = null
+
+    override suspend fun credential(preference: TranslationProvider?): SessionCredential = lock.withLock {
+        val chosen = keys.resolve(preference) ?: throw BootstrapException(
+            "No provider key is set up. Add one in Settings to start translating.",
+        )
+        // has() only says a ciphertext exists, so a null here means the saved
+        // key can no longer be decrypted — not that none was ever saved.
+        val apiKey = keys.key(chosen) ?: throw BootstrapException(
+            "Your saved ${chosen.displayName} key can't be read on this device any more — " +
+                "secure storage changed since it was saved. Open Settings and enter the key again.",
+        )
+        // Tied to the key it was minted from, so replacing the key in Settings
+        // takes effect on the next socket rather than when the credential expires.
+        val fingerprint = fingerprint(apiKey)
+        held?.takeIf {
+            it.credential.provider == chosen.provider &&
+                it.keyFingerprint == fingerprint &&
+                it.credential.expiresAtMs - now() >= MIN_REMAINING_MS
+        }?.let { return@withLock it.credential }
+
+        minter.mint(chosen, apiKey).also { held = Held(it, fingerprint) }
     }
 
-    /**
-     * A key that is on the device and cannot be read.
-     *
-     * The remedy is the same whatever destroyed it — enter it again — but the
-     * user has to be TOLD, because every other surface still shows the provider
-     * as set up. Reporting this as "no key is set up" is the dead end this
-     * exists to prevent: it contradicts what Settings shows, and it is the one
-     * failure mode created by answering "is a key present?" from the
-     * preferences file instead of by decrypting. See `ProviderKeyStore.has`.
-     *
-     * Every cause ends somewhere coherent from here. A destroyed keystore key
-     * clears the store on the way through, so the next visit to key setup also
-     * explains itself via `wasResetByKeystore`. Secure storage that is merely
-     * unavailable keeps its ciphertext and may well work on the next boot —
-     * which is why nothing is deleted here and the user is asked rather than
-     * told their key is gone.
-     */
-    private fun unreadableKey(chosen: KeyProvider): BootstrapException = BootstrapException(
-        "Your saved ${chosen.displayName} key can't be read on this device any more — " +
-            "secure storage changed since it was saved. Open Settings and enter the key again.",
-    )
+    override fun discard(credential: SessionCredential) {
+        if (held?.credential === credential) held = null
+    }
 
-    private fun missingKey(requested: TranslationProvider): BootstrapException {
-        val name = KeyProvider.forProvider(requested)?.displayName ?: "Gemini"
-        return BootstrapException(
-            "No $name key is set up. Add one in Settings to start translating.",
-        )
+    private fun fingerprint(key: String): String =
+        MessageDigest.getInstance("SHA-256").digest(key.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+
+    companion object {
+        // A Gemini socket lives just under ten minutes and stops accepting
+        // audio when its credential expires, so a credential must outlast one.
+        const val MIN_REMAINING_MS = 12 * 60_000L
     }
 }
 
 /**
- * Proves a key works before it is saved, by minting a real session with it and
- * throwing the session away.
- *
- * A format check can only say a string is shaped like a key. This says the key
- * is accepted, the account is in good standing, and the live translation model
- * is actually reachable on it — the three things that otherwise fail later, in
- * the middle of a conversation, when the user is least able to do anything
- * about it.
+ * Proves a key works before it is saved, by opening a real translation
+ * session with it and closing it again. That shows the key is accepted, the
+ * account is in good standing, and the translate model is reachable on it.
  */
-class ProviderKeyVerifier(private val minter: ProviderSessionMinter) {
+class ProviderKeyVerifier(
+    private val minter: ProviderSessionMinter,
+    private val socketFactory: () -> LiveSocketClient,
+) {
 
     sealed interface Result {
         data object Valid : Result
         data class Rejected(val message: String) : Result
     }
 
-    suspend fun verify(
-        provider: KeyProvider,
-        apiKey: String,
-        targetLanguageCode: String,
-    ): Result = try {
-        // Verified with transcription ON — the product default, and the richer
-        // of the two configurations. A key that can mint this can mint the
-        // captions-off variant; checking the other way round would pass a key
-        // that then fails the first time the user leaves captions on.
-        minter.mint(provider, apiKey, targetLanguageCode, captionsEnabled = true)
-        Result.Valid
-    } catch (failure: BootstrapException) {
-        Result.Rejected(failure.message ?: "That key could not be verified.")
+    /** @param languageBcp47 the language the user wants to hear, which the provider must be able to speak. */
+    suspend fun verify(provider: KeyProvider, apiKey: String, languageBcp47: String): Result {
+        val protocol = TranslationLiveProtocols.forProvider(provider.provider)
+        val wireLanguage = protocol.wireLanguage(languageBcp47)
+            ?: return Result.Rejected(
+                "${provider.displayName} can't translate into the language you chose. " +
+                    "Pick another language, or use a different provider.",
+            )
+        val link = try {
+            ProviderLink(minter.mint(provider, apiKey), protocol, socketFactory())
+        } catch (failure: BootstrapException) {
+            return Result.Rejected(failure.message ?: "That key could not be verified.")
+        }
+        return try {
+            link.open(wireLanguage)
+            Result.Valid
+        } catch (failure: LinkFailure) {
+            Result.Rejected(failure.message ?: "That key could not be verified.")
+        } finally {
+            link.close()
+        }
+    }
+}
+
+/**
+ * Per-installation identifier. Random, generated locally, sent only as a
+ * SHA-256 hash in OpenAI's safety-identifier header. It identifies an
+ * installation, never a person.
+ */
+object InstallationId {
+    private const val PREFS = "earslate_installation"
+    private const val KEY = "anonymous_install_id"
+
+    fun loadOrCreate(context: Context): String {
+        val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val existing = prefs.getString(KEY, null)
+        if (existing != null && runCatching { UUID.fromString(existing) }.isSuccess) return existing
+        return UUID.randomUUID().toString().also { prefs.edit().putString(KEY, it).apply() }
     }
 }

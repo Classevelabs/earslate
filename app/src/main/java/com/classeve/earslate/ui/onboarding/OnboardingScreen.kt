@@ -262,12 +262,12 @@ private fun WelcomeStep() {
             // running the release APK, not by reading it.
             ValueProp(
                 title = "Free, on your own key",
-                body = "No price, no subscription, no account. You bring a Google Gemini " +
-                    "key, and sessions bill to that account at Google's rates.",
+                body = "No price, no subscription, no account. You bring a Google Gemini or " +
+                    "OpenAI key, and sessions bill to that account at the provider's rates.",
             )
             ValueProp(
                 title = "Private",
-                body = "Audio goes straight from your phone to Google Gemini. " +
+                body = "Audio goes straight from your phone to the provider you choose. " +
                     "There is no ClassEve server in the path, and we never receive or " +
                     "store your audio.",
             )
@@ -396,8 +396,8 @@ private fun HowStep(language: TargetLanguage) {
         OnboardingStep(
             index = "01",
             title = "Put earbuds in",
-            body = "Speaker works, but the microphone then hears the translation and " +
-                "translates it again. Wired or Bluetooth earbuds remove that entirely.",
+            body = "In earbuds you hear the translation while the other person is still " +
+                "talking. On the speaker it waits until they pause.",
         )
         OnboardingStep(
             index = "02",
@@ -428,10 +428,10 @@ private fun HowStep(language: TargetLanguage) {
                 "as a stop button.",
         )
         ValueProp(
-            title = "Your audio, sent to Google Gemini",
+            title = "Your audio, sent to your provider",
             body = "Captured speech is streamed over an encrypted connection straight to " +
-                "Google Gemini to be translated, under Google's terms. You will " +
-                "be asked to confirm this once, before the first session.",
+                "the provider you choose, Google Gemini or OpenAI, to be translated under " +
+                "its terms. You will be asked to confirm this once, before the first session.",
         )
         Spacer(Modifier.height(4.dp))
         Text(
@@ -474,14 +474,14 @@ private fun KeyStep(alreadySetUp: Boolean) {
         kicker = "Step 3 of 3",
         headline = "One key, and\nyou're done.",
         support = "earslate has no servers of its own, so translation runs directly between " +
-            "your phone and Google Gemini. Bring a Gemini key and sessions " +
-            "bill to your Google account at Google's rates.",
+            "your phone and the provider you choose. Bring a Google Gemini or OpenAI key " +
+            "and sessions bill to that account at the provider's rates.",
     )
     FramedPanel {
         ValueProp(
             title = "It takes about a minute",
-            body = "The next screen has the steps to get a Gemini key, and a " +
-                "button that opens the Google AI Studio console.",
+            body = "The next screen has the steps to get a key, and a button that opens " +
+                "the provider's console.",
         )
         ValueProp(
             title = "Checked before it is saved",

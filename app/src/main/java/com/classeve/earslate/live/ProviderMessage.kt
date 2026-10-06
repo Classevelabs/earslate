@@ -9,11 +9,9 @@ package com.classeve.earslate.live
  * is worth surfacing. It is also the one string in the system we did not write
  * and cannot predict.
  *
- * `ProviderSessionMinter` resolves that tension by never showing provider text
- * at all, and gives the reason in its own KDoc: the message "occasionally
- * echoes the key back". That is the correct instinct and the wrong trade —
- * discarding the message throws away the diagnosis to avoid the leak. This
- * removes the leak and keeps the diagnosis.
+ * A provider occasionally echoes the key back in that text. Discarding the
+ * message would throw away the diagnosis to avoid the leak; this removes the
+ * leak and keeps the diagnosis.
  *
  * The rule is deliberately about SHAPE, not about known key formats. An
  * allowlist of prefixes (`sk-`, `AIza`) is a losing game: providers change

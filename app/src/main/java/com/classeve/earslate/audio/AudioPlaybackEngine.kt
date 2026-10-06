@@ -2,184 +2,152 @@ package com.classeve.earslate.audio
 
 import android.media.AudioAttributes
 import android.media.AudioFormat
-import android.media.AudioManager
 import android.media.AudioTrack
+import android.os.Process
+import android.os.SystemClock
 import android.util.Log
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
-import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Owns the translated-audio playback path.
- *
- *   - Mono PCM16, at whatever rate the provider is actually sending (24 kHz for
- *     Gemini Live today; the track rebuilds itself if that changes mid-stream).
- *   - AudioTrack in STREAM mode, USAGE_MEDIA so audio routes to earbuds at full
- *     clarity. No hardware AEC coupling: capture deliberately takes raw ambient
- *     audio, and echo is handled by the half-duplex mic gate in the session
- *     coordinator rather than by the platform reference mix.
- *   - An adaptive [JitterBuffer] starting at [startupLatencyMs] — one Gemini
- *     chunk plus a margin, so the first utterance is as smooth as the steady
- *     state — that only buys more latency when the network makes it necessary.
- *   - A genuinely graceful stop that lets the last word finish.
+ * Plays translated speech. Each translate session gets a lane of its own — its
+ * own queue and its own output stream — and the platform mixes them, so two
+ * directions never have to share, or fight over, one buffer.
  */
 interface AudioPlaybackEngine {
-    fun start(audioSessionId: Int = AudioManager.AUDIO_SESSION_ID_GENERATE)
-    fun enqueue(pcm: ByteArray, sampleRateHz: Int = 24_000)
-    fun stop(graceful: Boolean = true)
 
-    /**
-     * Drop everything buffered but not yet played.
-     *
-     * Used when the session works out that what is queued should never have
-     * been produced — the wrong translate leg spoke into the gap before the
-     * speaker was identified. Without this the queued echo plays out in full
-     * before the correct translation is heard, which is the whole complaint.
-     */
-    fun discardPending()
+    fun start()
 
-    /**
-     * The provider has finished speaking. Tells the jitter buffer that running dry
-     * next is expected, so end-of-turn silence is not mistaken for a network
-     * stutter and charged as extra latency.
-     */
-    fun notifyTurnEnd()
+    /** Queue audio on [lane]. [voiced] false keeps the lane's timing but plays silence. */
+    fun write(lane: Int, pcm: ByteArray, sampleRateHz: Int, voiced: Boolean)
 
-    /** Live buffer health, for the session's telemetry and its end-of-turn drain. */
+    /** What is queued on [lane] should not be heard after all. */
+    fun muteQueued(lane: Int)
+
+    /** Nothing more is coming for [lane]: let it finish, then free it. */
+    fun retire(lane: Int)
+
+    /** True holds speech until [release]; false plays it as it arrives. */
+    fun setConsecutive(enabled: Boolean)
+
+    /** Consecutive mode: play out what has been held. */
+    fun release()
+
+    /** Consecutive mode: go back to holding. */
+    fun hold()
+
     fun snapshot(): PlaybackSnapshot
+
+    /** [graceful] lets the last words finish. */
+    fun stop(graceful: Boolean = true)
 }
 
-/** What the playback path is actually doing right now. All measured, never assumed. */
+/** What the playback path is doing right now, measured. */
 data class PlaybackSnapshot(
     val running: Boolean,
-    val sampleRateHz: Int,
-    val bufferedMs: Int,
-    val targetLatencyMs: Int,
+    val lanes: Int,
+    /** Speech queued and not yet played, across every lane. */
+    val waitingMs: Int,
+    /** True while speech is still coming out of the loudspeaker. */
+    val audible: Boolean,
+    val cushionMs: Int,
     val underruns: Int,
-    val droppedChunks: Int,
+    val droppedMs: Int,
 )
 
 class AndroidAudioPlaybackEngine(
-    private val defaultSampleRateHz: Int = 24_000,
-    /**
-     * Startup cushion for the adaptive buffer, before it has seen a chunk and can
-     * apply its own 1.25×-chunk floor.
-     *
-     * This was 40 ms, then 180 ms, and both were below ONE Gemini chunk.
-     * [JitterBuffer] measured the chunk on-device (2026-07-27): 12000 bytes =
-     * **250 ms of audio**, arriving every ~248 ms. Its steady-state arm floor is
-     * 1.25× that (~312 ms). But the very first arm of a session runs on THIS
-     * number, before any chunk has been seen — so at 180 ms the first utterance
-     * armed below one chunk, played it, and starved before the second landed.
-     * Every session opened choppy and only smoothed out once adaptation learned
-     * the size. (The old "~100 ms chunk / two chunk periods" note here was simply
-     * wrong; the byte math above is the measured truth.)
-     *
-     * 300 ms matches the chunk (250 ms) plus a margin, so the first utterance
-     * gets the same cushion the steady state settles on. It costs nothing
-     * perceptible: the model itself takes on the order of a second to produce a
-     * translation, so 300 ms is well inside the noise of that. Smooth beats
-     * theoretically-snappy — which is the whole point of this path.
-     */
-    private val startupLatencyMs: Int = 300,
+    private val now: () -> Long = SystemClock::elapsedRealtime,
 ) : AudioPlaybackEngine {
 
-    private val bytesPerSample = 2
+    private val outputs = ConcurrentHashMap<Int, Output>()
+    @Volatile private var running = false
+    @Volatile private var consecutive = false
 
-    /**
-     * The jitter buffer belongs to exactly ONE playback session and is replaced
-     * wholesale by [start].
-     *
-     * It used to be a single instance shared by every session for the life of
-     * the process, and that was a real defect on the reconnect path — the one
-     * path that only runs when the user is already suffering. A graceful [stop]
-     * hands the tail to a coroutine that drains for up to [DRAIN_TIMEOUT_MS] and
-     * then calls `clear()`. Reconnect attempt 1 has a 0 ms backoff, so the next
-     * session could call [start] — and begin enqueuing real audio — while that
-     * coroutine was still running. It then cleared the NEW session's buffer out
-     * from under it.
-     *
-     * Ownership, not timing, is the fix: a departing session drains the buffer
-     * it owns, and a fresh one is constructed here for the arriving session, so
-     * a stale coroutine cannot reach live audio no matter how the two overlap.
-     */
-    @Volatile private var buffer: JitterBuffer = newBuffer(defaultSampleRateHz)
+    /** One lane, the track it plays on, and the thread that feeds it. */
+    private inner class Output(val id: Int, val sampleRateHz: Int, private val track: AudioTrack) {
+        val lane = PlayoutLane(sampleRateHz)
 
-    /** Guards session handover: [start] and [stop] must never interleave. */
-    private val sessionLock = Any()
+        @Volatile private var finishing = false
+        @Volatile private var abandoned = false
+        @Volatile private var deadlineMs = Long.MAX_VALUE
+        @Volatile private var lastVoicedAtMs = NEVER
 
-    /**
-     * The graceful tail-drain of the PREVIOUS session, if one is still playing
-     * out. [start] settles it before building a new track — see
-     * [finishPendingDrain].
-     */
-    @Volatile private var drainJob: Job? = null
+        val audible: Boolean get() = lastVoicedAtMs.let { it != NEVER && now() - it < AUDIBLE_FOR_MS }
 
-    /**
-     * The track owned by [drainJob] while a tail is playing out.
-     *
-     * Atomic rather than lock-guarded on purpose. The drain coroutine releases
-     * this from its own `finally`, and [finishPendingDrain] may run while that
-     * coroutine is mid-flight; if both went through [sessionLock] — which
-     * [finishPendingDrain] already holds via [start] — they would deadlock.
-     * A compare-and-set makes the release happen exactly once with no lock.
-     */
-    private val drainingTrack = AtomicReference<AudioTrack?>(null)
+        private val frame = ByteArray(sampleRateHz * FRAME_MS / 1000 * 2)
 
-    private fun newBuffer(rate: Int) = JitterBuffer(
-        startupBytes = startupBytesFor(rate),
-        maxTargetBytes = bytesFor(rate, MAX_LATENCY_MS),
-        growthStepBytes = bytesFor(rate, GROWTH_STEP_MS),
-        maxBufferedBytes = bytesFor(rate, MAX_BACKLOG_MS),
-        recoveryBytes = bytesFor(rate, RECOVERY_QUIET_MS),
-    )
+        // The thread that writes is the only one that ever releases the track:
+        // freeing it under a blocking write crashes the process.
+        private val thread = Thread({
+            runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO) }
+            try {
+                track.play()
+                while (!abandoned) {
+                    if (finishing && (lane.snapshot().queuedVoicedMs == 0 || now() >= deadlineMs)) break
+                    if (lane.pull(frame, now())) lastVoicedAtMs = now()
+                    // A track that is always fed never has to restart, which
+                    // is what makes the start of each sentence immediate.
+                    if (track.write(frame, 0, frame.size, AudioTrack.WRITE_BLOCKING) < 0) break
+                }
+            } catch (t: IllegalStateException) {
+                Log.w(TAG, "playout stopped: ${t.message}")
+            } finally {
+                outputs.remove(id, this)
+                runCatching { if (abandoned) track.pause() else track.stop() }
+                runCatching { track.release() }
+            }
+        }, "earslate-playout-$id")
 
-    /**
-     * One frame of digital silence, written to keep the track's clock running
-     * through a buffer gap. See the drain loop.
-     */
-    @Volatile private var silenceFrame: ByteArray = ByteArray(0)
+        fun begin() = thread.start()
 
-    /** Consecutive silence frames written during the current gap. */
-    private var silenceRun = 0
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        fun finish(withinMs: Long) {
+            deadlineMs = now() + withinMs
+            finishing = true
+        }
 
-    @Volatile private var track: AudioTrack? = null
-    @Volatile private var loopJob: Job? = null
-    @Volatile private var activeRateHz: Int = 0
-    @Volatile private var sessionId: Int = AudioManager.AUDIO_SESSION_ID_GENERATE
+        fun abandon() {
+            abandoned = true
+            // Makes a write that is blocked in the framework return.
+            runCatching { track.pause() }
+        }
+    }
 
-    /**
-     * Held across a mid-stream rate rebuild. The drain loop parks on this
-     * instead of spinning, and no audio is pulled from the buffer while it is
-     * set — the previous implementation dequeued chunks during a rebuild and
-     * dropped them on the floor.
-     */
-    @Volatile private var rebuilding = false
+    override fun start() {
+        running = true
+    }
 
-    private fun bytesFor(rate: Int, ms: Int): Int = (rate * ms / 1000) * bytesPerSample
+    override fun write(lane: Int, pcm: ByteArray, sampleRateHz: Int, voiced: Boolean) {
+        if (!running || sampleRateHz <= 0) return
+        var output = outputs[lane]
+        if (output != null && output.sampleRateHz != sampleRateHz) {
+            outputs.remove(lane, output)
+            output.finish(RETIRE_WITHIN_MS)
+            output = null
+        }
+        if (output == null) {
+            output = open(lane, sampleRateHz) ?: return
+            output.lane.setConsecutive(consecutive, now())
+            outputs[lane] = output
+            output.begin()
+            // A stop that ran while this lane was being built did not see it.
+            if (!running) {
+                output.abandon()
+                return
+            }
+        }
+        output.lane.offer(pcm, voiced, now())
+    }
 
-    private fun startupBytesFor(rate: Int): Int = bytesFor(rate, startupLatencyMs)
-
-    private fun buildAndPlay(rate: Int, audioSessionId: Int): Boolean {
+    private fun open(lane: Int, sampleRateHz: Int): Output? {
         val minBuffer = AudioTrack.getMinBufferSize(
-            rate,
+            sampleRateHz,
             AudioFormat.CHANNEL_OUT_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
         )
         if (minBuffer <= 0) {
-            Log.w(TAG, "AudioTrack.getMinBufferSize failed: $minBuffer (rate=$rate)")
-            return false
+            Log.w(TAG, "no output at $sampleRateHz Hz")
+            return null
         }
-        val bufferBytes = maxOf(minBuffer * 2, startupBytesFor(rate) * 2)
-
-        val t = try {
+        val track = try {
             AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
@@ -189,353 +157,82 @@ class AndroidAudioPlaybackEngine(
                 )
                 .setAudioFormat(
                     AudioFormat.Builder()
-                        .setSampleRate(rate)
+                        .setSampleRate(sampleRateHz)
                         .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                         .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                         .build(),
                 )
-                .setBufferSizeInBytes(bufferBytes)
+                // Small on purpose: the lane holds the cushion, where it can
+                // be measured and adjusted. This is only the hand-off.
+                .setBufferSizeInBytes(maxOf(minBuffer, sampleRateHz * TRACK_BUFFER_MS / 1000 * 2))
                 .setTransferMode(AudioTrack.MODE_STREAM)
-                .apply { if (audioSessionId > 0) setSessionId(audioSessionId) }
                 .build()
-        } catch (ex: Throwable) {
-            Log.e(TAG, "AudioTrack build failed: ${ex.message}")
-            return false
+        } catch (t: Exception) {
+            Log.e(TAG, "AudioTrack build failed: ${t.message}")
+            return null
         }
-
-        if (t.state != AudioTrack.STATE_INITIALIZED) {
-            Log.w(TAG, "AudioTrack not initialized (state=${t.state})")
-            runCatching { t.release() }
-            return false
+        if (track.state != AudioTrack.STATE_INITIALIZED) {
+            runCatching { track.release() }
+            return null
         }
-
-        t.play()
-        track = t
-        activeRateHz = rate
-        // Rate-dependent, so it is rebuilt with the track.
-        silenceFrame = ByteArray(bytesFor(rate, SILENCE_FRAME_MS))
-        silenceRun = 0
-        return true
+        return Output(lane, sampleRateHz, track)
     }
 
-    override fun start(audioSessionId: Int): Unit = synchronized(sessionLock) {
-        if (track != null) {
-            Log.i(TAG, "start called while already running; ignoring")
-            return
-        }
-        // A previous session's tail may still be playing out. Once a NEW session
-        // is starting, that tail is no longer wanted: on reconnect it would be
-        // the dead session's last words layered underneath the live one, on two
-        // AudioTracks at once. Settle it before building anything.
-        finishPendingDrain()
-
-        sessionId = audioSessionId
-        // A brand-new buffer, not a reset of the old one: see the field KDoc.
-        // Reset would have left a departing drain coroutine holding a reference
-        // to the very object this session is about to fill.
-        val sessionBuffer = newBuffer(defaultSampleRateHz)
-        buffer = sessionBuffer
-        if (!buildAndPlay(defaultSampleRateHz, audioSessionId)) return
-
-        loopJob = scope.launch {
-            // Bound to THIS session's buffer for the whole loop. Re-reading the
-            // field each tick would let a late-arriving session's buffer be
-            // drained by the outgoing session's loop.
-            val buffer = sessionBuffer
-            while (isActive) {
-                // Park during a rate rebuild rather than spinning on `continue`,
-                // and crucially without touching the buffer — audio pulled here
-                // would have nowhere to go.
-                if (rebuilding) {
-                    delay(REBUILD_PARK_MS)
-                    continue
-                }
-                val active = track
-                if (active == null) {
-                    delay(IDLE_POLL_MS)
-                    continue
-                }
-                val chunk = buffer.drain()
-                if (chunk == null) {
-                    // Nothing ready. If we were mid-utterance, keep the track fed
-                    // with silence instead of letting it starve: a starved
-                    // AudioTrack underruns in hardware, which is heard as a click
-                    // or a rasp at the seam and is exactly what made a gap sound
-                    // like a dropped phone call. Writing comfort silence turns the
-                    // same gap into an inaudible pause and keeps the timeline
-                    // continuous.
-                    //
-                    // Bounded by MAX_SILENCE_RUN so a genuine end-of-turn does not
-                    // sit here forever adding latency — after that we fall back to
-                    // idle polling and let the buffer re-arm properly.
-                    if (silenceRun < MAX_SILENCE_RUN && silenceFrame.isNotEmpty()) {
-                        silenceRun++
-                        active.write(silenceFrame, 0, silenceFrame.size, AudioTrack.WRITE_BLOCKING)
-                    } else {
-                        delay(IDLE_POLL_MS)
-                    }
-                    continue
-                }
-                silenceRun = 0
-                val written = active.write(chunk, 0, chunk.size, AudioTrack.WRITE_BLOCKING)
-                if (written < 0) {
-                    Log.w(TAG, "AudioTrack.write error: $written")
-                }
-            }
-        }
+    override fun muteQueued(lane: Int) {
+        outputs[lane]?.lane?.muteQueued()
     }
 
-    override fun notifyTurnEnd() {
-        buffer.markTurnEnd()
+    // Stays in the map until it has finished, so held speech on a lane whose
+    // session has been replaced is still released with the rest.
+    override fun retire(lane: Int) {
+        outputs[lane]?.finish(RETIRE_WITHIN_MS)
     }
 
-    override fun discardPending() {
-        // The AudioTrack's own queue is deliberately left alone: flushing it
-        // needs a pause/flush/play cycle that clicks, and it holds only a few
-        // tens of milliseconds. The jitter buffer is where an unwanted
-        // utterance actually piles up.
-        buffer.clear()
+    override fun setConsecutive(enabled: Boolean) {
+        consecutive = enabled
+        for (output in outputs.values) output.lane.setConsecutive(enabled, now())
     }
 
-    override fun enqueue(pcm: ByteArray, sampleRateHz: Int) {
-        if (sampleRateHz > 0 && track != null && sampleRateHz != activeRateHz && !rebuilding) {
-            maybeRebuildForRate(sampleRateHz)
-        }
-        buffer.enqueue(pcm)
+    override fun release() {
+        for (output in outputs.values) output.lane.release(now())
     }
 
-    // Shares [sessionLock] with start/stop rather than locking on `this`: a
-    // mid-stream rebuild swaps the same track and buffer fields that a session
-    // handover does, and two different monitors guarding one piece of state is
-    // not mutual exclusion.
-    private fun maybeRebuildForRate(rate: Int): Unit = synchronized(sessionLock) {
-        if (track == null || rate <= 0 || rate == activeRateHz) return
-        Log.i(TAG, "playback rate $activeRateHz → $rate; rebuilding AudioTrack")
-        rebuilding = true
-        try {
-            val old = track
-            track = null
-            runCatching {
-                old?.pause()
-                old?.flush()
-                old?.release()
-            }
-            val rebuilt = buildAndPlay(rate, sessionId)
-            if (!rebuilt) {
-                Log.w(TAG, "rebuild at $rate failed; restoring $activeRateHz")
-                buildAndPlay(if (activeRateHz > 0) activeRateHz else defaultSampleRateHz, sessionId)
-            }
-            // Re-express the buffer's thresholds in the new rate's bytes. Without
-            // this every threshold silently means a different duration and the
-            // adaptation logic drifts.
-            val newRate = activeRateHz.takeIf { it > 0 } ?: defaultSampleRateHz
-            buffer.retarget(
-                startupBytes = startupBytesFor(newRate),
-                maxBytes = bytesFor(newRate, MAX_LATENCY_MS),
-                stepBytes = bytesFor(newRate, GROWTH_STEP_MS),
-                capBytes = bytesFor(newRate, MAX_BACKLOG_MS),
-                recoveryTargetBytes = bytesFor(newRate, RECOVERY_QUIET_MS),
-            )
-        } finally {
-            rebuilding = false
-        }
-    }
-
-    /**
-     * Stops playback. When [graceful] the buffered tail is played out first, so
-     * the last translated word is never clipped.
-     *
-     * The previous implementation called `AudioTrack.stop()` and then `flush()`
-     * immediately — and `flush()` discards exactly the audio `stop()` was
-     * letting drain, so the "graceful" path cut the tail every time. Here we
-     * drain the jitter buffer into the track, call `stop()` (which plays out
-     * what the track already holds), and only then release.
-     */
-    override fun stop(graceful: Boolean): Unit = synchronized(sessionLock) {
-        // Kept so teardown can JOIN it. Cancelling is not enough: the loop
-        // writes with AudioTrack.WRITE_BLOCKING, and cancellation does not
-        // interrupt a blocking native call — the coroutine only notices at its
-        // next suspension point. Releasing the track while that write is still
-        // inside the framework is the same use-after-free that AudioRecord had
-        // on the capture side, and it crashes from a thread with no handler.
-        val loop = loopJob
-        loop?.cancel()
-        loopJob = null
-        val active = track
-        track = null
-        activeRateHz = 0
-        rebuilding = false
-
-        // The departing session's buffer, captured by reference. Everything
-        // below touches only this one, never the field, so a session that
-        // starts while the tail is still draining is untouched by it.
-        val departing = buffer
-
-        if (active == null) {
-            departing.clear()
-            return
-        }
-
-        // Both paths tear down on the IO scope so the caller — usually the main
-        // thread stopping a session — is never blocked waiting for audio, and
-        // so both can join the loop before releasing.
-        drainingTrack.set(active)
-        drainJob = scope.launch {
-            try {
-            if (!graceful) {
-                // pause() makes an in-flight WRITE_BLOCKING return promptly.
-                runCatching { active.pause() }
-            }
-            // The write has provably returned once this join completes. Bounded
-            // because a wedged framework call must not strand the track
-            // forever; the timeout is far longer than a write of one chunk.
-            withTimeoutOrNull(LOOP_JOIN_TIMEOUT_MS) { loop?.join() }
-
-            if (graceful) {
-                withTimeoutOrNull(DRAIN_TIMEOUT_MS) {
-                    while (departing.pendingBytes > 0) {
-                        // drainForShutdown, not drain: drain() refuses while the
-                        // buffer is disarmed, which is its ordinary state right
-                        // after a turn ends — the moment someone reaches for
-                        // STOP — so this loop used to break immediately and
-                        // discard the very tail it exists to play out.
-                        val chunk = departing.drainForShutdown() ?: break
-                        active.write(chunk, 0, chunk.size, AudioTrack.WRITE_BLOCKING)
-                    }
-                }
-            } else {
-                runCatching { active.flush() }
-            }
-            // Cancellation cannot interrupt the release below (there is no
-            // suspension point in it), so ownership is settled under the lock:
-            // whichever of this coroutine and finishPendingDrain arrives first
-            // releases the track, and the other finds null and does nothing.
-            } finally {
-                // This coroutine ALWAYS releases its own track, cancelled or
-                // not: a `finally` body has no suspension point, so
-                // cancellation cannot skip it, and by the time control reaches
-                // here any in-flight write has returned.
-                //
-                // finishPendingDrain used to cancel this coroutine and release
-                // the track itself, which is not the same thing at all —
-                // cancelling does not interrupt a blocking native write, so the
-                // track was freed underneath one. On an emulator that is
-                // "IllegalStateException: Unable to retrieve AudioTrack pointer
-                // for write()" from a thread with no handler, taking the
-                // process with it. Found by AudioTeardownTest, not by reading.
-                if (drainingTrack.compareAndSet(active, null)) {
-                    runCatching {
-                        // stop() lets the track's own buffer finish. Deliberately
-                        // no flush() on the graceful path: flushing discards
-                        // exactly the audio stop() is draining, which is what
-                        // used to clip the final word.
-                        if (graceful) active.stop()
-                        active.release()
-                    }
-                }
-                departing.clear()
-            }
-        }
-    }
-
-    /**
-     * Settle a still-running graceful drain from a previous session.
-     *
-     * Called only from [start], under [sessionLock]. Cancelling the coroutine
-     * can leave the old [AudioTrack] alive and playing, so the track is released
-     * here explicitly rather than left to a coroutine that is no longer running
-     * — the leak that would otherwise put two tracks on the speaker at once
-     * during a reconnect.
-     */
-    private fun finishPendingDrain() {
-        val pending = drainJob ?: return
-        drainJob = null
-        if (!pending.isActive) {
-            // Already finished, so its finally has already released. Backstop
-            // in case it completed exceptionally before reaching the release.
-            drainingTrack.getAndSet(null)?.let { runCatching { it.release() } }
-            return
-        }
-        Log.i(TAG, "new session starting; discarding previous tail")
-        // Cancel only. The track is NOT released here: the drain coroutine's
-        // finally owns that, and it runs only once any in-flight write has
-        // returned. Releasing from this side is what crashed the process.
-        //
-        // The cost is that the outgoing tail may overlap the new track for the
-        // length of one write — tens of milliseconds — which is a far better
-        // trade than a native crash, and pause() below cuts it short.
-        runCatching { drainingTrack.get()?.pause() }
-        pending.cancel()
+    override fun hold() {
+        for (output in outputs.values) output.lane.hold()
     }
 
     override fun snapshot(): PlaybackSnapshot {
-        val rate = activeRateHz.takeIf { it > 0 } ?: defaultSampleRateHz
-        val bytesPerMs = (rate * bytesPerSample) / 1000
-        fun toMs(bytes: Int) = if (bytesPerMs > 0) bytes / bytesPerMs else 0
+        val live = outputs.values.toList()
+        val lanes = live.map { it.lane.snapshot() }
         return PlaybackSnapshot(
-            running = track != null,
-            sampleRateHz = rate,
-            bufferedMs = toMs(buffer.pendingBytes),
-            targetLatencyMs = toMs(buffer.targetLatencyBytes),
-            underruns = buffer.underrunCount,
-            droppedChunks = buffer.droppedChunks,
+            running = running,
+            lanes = lanes.size,
+            waitingMs = lanes.sumOf { it.queuedVoicedMs },
+            audible = live.any { it.audible },
+            cushionMs = lanes.maxOfOrNull { it.cushionMs } ?: 0,
+            underruns = lanes.sumOf { it.underruns },
+            droppedMs = lanes.sumOf { it.droppedMs },
         )
+    }
+
+    override fun stop(graceful: Boolean) {
+        running = false
+        for (output in outputs.values.toList()) {
+            // Speech still being held was never going to be said now.
+            if (graceful && !output.lane.snapshot().held) output.finish(DRAIN_WITHIN_MS) else output.abandon()
+        }
     }
 
     companion object {
         private const val TAG = "AudioPlayback"
+        private const val NEVER = -1L
+        private const val FRAME_MS = 20
+        private const val TRACK_BUFFER_MS = 80
 
-        /**
-         * Ceiling for the adaptive buffer. 240 ms was not enough headroom for a
-         * congested mobile link — the buffer would peg at the ceiling and keep
-         * underrunning with nowhere left to grow. 600 ms is still comfortably
-         * below the point where a listener notices added delay in a translated
-         * conversation.
-         */
-        private const val MAX_LATENCY_MS = 600
+        /** Speech written this recently is still in the track and the room. */
+        private const val AUDIBLE_FOR_MS = TRACK_BUFFER_MS + 2 * FRAME_MS
 
-        /**
-         * How much cushion one underrun buys. Deliberately coarse: at 20 ms it
-         * took ten separate audible gaps to climb from the floor to the ceiling.
-         * At 60 ms a bad link is absorbed within one or two.
-         */
-        private const val GROWTH_STEP_MS = 60
-
-        /** Backlog cap. Beyond this the speaker has moved on and old audio is noise. */
-        private const val MAX_BACKLOG_MS = 1_200
-
-        /**
-         * Clean audio required before the buffer gives back one [GROWTH_STEP_MS].
-         * Long on purpose — latency earned by a real stutter should not be
-         * surrendered after a couple of seconds of calm, because that is what
-         * makes the target oscillate and the stream stutter all over again.
-         */
-        private const val RECOVERY_QUIET_MS = 12_000
-
-        /** Duration of one comfort-silence frame written during a buffer gap. */
-        private const val SILENCE_FRAME_MS = 20
-
-        /**
-         * Cap on consecutive comfort-silence frames — 5 × 20 ms = 100 ms.
-         *
-         * Sized from measurement, not taste: arrival gaps on-device were 248 ms
-         * mean against a 291 ms worst case, so ~43 ms of lateness is what actually
-         * needs covering. 100 ms is a bit over double that. Keeping the cap tight
-         * matters because silence written here sits *ahead* of the next real
-         * utterance in the track — a generous cap would trade a click for
-         * permanent added delay, which is a worse bargain.
-         */
-        private const val MAX_SILENCE_RUN = 5
-
-        private const val IDLE_POLL_MS = 5L
-        private const val REBUILD_PARK_MS = 2L
-        private const val DRAIN_TIMEOUT_MS = 1_500L
-
-        /**
-         * How long teardown waits for the playback loop to leave an in-flight
-         * blocking write. A single chunk's write returns in well under this;
-         * the bound exists so a wedged framework call cannot strand the track.
-         */
-        private const val LOOP_JOIN_TIMEOUT_MS = 500L
+        private const val DRAIN_WITHIN_MS = 1_500L
+        private const val RETIRE_WITHIN_MS = 6_000L
     }
 }

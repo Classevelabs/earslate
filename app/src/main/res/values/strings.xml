@@ -12,18 +12,16 @@
     <string name="status_idle">Idle</string>
     <string name="status_bootstrapping">Preparing</string>
     <string name="status_connecting">Connecting</string>
-    <string name="status_ready">Ready</string>
     <string name="status_listening">Listening</string>
     <string name="status_playing">Translating</string>
     <string name="status_reconnecting">Reconnecting</string>
-    <string name="status_degraded">Degraded</string>
 
     <!-- Route labels -->
     <string name="route_bluetooth">BLUETOOTH</string>
     <string name="route_wired">WIRED</string>
     <string name="route_speaker">SPEAKER</string>
     <string name="route_unknown">ROUTE</string>
-    <string name="route_speaker_echo_warning">Speaker mode may echo — earbuds give the cleanest translation.</string>
+    <string name="route_speaker_turns">On speaker, the translation waits for a pause. Earbuds give it live.</string>
 
     <!-- Actions -->
     <string name="action_start">Start listening</string>
@@ -31,7 +29,7 @@
 
     <!-- Audio-egress prominent disclosure (Google Play User Data policy) -->
     <string name="audio_disclosure_title">How your audio is used</string>
-    <string name="audio_disclosure_body">To translate, earslate sends captured audio over an encrypted connection directly to Google Gemini. Google processes the audio in real time under its terms. ClassEve never receives or stores the audio. Tap I agree to allow this, or open our privacy policy to learn more.</string>
+    <string name="audio_disclosure_body">To translate, earslate sends captured audio over an encrypted connection directly to your selected provider, Gemini or OpenAI. That provider processes the audio in real time under its terms. ClassEve never receives or stores the audio. Tap I agree to allow this, or open our privacy policy to learn more.</string>
     <string name="audio_disclosure_agree">I agree</string>
     <string name="audio_disclosure_decline">Not now</string>
     <string name="audio_disclosure_privacy">Privacy policy</string>

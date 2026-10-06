@@ -39,8 +39,8 @@ import kotlinx.coroutines.launch
  * The service holds no business logic — it is a thin controller over
  * [EarslateRuntime.sessionCoordinator]. It is deliberately NOT sticky: a
  * session only ever begins from an explicit user action, and the provider
- * credential is single-use and short-lived, so there is nothing meaningful to
- * resume after a process kill. See [onStartCommand].
+ * credential is short-lived and held only in memory, so there is nothing
+ * meaningful to resume after a process kill. See [onStartCommand].
  */
 class TranslatorService : Service() {
 

@@ -5,13 +5,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * Rolling window of translated captions:
- *   - captions are optional
- *   - incremental but stable
- *   - never an unbounded chat log — we keep the last [maxLines] lines only
- *
- * The session coordinator pushes [appendDelta] as `LiveEvent.CaptionDelta`
- * events arrive and [commitLine] on `TurnComplete`.
+ * Rolling window of translated captions. Each direction of the conversation
+ * builds its own line, so two people speaking close together do not end up in
+ * one sentence; a line is committed when its speaker stops.
  */
 class CaptionsStore(
     private val maxLines: Int = 48,
@@ -19,54 +15,45 @@ class CaptionsStore(
     private val _lines = MutableStateFlow<List<String>>(emptyList())
     val lines: StateFlow<List<String>> = _lines.asStateFlow()
 
-    private val _pending = MutableStateFlow("")
-    val pending: StateFlow<String> = _pending.asStateFlow()
+    /** Lines still being spoken, oldest first. */
+    private val _pending = MutableStateFlow<List<String>>(emptyList())
+    val pending: StateFlow<List<String>> = _pending.asStateFlow()
 
-    private val builder = StringBuilder()
+    private val builders = LinkedHashMap<Int, StringBuilder>()
     private val lock = Any()
 
-    fun appendDelta(text: String) {
+    fun appendDelta(source: Int, text: String) {
         if (text.isEmpty()) return
         synchronized(lock) {
-            builder.append(text)
-            _pending.value = builder.toString()
+            builders.getOrPut(source) { StringBuilder() }.append(text)
+            publish()
         }
     }
 
-    /**
-     * Throw away the line being built, keeping everything already committed.
-     *
-     * The session uses this when the leg that was writing turns out to have
-     * been answering the wrong speaker — its text is an echo, and committing it
-     * would leave the wrong language sitting in the transcript for good.
-     */
-    fun clearPending() {
+    /** Throw away the line [source] was building; committed lines are kept. */
+    fun discardPending(source: Int) {
         synchronized(lock) {
-            builder.setLength(0)
-            _pending.value = ""
+            if (builders.remove(source) != null) publish()
         }
     }
 
-    fun commitLine() {
+    fun commitLine(source: Int) {
         synchronized(lock) {
-            val committed = builder.toString().trim()
-            builder.setLength(0)
-            _pending.value = ""
-            if (committed.isEmpty()) return
-            _lines.value = (_lines.value + committed).takeLast(maxLines)
+            val committed = builders.remove(source)?.toString()?.trim().orEmpty()
+            if (committed.isNotEmpty()) _lines.value = (_lines.value + committed).takeLast(maxLines)
+            publish()
         }
     }
 
     fun clear() {
-        // _lines is cleared INSIDE the lock with the rest. It used to sit
-        // outside, which left a window where a concurrent appendDelta/commitLine
-        // from a still-draining session could commit a line after the builder
-        // was emptied but before the list was — resurrecting the previous
-        // conversation's last caption into the new session's transcript.
         synchronized(lock) {
-            builder.setLength(0)
-            _pending.value = ""
+            builders.clear()
+            _pending.value = emptyList()
             _lines.value = emptyList()
         }
+    }
+
+    private fun publish() {
+        _pending.value = builders.values.map { it.toString().trimStart() }.filter { it.isNotEmpty() }
     }
 }

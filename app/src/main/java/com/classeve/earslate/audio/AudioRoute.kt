@@ -1,16 +1,19 @@
 package com.classeve.earslate.audio
 
 /**
- * Active playback route, in preference order: Bluetooth earbuds, wired headset,
- * then the built-in speaker.
- *
- * The route is not cosmetic — on [SPEAKER] the coordinator always half-duplex-
- * gates the microphone during playback, because translated speech coming out of
- * the speaker would otherwise be re-captured and re-translated in a loop.
+ * Where translated speech comes out, in preference order: Bluetooth earbuds,
+ * wired headset, then a loudspeaker.
  */
 enum class AudioRoute {
     BLUETOOTH,
     WIRED,
     SPEAKER,
-    UNKNOWN,
+    UNKNOWN;
+
+    /**
+     * True when the microphone can hear what is played. The translation then
+     * waits for a pause and the microphone closes while it plays; in an ear,
+     * neither is needed. Anything not known to be in an ear counts as heard.
+     */
+    val sharedWithMicrophone: Boolean get() = this == SPEAKER || this == UNKNOWN
 }

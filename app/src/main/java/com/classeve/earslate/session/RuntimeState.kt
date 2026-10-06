@@ -1,26 +1,19 @@
 package com.classeve.earslate.session
 
 /**
- * State machine for the translator runtime.
- *
- * IDLE is the only terminal resting state. Every active session moves through
- * BOOTSTRAPPING → CONNECTING → READY → LISTENING, with PLAYING interleaved while
- * translated audio is draining. Failure branches go through RECONNECTING /
- * DEGRADED without tearing down the service.
+ * What the translator is doing. IDLE is the only resting state; an active
+ * session moves BOOTSTRAPPING → CONNECTING → LISTENING, with PLAYING while a
+ * translation is being heard, and RECONNECTING while a lost connection is
+ * being replaced.
  */
 enum class RuntimeState {
     IDLE,
     BOOTSTRAPPING,
     CONNECTING,
-    READY,
     LISTENING,
     PLAYING,
     RECONNECTING,
-    DEGRADED,
 }
 
 val RuntimeState.isActive: Boolean
-    get() = when (this) {
-        RuntimeState.IDLE -> false
-        else -> true
-    }
+    get() = this != RuntimeState.IDLE

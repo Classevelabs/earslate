@@ -25,7 +25,7 @@ class CaptionRowsTest {
 
     @Test
     fun `the partial line is a row of its own`() {
-        val rows = captionRows(listOf("Good morning.", "How are you?"), "I am fi")
+        val rows = captionRows(listOf("Good morning.", "How are you?"), listOf("I am fi"))
 
         assertEquals(3, rows.size)
         assertEquals("I am fi", rows.last().text)
@@ -36,7 +36,7 @@ class CaptionRowsTest {
 
     @Test
     fun `nothing pending means no live row`() {
-        val rows = captionRows(listOf("Good morning."), "")
+        val rows = captionRows(listOf("Good morning."), emptyList())
 
         assertEquals(1, rows.size)
         assertFalse(rows.single().live)
@@ -48,7 +48,7 @@ class CaptionRowsTest {
      */
     @Test
     fun `autoscroll targets the live row, not the last committed line`() {
-        val rows = captionRows(listOf("one", "two"), "three in prog")
+        val rows = captionRows(listOf("one", "two"), listOf("three in prog"))
 
         assertEquals(2, captionScrollTarget(rows))
         assertTrue(
@@ -59,7 +59,7 @@ class CaptionRowsTest {
 
     @Test
     fun `autoscroll targets the last committed line when nothing is pending`() {
-        val rows = captionRows(listOf("one", "two", "three"), "")
+        val rows = captionRows(listOf("one", "two", "three"), emptyList())
 
         assertEquals(2, captionScrollTarget(rows))
     }
@@ -71,7 +71,7 @@ class CaptionRowsTest {
      */
     @Test
     fun `a partial line with no committed lines is still followed`() {
-        val rows = captionRows(emptyList(), "hel")
+        val rows = captionRows(emptyList(), listOf("hel"))
 
         assertEquals(1, rows.size)
         assertEquals(0, captionScrollTarget(rows))
@@ -87,7 +87,7 @@ class CaptionRowsTest {
     fun `a full rolling window plus a partial is forty-nine rows`() {
         val committed = (1..48).map { "line $it" }
 
-        val rows = captionRows(committed, "line 49 in prog")
+        val rows = captionRows(committed, listOf("line 49 in prog"))
 
         assertEquals(49, rows.size)
         assertEquals(48, captionScrollTarget(rows))
@@ -95,7 +95,7 @@ class CaptionRowsTest {
 
     @Test
     fun `an empty transcript has nothing to scroll to`() {
-        val rows = captionRows(emptyList(), "")
+        val rows = captionRows(emptyList(), emptyList())
 
         assertEquals(0, rows.size)
         assertEquals(-1, captionScrollTarget(rows))
@@ -122,5 +122,20 @@ class CaptionRowsTest {
         // First composition, or coming back to the screen with a transcript
         // already in the store: without this the panel opens at the top.
         assertTrue(shouldFollowCaptions(lastVisibleIndex = -1, targetIndex = 30))
+    }
+
+    // Two people speaking close together each have a line in progress.
+    @Test
+    fun `each direction still speaking is a live row of its own, after the committed ones`() {
+        val rows = captionRows(listOf("Good morning."), listOf("Where is the", "Dónde está"))
+        assertEquals(
+            listOf(
+                CaptionRow("Good morning.", live = false),
+                CaptionRow("Where is the", live = true),
+                CaptionRow("Dónde está", live = true),
+            ),
+            rows,
+        )
+        assertEquals(2, captionScrollTarget(rows))
     }
 }

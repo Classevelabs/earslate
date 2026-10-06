@@ -1,114 +1,43 @@
 package com.classeve.earslate.live
 
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 
-/**
- * kotlinx.serialization wire models for the Gemini Live API (v1beta BidiGenerateContent).
- *
- * Fields are nullable + optional so that forward-compat is cheap — the real API adds keys
- * we do not know about, and we silently ignore them via `Json { ignoreUnknownKeys = true }`.
- * When we add or remove a field here, the only thing that breaks is our own parsing, not
- * the whole session.
- *
- * The exact shapes for `gemini-3.5-live-translate-preview` may differ in surface details from
- * the generic v1beta contract this file encodes. Tune here, not in business logic.
+/*
+ * Wire models for the Gemini Live API (v1beta BidiGenerateContent). Only the
+ * fields the app reads or writes are declared. Every incoming field has a
+ * default: a missing required field would throw and cost the whole frame,
+ * audio included.
  */
-
-// ============================================================================
-// Outgoing — client → server
-// ============================================================================
 
 @Serializable
 internal data class ClientSetupFrame(
     val setup: ClientSetupPayload,
 )
 
+// No systemInstruction field: given a prompt, the translate model answers
+// questions instead of translating them.
 @Serializable
 internal data class ClientSetupPayload(
     val model: String,
-    val generationConfig: GenerationConfig? = null,
-    // These two belong HERE, on BidiGenerateContentSetup — NOT inside
-    // generationConfig. Google's proto rejects them there and kills the socket
-    // with 1007 "Invalid JSON payload received. Unknown name
-    // "outputAudioTranscription" at 'setup.generation_config': Cannot find
-    // field." Because they are only emitted when captions are on, and captions
-    // default to ON, that single misplacement made every default install unable
-    // to open a session at all. translationConfig is the opposite — it must stay
-    // inside generationConfig.
-    //
-    // This payload is ALSO what the ephemeral token carries as
-    // `bidiGenerateContentSetup`: ProviderSessionMinter embeds the output of
-    // LiveSessionConfigFactory rather than describing the object again. That
-    // used to be two hand-written copies, and this comment used to claim they
-    // were of "identical shape" — they were not. The token always carried
-    // transcription while this payload dropped it with captions off, so a
-    // captions-off session locked its credential to one configuration and then
-    // asked for another. Nothing caught it because each copy had its own
-    // passing test and neither test compared them.
-    //
-    // Enforced now by GeminiSessionSetupParityTest. If you find yourself
-    // building this object somewhere else, that is the bug.
-    val inputAudioTranscription: JsonObject? = null,
-    val outputAudioTranscription: JsonObject? = null,
-    val systemInstruction: Content? = null,
+    val generationConfig: GenerationConfig,
+    // On the setup, not inside generationConfig: nested there the server
+    // closes the socket with 1007 "Cannot find field".
+    val inputAudioTranscription: JsonObject,
+    val outputAudioTranscription: JsonObject,
 )
 
 @Serializable
 internal data class GenerationConfig(
-    val responseModalities: List<String>? = null,
-    val temperature: Double? = null,
-    // gemini-3.5-live-translate-preview is a purpose-built speech-to-speech
-    // translator. It is driven by this STRUCTURED config (target language +
-    // echo toggle), NOT by a freeform systemInstruction prompt. Verified live
-    // end-to-end: with translationConfig the model translates; without it (the
-    // old prompt-only path) it echoed the source and lagged badly.
-    val translationConfig: TranslationConfig? = null,
-    // NOTE: inputAudioTranscription / outputAudioTranscription deliberately do
-    // NOT live here. See ClientSetupPayload — putting them in generationConfig
-    // is rejected by the server.
+    val responseModalities: List<String>,
+    val translationConfig: TranslationConfig,
 )
 
 @Serializable
 internal data class TranslationConfig(
-    // BCP-47 primary subtag the model translates INTO (e.g. "es", "hi", "fr").
-    // Region forms like "es-ES" are rejected by the model. The two exceptions
-    // are Chinese, which takes a SCRIPT subtag ("zh-Hans"/"zh-Hant"), and
-    // Portuguese, which keeps its region ("pt-BR"/"pt-PT"). Always produce this
-    // value via LiveSessionConfigFactory.translateCodeFor — never pass an app
-    // BCP-47 tag straight through.
     val targetLanguageCode: String,
-    // false → stay SILENT when the input is already in the target language
-    // (verified: emits pure-zero PCM, peak=1). This is what makes the two-leg
-    // bidirectional design work — each leg speaks only for its own direction.
-    // NO default on purpose: kotlinx omits default-valued fields under
-    // encodeDefaults=false, and we want this explicitly on the wire.
+    // No default, so it is always written to the wire.
     val echoTargetLanguage: Boolean,
-)
-
-@Serializable
-internal data class Content(
-    // Defaulted, not required. A required field here means a `modelTurn` that
-    // arrives without `parts` throws, and a throw in the parser discards the
-    // WHOLE frame — including any audio and any turnComplete riding along with
-    // it. See Transcription for the measured consequence of getting this wrong.
-    val parts: List<Part> = emptyList(),
-    val role: String? = null,
-)
-
-@Serializable
-internal data class Part(
-    val text: String? = null,
-    val inlineData: InlineData? = null,
-)
-
-@Serializable
-internal data class InlineData(
-    // Both defaulted for the same reason as Content.parts — a missing key must
-    // cost us one field, never the entire frame.
-    val mimeType: String = "",
-    val data: String = "",
 )
 
 @Serializable
@@ -118,9 +47,7 @@ internal data class ClientRealtimeFrame(
 
 @Serializable
 internal data class RealtimeInput(
-    val audio: AudioBlob? = null,
-    val video: AudioBlob? = null,
-    val text: String? = null,
+    val audio: AudioBlob,
 )
 
 @Serializable
@@ -129,52 +56,45 @@ internal data class AudioBlob(
     val mimeType: String,
 )
 
-// ============================================================================
-// Incoming — server → client
-// ============================================================================
-
-/**
- * Top-level server frame. Exactly one of the branches is populated per message in v1beta
- * today. Any unknown branches are ignored.
- */
 @Serializable
 internal data class ServerFrame(
     val setupComplete: JsonObject? = null,
     val serverContent: ServerContent? = null,
     val goAway: GoAway? = null,
-    @SerialName("usageMetadata")
-    val usageMetadata: JsonObject? = null,
 )
 
 @Serializable
 internal data class ServerContent(
     val modelTurn: Content? = null,
-    val turnComplete: Boolean? = null,
-    val interrupted: Boolean? = null,
     val outputTranscription: Transcription? = null,
     val inputTranscription: Transcription? = null,
-    val generationComplete: Boolean? = null,
+)
+
+@Serializable
+internal data class Content(
+    val parts: List<Part> = emptyList(),
+)
+
+@Serializable
+internal data class Part(
+    val inlineData: InlineData? = null,
+)
+
+@Serializable
+internal data class InlineData(
+    val mimeType: String = "",
+    val data: String = "",
 )
 
 @Serializable
 internal data class Transcription(
-    /**
-     * MUST have a default. Google routinely sends `inputTranscription` /
-     * `outputTranscription` objects carrying only a marker (e.g. `finished`) with
-     * no `text` at all. As a required field that threw inside the parser, and the
-     * parser's catch-all discards the entire frame — so every one of those markers
-     * silently destroyed whatever else the frame contained, audio included.
-     *
-     * Measured on-device 2026-07-27 with captions finally working: 2-4 frames a
-     * second were being thrown away this way. It was invisible before then only
-     * because the misplaced transcription config (see ClientSetupPayload) meant
-     * captions could never be switched on in the first place.
-     */
     val text: String = "",
-    val finished: Boolean? = null,
+    // The language the model decided it heard (input) or spoke (output).
+    val languageCode: String? = null,
 )
 
 @Serializable
 internal data class GoAway(
+    // A protobuf Duration as JSON: "50s", "49.500s".
     val timeLeft: String? = null,
 )

@@ -9,10 +9,10 @@ language while they are still speaking.
 
 ## How it works
 
-You supply an API key for **Google Gemini**. earslate uses it, once, over
-HTTPS, to mint a short-lived single-use session credential. The phone then
-opens a WebSocket **straight to Google** with that credential and streams audio
-over it.
+You supply an API key for **Google Gemini** or **OpenAI**. earslate trades it,
+over HTTPS, for a short-lived session credential. The phone then opens its
+connections **straight to that provider** with the credential and streams audio
+over them.
 
 That means:
 
@@ -20,22 +20,31 @@ That means:
   backend. Not a proxy, not a broker, not a relay.
 - **Your key never goes on the socket.** Only the short-lived credential does,
   so the long-lived key is never sitting on an open connection.
-- **Your usage is yours.** Sessions are billed to your own Google account, at
-  Google's own rates. We never see them.
+- **Your usage is yours.** Sessions are billed to your own provider account, at
+  the provider's own rates. We never see them.
 
-Gemini runs one translate leg per direction, so two people can talk normally;
-each leg stays silent unless the speaker is using the other language. The other
-person's language is worked out by listening — you only pick your own.
+A conversation runs two translation sessions on one microphone, one for each
+direction. Both hear everything, and the app lets a direction be heard only for
+speech in the other language, so nobody gets their own words repeated back. The
+other person's language is worked out by listening — you only pick your own.
+
+In earbuds the translation plays while the other person is still speaking. On
+the phone's loudspeaker, where the microphone would hear it, the translation
+waits for a pause.
 
 ## Getting a key
 
-In the app: **Settings → API key**, or the setup screen on first launch. It
-walks you through it and opens the console for you.
+In the app: **Settings → API keys**, or the setup screen on first launch. It
+walks you through it and opens the right console for you.
 
-- Gemini — [Google AI Studio](https://aistudio.google.com/apikey). Keys start `AIza`.
+- Gemini — [Google AI Studio](https://aistudio.google.com/apikey).
+- OpenAI — [API keys](https://platform.openai.com/api-keys). The account needs
+  billing set up or live translation is refused. OpenAI translates into
+  thirteen languages; Gemini covers more.
 
-The key is checked against the provider before it is saved, so a wrong or
-unfunded key fails at setup rather than in the middle of a conversation.
+A key is checked before it is saved, by opening a real translation session with
+it. A wrong or unfunded key fails at setup rather than in the middle of a
+conversation.
 
 ## Where your key is kept
 
@@ -68,16 +77,20 @@ runtime. Release builds additionally need signing coordinates in
 ## Architecture
 
 - Kotlin, Jetpack Compose, single activity.
-- `security/` — `KeyVault` (AndroidKeyStore AES-GCM) and `ProviderKeys` (whether
-  a key exists, and the checks that name common paste mistakes).
+- `security/` — `KeyVault` (AndroidKeyStore AES-GCM) and `ProviderKeys` (which
+  providers have a key, and the checks that name common paste mistakes).
 - `bootstrap/` — `ProviderSessionMinter` performs the credential exchange with
-  Google; `LocalKeyBootstrapRepository` reads the stored key and mints against it.
-- `live/` — WebSocket transport and the Gemini Live wire protocol.
-- `audio/` — capture at 16 kHz in 100 ms batches; playback through an adaptive
-  jitter buffer that starts just above one provider chunk, buys latency only when
-  the network forces it, and gives it back after a sustained clean run.
-- `session/` — `SessionCoordinator` owns session lifecycle, the half-duplex mic
-  gate on speaker routes, and reconnection.
+  Google or OpenAI; `LocalKeyBootstrapRepository` mints from the stored key and
+  reuses the credential while it has life left.
+- `live/` — WebSocket transport, and one wire protocol per provider behind
+  `TranslationLiveProtocol`.
+- `audio/` — capture at the provider's own sample rate and frame size; playback
+  on one continuous lane per direction, with a cushion that grows only when the
+  network forces it and shrinks back after a sustained clean run.
+- `session/` — `SessionCoordinator` owns the session lifecycle, replaces a
+  connection before the provider closes it, and reconnects;
+  `ConversationEngine` decides which direction may be heard; `FloorControl`
+  takes turns with the speaker on a loudspeaker.
 - `ui/` — onboarding, key setup, main, settings, help.
 
 No dependency-injection framework: `EarslateRuntime` is a plain holder of
@@ -87,7 +100,13 @@ process singletons.
 
 No analytics SDK, no crash reporter, no advertising identifier, and no network
 call to any ClassEve service — the app has no address for one. The only
-outbound traffic is to Google, for the translation you asked for.
+outbound traffic is to the provider you chose, for the translation you asked
+for.
+
+An install-scoped random UUID is generated locally and sent, hashed, as
+OpenAI's safety identifier. It attributes abuse signals to a device rather than
+to your whole OpenAI account. It is not an account, identifies no person, and
+is excluded from backup.
 
 ## Contributing
 

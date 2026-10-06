@@ -15,7 +15,7 @@ earslate
 ## Short description
 
 ```
-Live speech translation into your earbuds, with your own Google Gemini key.
+Live speech translation into your earbuds, with your own Gemini or OpenAI key.
 ```
 
 ## Full description
@@ -24,7 +24,7 @@ Live speech translation into your earbuds, with your own Google Gemini key.
 earslate turns your phone into a live translation earpiece. Start a session and the speech around you is translated into your language in real time — read it on screen or hear it through your earbuds.
 
 YOU BRING THE KEY
-earslate has no account and no subscription, and ClassEve runs no server in this path. You add your own Google Gemini API key once, and the app talks straight to Google. Sessions are billed to your own Google account, at Google's rates.
+earslate has no account and no subscription, and ClassEve runs no server in this path. You add your own Google Gemini or OpenAI API key once, and the app talks straight to that provider. Sessions are billed to your provider account at your provider's rates.
 
 HOW IT WORKS
 • Add your key once in Settings
@@ -33,7 +33,7 @@ HOW IT WORKS
 • Pick your language; theirs is detected as they speak
 
 YOUR KEY, YOUR AUDIO
-Your key is sealed by the Android keystore and goes only to Google, over HTTPS. While a session is active, ambient audio streams over an encrypted connection directly to Google Gemini; ClassEve never receives your audio. Google handles that audio under its own terms, so do not use earslate for confidential conversations. Details: https://classeve.com/privacy
+Your key is sealed by the Android keystore and goes only to the provider that issued it, over HTTPS. While a session is active, ambient audio streams over an encrypted connection directly to the provider you chose; ClassEve never receives your audio. The provider handles that audio under its own terms, so do not use earslate for confidential conversations. Details: https://classeve.com/privacy
 
 The microphone is active only while a session is running.
 
@@ -47,7 +47,7 @@ By ClassEve.
 - Category: Communication. Tags: Translator, Translation, Speech, Languages, Live captions.
 - Contact: website `https://classeve.com`, email `contact@classeve.com`, privacy policy `https://classeve.com/privacy`.
 - Icon `earslate-play-icon-512.png` and feature graphic `earslate-feature-graphic-1024x500.png` in this directory; `render-assets.py` regenerates them.
-- App access: restricted. A session needs the reviewer's own Google Gemini key, entered in Settings; the reviewer instructions in the Console say so and name the in-app path.
-- Data safety: audio is shared with Google Gemini for translation, encrypted in transit, not marked ephemeral. The user's key stays on the device and goes only to Google. ClassEve collects nothing.
+- App access: restricted. A session needs the reviewer's own Gemini or OpenAI key, entered in Settings; the reviewer instructions in the Console say so and name the in-app path.
+- Data safety: audio is shared with the provider the user chose (Google or OpenAI) for translation, encrypted in transit, not marked ephemeral; a hashed install id goes to OpenAI only, as its safety identifier. The user's key stays on the device and goes only to the provider that issued it. ClassEve collects nothing.
 - Content rating: everyone. Ads: none. Target audience: 18 and over.
-- The in-app prominent disclosure (`R.string.audio_disclosure_body`, enforced at `TranslatorService.onStartCommand`) names Google Gemini; that string, the data-safety declaration and the full description all name the same provider and move together.
+- The in-app prominent disclosure (`R.string.audio_disclosure_body`, enforced at `TranslatorService.onStartCommand`) names both providers; if the provider set changes, that string, the data-safety declaration and the full description move together.

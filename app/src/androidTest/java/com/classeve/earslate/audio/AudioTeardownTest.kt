@@ -4,25 +4,21 @@ import android.Manifest
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.rule.GrantPermissionRule
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * The two teardown races fixed in 0.4.4, exercised against the real framework.
+ * The audio engines against the real framework. `AudioTrack` and `AudioRecord`
+ * are stubs off-device, so none of this can live in the JVM suite.
  *
- * These cannot live in the JVM suite. `AudioTrack` and `AudioRecord` are stubs
- * off-device — `getMinBufferSize` returns 0 and every call is a no-op — so both
- * fixes shipped reasoning-verified only, which is exactly the gap this closes.
- *
- * Both tests are **repetition** tests. A race is not disproved by one clean
- * pass, and both of these fire only when a teardown overlaps a call already in
- * flight. The loops are sized so that the pre-fix code has many chances to lose
- * the race; the failure mode is a native crash or an IllegalStateException from
- * a thread with no handler, which takes the whole test process down rather than
- * failing an assertion. A green run here means the process survived, which is
- * the actual claim being made.
+ * The teardown tests are repetition tests: a release racing a blocking read or
+ * write shows up as a native crash from a thread with no handler, which takes
+ * the whole test process down. A green run means the process survived.
  */
 @RunWith(AndroidJUnit4::class)
 class AudioTeardownTest {
@@ -31,103 +27,172 @@ class AudioTeardownTest {
     val permission: GrantPermissionRule =
         GrantPermissionRule.grant(Manifest.permission.RECORD_AUDIO)
 
-    private fun chunk(bytes: Int = 12_000) = ByteArray(bytes) { (it % 251).toByte() }
+    private fun speech(ms: Int = 250, rateHz: Int = 24_000) =
+        ByteArray(rateHz * ms / 1000 * 2) { ((it % 97) * 2).toByte() }
 
-    /**
-     * The reconnect pattern: a graceful stop hands the tail to a coroutine that
-     * drains for up to 1.5 s, and reconnect attempt 1 has a **0 ms** backoff, so
-     * the next session can start while that coroutine is still running.
-     *
-     * Before the fix both sessions shared one JitterBuffer, so the departing
-     * drain called `clear()` on the arriving session's audio, and the old
-     * AudioTrack was left playing alongside the new one. The assertion is that
-     * audio enqueued AFTER a restart is still there — i.e. nobody cleared it.
-     */
+    private fun await(what: String, timeoutMs: Long = 5_000, condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (!condition()) {
+            check(System.currentTimeMillis() < deadline) { "timed out waiting for $what" }
+            Thread.sleep(10)
+        }
+    }
+
+    // ── playback ────────────────────────────────────────────────────────
+
+    @Test
+    fun speechWrittenToALaneIsPlayedOut() {
+        val engine = AndroidAudioPlaybackEngine()
+        engine.start()
+        repeat(8) { engine.write(lane = 1, speech(), 24_000, voiced = true) }
+        assertTrue("speech is queued", engine.snapshot().waitingMs > 0)
+        await("the lane to play it out") { engine.snapshot().waitingMs == 0 }
+        engine.stop(graceful = false)
+    }
+
+    @Test
+    fun twoDirectionsPlayOnTheirOwnLanes() {
+        val engine = AndroidAudioPlaybackEngine()
+        engine.start()
+        repeat(4) {
+            engine.write(lane = 1, speech(), 24_000, voiced = true)
+            engine.write(lane = 2, speech(), 24_000, voiced = false)
+        }
+        assertEquals(2, engine.snapshot().lanes)
+        await("both lanes to drain") { engine.snapshot().waitingMs == 0 }
+        assertEquals("a steady stream never ran dry", 0, engine.snapshot().underruns)
+        engine.stop(graceful = false)
+    }
+
+    @Test
+    fun heldSpeechWaitsForItsRelease() {
+        val engine = AndroidAudioPlaybackEngine()
+        engine.start()
+        engine.setConsecutive(true)
+        repeat(4) { engine.write(lane = 1, speech(), 24_000, voiced = true) }
+        Thread.sleep(600)
+        assertEquals("nothing is played while held", 1_000, engine.snapshot().waitingMs)
+        assertFalse(engine.snapshot().audible)
+
+        engine.release()
+        await("the held speech to be heard") { engine.snapshot().audible }
+        await("it to finish") { engine.snapshot().waitingMs == 0 }
+        engine.stop(graceful = false)
+    }
+
+    // A restart with no pause between is the reconnect path.
     @Test
     fun playbackSurvivesImmediateRestartAfterGracefulStop() {
         val engine = AndroidAudioPlaybackEngine()
-        repeat(25) {
+        repeat(25) { round ->
             engine.start()
-            repeat(4) { engine.enqueue(chunk(), 24_000) }
+            repeat(4) { engine.write(lane = round * 2, speech(), 24_000, voiced = true) }
             engine.stop(graceful = true)
-            // No delay: this is the 0 ms reconnect backoff.
             engine.start()
-            repeat(4) { engine.enqueue(chunk(), 24_000) }
-
-            val snapshot = engine.snapshot()
+            repeat(4) { engine.write(lane = round * 2 + 1, speech(), 24_000, voiced = true) }
             assertTrue(
-                "the arriving session's audio was cleared by the departing drain",
-                snapshot.bufferedMs > 0,
+                "the arriving session's audio was lost to the departing one",
+                engine.snapshot().waitingMs > 0,
             )
             engine.stop(graceful = false)
         }
     }
 
-    /**
-     * Capture teardown while a blocking `AudioRecord.read()` is in flight.
-     *
-     * Cancelling a coroutine does not interrupt a blocking native call, so the
-     * old `stop()` could free the AudioRecord from the caller's thread while the
-     * capture loop was still inside `read()`. Freeing a native object under an
-     * in-flight read is undefined; in practice it surfaces as an
-     * IllegalStateException or a native abort from a thread with no handler.
-     *
-     * The loop starts capture, waits just long enough to be parked inside a
-     * read, then stops — repeatedly, to give the race room to happen.
-     */
-    @Test
-    fun captureStopDoesNotReleaseUnderAnInFlightRead() {
-        var batches = 0
-        repeat(40) {
-            val engine = AndroidAudioCaptureEngine(framesPerBatch = 5)
-            val sessionId = engine.start(onBatch = { batches++ })
-            if (sessionId == 0) {
-                // No usable mic on this image; nothing to prove here.
-                engine.stop()
-                return
-            }
-            // A 20 ms frame read is in flight for most of this window.
-            Thread.sleep(25)
-            engine.stop()
-        }
-        assertTrue("capture never delivered a batch; the test proved nothing", batches > 0)
-    }
-
-    /**
-     * Rapid stop/start with no drain in between — the immediate teardown path,
-     * which now also joins the loop before releasing the track.
-     */
     @Test
     fun playbackSurvivesRapidImmediateStopStart() {
         val engine = AndroidAudioPlaybackEngine()
-        repeat(50) {
+        repeat(50) { round ->
             engine.start()
-            engine.enqueue(chunk(), 24_000)
+            engine.write(lane = round, speech(), 24_000, voiced = true)
             engine.stop(graceful = false)
         }
         engine.start()
-        engine.enqueue(chunk(), 24_000)
-        val snapshot = engine.snapshot()
-        assertTrue("engine unusable after rapid cycling", snapshot.running)
+        engine.write(lane = 1_000, speech(), 24_000, voiced = true)
+        assertTrue("engine unusable after rapid cycling", engine.snapshot().running)
+        engine.stop(graceful = false)
+        await("every lane to be released") { engine.snapshot().lanes == 0 }
+    }
+
+    @Test
+    fun aRetiredLaneFinishesAndIsFreed() {
+        val engine = AndroidAudioPlaybackEngine()
+        engine.start()
+        repeat(4) { engine.write(lane = 7, speech(), 24_000, voiced = true) }
+        engine.retire(7)
+        await("the retired lane to finish and go") { engine.snapshot().lanes == 0 }
         engine.stop(graceful = false)
     }
 
-    /**
-     * A mid-stream sample-rate change rebuilds the track. The buffer must be
-     * re-expressed in the new rate's bytes, or every threshold silently means a
-     * different duration.
-     */
     @Test
-    fun playbackRebuildsForANewSampleRateWithoutLosingTheStream() {
+    fun aLaneFollowsAChangeOfSampleRate() {
         val engine = AndroidAudioPlaybackEngine()
         engine.start()
-        repeat(3) { engine.enqueue(chunk(), 24_000) }
-        assertEquals(24_000, engine.snapshot().sampleRateHz)
-
-        repeat(3) { engine.enqueue(chunk(), 16_000) }
-        val after = engine.snapshot()
-        assertEquals("track did not rebuild at the new rate", 16_000, after.sampleRateHz)
-        assertTrue("stream lost across the rebuild", after.running)
+        repeat(3) { engine.write(lane = 1, speech(rateHz = 24_000), 24_000, voiced = true) }
+        repeat(3) { engine.write(lane = 1, speech(rateHz = 16_000), 16_000, voiced = true) }
+        assertTrue(engine.snapshot().running)
+        await("both rates to play out") { engine.snapshot().waitingMs == 0 }
         engine.stop(graceful = false)
+    }
+
+    // ── capture ─────────────────────────────────────────────────────────
+
+    private fun framesAt(sampleRateHz: Int, frameMs: Int): Pair<Int, Int> {
+        val engine = AndroidAudioCaptureEngine()
+        val frames = AtomicInteger()
+        val bytes = AtomicInteger()
+        val started = engine.start(sampleRateHz, frameMs, onFrame = {
+            frames.incrementAndGet()
+            bytes.set(it.size)
+        }, onError = {})
+        assumeTrue("no usable microphone on this image", started)
+        Thread.sleep(1_200)
+        engine.stop()
+        return frames.get() to bytes.get()
+    }
+
+    // Gemini takes 16 kHz in 100 ms frames.
+    @Test
+    fun theMicrophoneDeliversGeminiFrames() {
+        val (frames, bytes) = framesAt(16_000, 100)
+        assertEquals("100 ms of 16 kHz PCM16", 3_200, bytes)
+        assertTrue("about ten a second: $frames", frames in 8..14)
+    }
+
+    // OpenAI takes 24 kHz only, so the microphone is opened at 24 kHz.
+    @Test
+    fun theMicrophoneDeliversOpenAiFrames() {
+        val (frames, bytes) = framesAt(24_000, 200)
+        assertEquals("200 ms of 24 kHz PCM16", 9_600, bytes)
+        assertTrue("about five a second: $frames", frames in 4..7)
+    }
+
+    @Test
+    fun captureStopDoesNotReleaseUnderAnInFlightRead() {
+        val frames = AtomicInteger()
+        repeat(40) {
+            val engine = AndroidAudioCaptureEngine()
+            val started = engine.start(16_000, 100, onFrame = { frames.incrementAndGet() }, onError = {})
+            assumeTrue("no usable microphone on this image", started)
+            // A read is in flight for most of this window.
+            Thread.sleep(25)
+            engine.stop()
+        }
+        Thread.sleep(300)
+    }
+
+    @Test
+    fun startingAgainReplacesTheRunningCapture() {
+        val engine = AndroidAudioCaptureEngine()
+        val first = AtomicInteger()
+        val second = AtomicInteger()
+        assumeTrue(engine.start(16_000, 100, onFrame = { first.incrementAndGet() }, onError = {}))
+        Thread.sleep(400)
+        assertTrue(engine.start(24_000, 200, onFrame = { second.incrementAndGet() }, onError = {}))
+        val firstSoFar = first.get()
+        Thread.sleep(900)
+        engine.stop()
+
+        assertTrue("the second capture delivers: ${second.get()}", second.get() >= 2)
+        assertTrue("and the first has stopped", first.get() - firstSoFar <= 1)
     }
 }

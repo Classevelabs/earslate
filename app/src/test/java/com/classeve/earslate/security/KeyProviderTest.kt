@@ -79,14 +79,34 @@ class KeyProviderTest {
     }
 
     @Test
-    fun `provider mapping resolves Gemini`() {
+    fun `every provider maps to its key`() {
         assertEquals(KeyProvider.GEMINI, KeyProvider.forProvider(TranslationProvider.GEMINI))
+        assertEquals(KeyProvider.OPENAI, KeyProvider.forProvider(TranslationProvider.OPENAI))
     }
 
     @Test
-    fun `vault entry name is stable`() {
-        // Changing this strands the user's saved key on upgrade.
+    fun `vault entry names are stable`() {
+        // Changing these strands the user's saved key on upgrade. The OpenAI
+        // name is the one 0.5.3 wrote, so a key saved there is still found.
         assertEquals("api_key_gemini", KeyProvider.GEMINI.vaultEntry)
+        assertEquals("api_key_openai", KeyProvider.OPENAI.vaultEntry)
+    }
+
+    @Test
+    fun `an OpenAI key gets the same paste checks, and no format gate`() {
+        assertTrue(KeyProvider.OPENAI.isPlausible("sk-proj-" + "a".repeat(40)))
+        assertTrue(KeyProvider.OPENAI.isPlausible("some-future-format-2027"))
+        assertTrue(KeyProvider.OPENAI.rejectionReason("https://platform.openai.com/api-keys")!!.contains("web address"))
+    }
+
+    // 0.5.3 stored "auto" for no choice; it must not read as a provider, nor crash.
+    @Test
+    fun `a saved provider choice is read back, and anything else is no choice`() {
+        assertEquals(TranslationProvider.GEMINI, TranslationProvider.fromWireValue("gemini"))
+        assertEquals(TranslationProvider.OPENAI, TranslationProvider.fromWireValue("openai"))
+        assertNull(TranslationProvider.fromWireValue("auto"))
+        assertNull(TranslationProvider.fromWireValue(null))
+        assertNull(TranslationProvider.fromWireValue("something else"))
     }
 
     @Test

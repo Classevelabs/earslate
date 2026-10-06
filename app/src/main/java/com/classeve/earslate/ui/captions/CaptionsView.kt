@@ -44,7 +44,7 @@ import com.classeve.earslate.ui.theme.PreciseEasing
 @Composable
 fun CaptionsView(
     lines: List<String>,
-    pending: String,
+    pending: List<String>,
     modifier: Modifier = Modifier,
     active: Boolean = false,
 ) {

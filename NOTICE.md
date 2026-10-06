@@ -20,10 +20,11 @@ specific language governing permissions and limitations under the License.
 ## Third-party services
 
 earslate does not bundle a translation model. At runtime it connects to a
-service authenticated with the user's own API key:
+provider chosen by the user, authenticated with that user's own API key:
 
 - **Google Gemini Live** — https://ai.google.dev/gemini-api/terms
+- **OpenAI Realtime** — https://openai.com/policies/
 
-Use of that service is governed by Google's terms and billed to the user's own
-account. ClassEve is not a party to that relationship and operates no service in
-the path.
+Use of those services is governed by the provider's terms and billed to the
+user's own account. ClassEve is not a party to that relationship and operates
+no service in the path.

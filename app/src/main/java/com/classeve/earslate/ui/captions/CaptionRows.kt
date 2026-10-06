@@ -3,8 +3,8 @@ package com.classeve.earslate.ui.captions
 /**
  * One row of the captions list.
  *
- * [live] marks the partial line that is still being spoken — the row whose TEXT
- * grows between frames while the row count stays exactly the same.
+ * [live] marks a line that is still being spoken — a row whose TEXT grows
+ * between frames while the row count stays exactly the same.
  */
 data class CaptionRow(
     val text: String,
@@ -26,10 +26,10 @@ data class CaptionRow(
  * removes the whole class rather than the reported instance: add a footer row
  * here tomorrow and the scroll target follows it for free.
  */
-fun captionRows(lines: List<String>, pending: String): List<CaptionRow> =
-    buildList(lines.size + 1) {
+fun captionRows(lines: List<String>, pending: List<String>): List<CaptionRow> =
+    buildList(lines.size + pending.size) {
         lines.mapTo(this) { CaptionRow(text = it, live = false) }
-        if (pending.isNotEmpty()) add(CaptionRow(text = pending, live = true))
+        pending.filter { it.isNotEmpty() }.mapTo(this) { CaptionRow(text = it, live = true) }
     }
 
 /**

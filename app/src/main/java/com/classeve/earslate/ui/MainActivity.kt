@@ -92,6 +92,7 @@ import com.classeve.earslate.settings.OnboardingPrefs
 import com.classeve.earslate.ui.captions.CaptionsView
 import com.classeve.earslate.ui.components.ErrorBanner
 import com.classeve.earslate.ui.help.HelpScreen
+import com.classeve.earslate.security.KeyProvider
 import com.classeve.earslate.security.ProviderKeyStore
 import com.classeve.earslate.ui.onboarding.ApiKeySetupScreen
 import com.classeve.earslate.ui.onboarding.OnboardingScreen
@@ -452,7 +453,11 @@ private fun EarslateApp(
             )
             Screen.KEY_SETUP -> ApiKeySetupScreen(
                 padding = padding,
-                targetLanguageCode = currentLanguage.bcp47,
+                language = currentLanguage,
+                initialProvider = providerKeys.resolve(userSettings.provider) ?: KeyProvider.GEMINI,
+                onProviderChosen = { chosen ->
+                    scope.launch { settingsRepo.setProvider(chosen.provider) }
+                },
                 onBack = if (hasKey) {
                     { screen = Screen.SETTINGS }
                 } else {
@@ -527,6 +532,15 @@ private fun EarslateApp(
                     } else {
                         NotificationControlService.stop(context)
                     }
+                },
+                configuredProviders = remember(current, hasKey) {
+                    providerKeys.configured().map { it.provider }
+                },
+                activeProvider = remember(current, hasKey, userSettings.provider) {
+                    providerKeys.resolve(userSettings.provider)?.provider
+                },
+                onProviderChange = { chosen ->
+                    scope.launch { settingsRepo.setProvider(chosen) }
                 },
                 onOpenOnboarding = { screen = Screen.ONBOARDING },
                 onOpenHelp = { screen = Screen.HELP },
@@ -644,11 +658,11 @@ private fun MainScreen(
             }
 
             AnimatedVisibility(
-                visible = route == AudioRoute.SPEAKER,
+                visible = route.sharedWithMicrophone,
                 enter = expandVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeIn(tween(MotionBaseMs)),
                 exit = shrinkVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeOut(tween(MotionBaseMs)),
             ) {
-                SpeakerEchoNotice()
+                SpeakerTurnsNotice()
             }
 
             // Not a control — a readout. There is nothing to pick here any
@@ -982,21 +996,12 @@ private fun PrimaryButton(
 private fun StatusPill(state: RuntimeState) {
     val label = stringResource(statusLabelFor(state))
     // Tag-chip palette per brand: idle = surfaceSoft + creamSoft text;
-    // active = ember + onEmber text; warning/degraded keep amber/danger ramps
-    // while staying inside the brand cream/ember family.
-    val active = when (state) {
-        RuntimeState.LISTENING, RuntimeState.PLAYING, RuntimeState.READY -> true
-        else -> false
-    }
-    val targetBg = when {
-        active -> EarslateTheme.colors.ember
-        state == RuntimeState.DEGRADED -> EarslateTheme.colors.oxbloodSoft
-        else -> EarslateTheme.colors.surfaceSoft
-    }
+    // active = ember + onEmber text; reconnecting keeps the amber ramp.
+    val active = state == RuntimeState.LISTENING || state == RuntimeState.PLAYING
+    val targetBg = if (active) EarslateTheme.colors.ember else EarslateTheme.colors.surfaceSoft
     val targetFg = when {
         active -> EarslateTheme.colors.onEmber
         state == RuntimeState.RECONNECTING -> EarslateTheme.colors.warning
-        state == RuntimeState.DEGRADED -> EarslateTheme.colors.cream
         else -> EarslateTheme.colors.creamSoft
     }
     val bg by animateColorAsState(
@@ -1083,8 +1088,8 @@ private fun RoutePill(route: AudioRoute) {
 }
 
 @Composable
-private fun SpeakerEchoNotice() {
-    // Speaker-echo notice — flat bg-elev-1 plate, no border.
+private fun SpeakerTurnsNotice() {
+    // Speaker notice — flat bg-elev-1 plate, no border.
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1102,7 +1107,7 @@ private fun SpeakerEchoNotice() {
                 .background(color = EarslateTheme.colors.ember, shape = CircleShape),
         )
         Text(
-            text = stringResource(R.string.route_speaker_echo_warning),
+            text = stringResource(R.string.route_speaker_turns),
             style = EarslateTheme.textStyles.body,
             color = EarslateTheme.colors.textSecondary,
         )
@@ -1113,9 +1118,7 @@ private fun statusLabelFor(state: RuntimeState): Int = when (state) {
     RuntimeState.IDLE -> R.string.status_idle
     RuntimeState.BOOTSTRAPPING -> R.string.status_bootstrapping
     RuntimeState.CONNECTING -> R.string.status_connecting
-    RuntimeState.READY -> R.string.status_ready
     RuntimeState.LISTENING -> R.string.status_listening
     RuntimeState.PLAYING -> R.string.status_playing
     RuntimeState.RECONNECTING -> R.string.status_reconnecting
-    RuntimeState.DEGRADED -> R.string.status_degraded
 }

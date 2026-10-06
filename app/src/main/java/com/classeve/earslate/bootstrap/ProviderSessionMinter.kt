@@ -1,7 +1,8 @@
 package com.classeve.earslate.bootstrap
 
-import com.classeve.earslate.live.LiveSessionConfigFactory
+import com.classeve.earslate.live.ProviderMessage
 import com.classeve.earslate.security.KeyProvider
+import com.classeve.earslate.session.TranslationProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -10,6 +11,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.IOException
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -17,95 +19,48 @@ import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 
 /**
- * Exchanges the user's own long-lived API key for a short-lived, single-use
- * session credential, then hands back everything needed to open the provider
- * socket.
- *
- * The exchange matters. We could put the user's real key straight onto the
- * WebSocket, and it would work — but that key would then live for the whole
- * session on a long-lived connection, and any log, crash report, or proxy that
- * ever saw the URL would have it forever. Instead the long-lived key is used
- * once, over HTTPS, to mint a credential that expires in minutes and is scoped
- * to exactly one session. The socket never carries the real key.
- *
- * This runs entirely on the device. There is no ClassEve server in this path —
- * or in any other path. Requests go from the phone directly to Google,
- * authenticated with the user's own key, billed to the user's own account.
+ * Trades the user's long-lived API key for a short-lived credential, over one
+ * HTTPS request from the phone straight to the provider. Sockets carry the
+ * credential, never the key.
  */
 class ProviderSessionMinter(
-    private val http: OkHttpClient = defaultClient(),
+    http: OkHttpClient,
+    /** Random per-install id, sent only as a hash in OpenAI's safety header. */
+    private val installId: String,
+    private val now: () -> Long = System::currentTimeMillis,
 ) {
+    private val http = http.newBuilder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .callTimeout(25, TimeUnit.SECONDS)
+        .build()
 
-    /**
-     * @param captionsEnabled must be the SAME value the session's setup frame
-     *   will be built with. The token locks the session configuration, so a
-     *   token minted with transcription enabled and a setup frame that omits it
-     *   describe two different sessions. Both are now built by
-     *   [LiveSessionConfigFactory] from this one flag; see
-     *   `GeminiSessionSetupParityTest`.
-     */
-    suspend fun mint(
-        provider: KeyProvider,
-        apiKey: String,
-        targetLanguageCode: String,
-        captionsEnabled: Boolean,
-    ): SessionBootstrap = withContext(Dispatchers.IO) {
-        val language = LanguageCodes.normalize(targetLanguageCode)
-            ?: throw BootstrapException("Choose a supported target language.")
-        when (provider) {
-            KeyProvider.GEMINI -> mintGemini(apiKey, language, captionsEnabled)
+    suspend fun mint(provider: KeyProvider, apiKey: String): SessionCredential =
+        withContext(Dispatchers.IO) {
+            when (provider) {
+                KeyProvider.GEMINI -> mintGemini(apiKey)
+                KeyProvider.OPENAI -> mintOpenAi(apiKey)
+            }
         }
-    }
 
-    private fun mintGemini(
-        apiKey: String,
-        language: String,
-        captionsEnabled: Boolean,
-    ): SessionBootstrap {
-        val now = System.currentTimeMillis()
-        val expiresAt = iso8601(now + 30 * 60_000L)
-        val newSessionExpiresAt = iso8601(now + 60_000L)
-
-        // Request shape verified against the live v1alpha endpoint on
-        // 2026-07-26. Two things here are easy to get wrong, and both produced
-        // a flat 400 that looked like a bad key rather than a bad request:
-        //
-        //  1. There is NO "authToken" wrapper. The AuthToken fields sit at the
-        //     top level of the body. Sending the wrapper returns
-        //     'Unknown name "authToken" at auth_token: Cannot find field'.
-        //  2. inputAudioTranscription / outputAudioTranscription belong to
-        //     bidiGenerateContentSetup, NOT to generationConfig. translationConfig
-        //     is the opposite — it lives inside generationConfig.
-        //
-        // This object is NOT built here any more. It is the same session setup
-        // the client sends once the socket opens, and building it twice is what
-        // let the two drift: the copy that used to live here always carried
-        // transcription, while the client's copy omitted it with captions off.
-        // Embed, never re-describe.
-        val setup = JSONObject(
-            LiveSessionConfigFactory.buildTokenSessionSetup(
-                model = GEMINI_MODEL,
-                targetLanguageCode = language,
-                // Silence this leg when the speaker is already speaking the
-                // target language. It is what lets two legs run at once without
-                // talking over each other.
-                echoTargetLanguage = false,
-                captionsEnabled = captionsEnabled,
-            ),
-        )
-
+    private fun mintGemini(apiKey: String): SessionCredential {
+        val expiresAtMs = now() + CREDENTIAL_LIFETIME_MS
+        val expires = iso8601(expiresAtMs)
         val body = JSONObject()
-            .put("uses", 1)
-            .put("expireTime", expiresAt)
-            .put("newSessionExpireTime", newSessionExpiresAt)
-            .put("bidiGenerateContentSetup", setup)
+            // 0 is "no limit": one token opens both directions and every
+            // replacement socket, so a session mints once.
+            .put("uses", 0)
+            .put("expireTime", expires)
+            .put("newSessionExpireTime", expires)
+            // The mask pins the token to the translate model and leaves the
+            // language to each socket's own first frame.
+            .put("bidiGenerateContentSetup", JSONObject().put("model", "models/$GEMINI_MODEL"))
+            .put("fieldMask", "model")
 
         val request = Request.Builder()
-            // The key goes in the query string because that is the only form
-            // this endpoint accepts. It is one HTTPS request; the socket that
-            // follows carries the minted token instead.
-            .url("$GEMINI_TOKEN_URL?key=${apiKey.urlEncoded()}")
-            .header("Content-Type", "application/json")
+            .url(GEMINI_TOKEN_URL)
+            // In a header, not the query string: URLs end up in logs.
+            .header("x-goog-api-key", apiKey)
             .post(body.toString().toRequestBody(JSON))
             .build()
 
@@ -113,77 +68,91 @@ class ProviderSessionMinter(
         val name = json.optString("name").takeIf { it.isNotBlank() }
             ?: throw BootstrapException("Gemini returned a session without a credential. Try again.")
 
-        return SessionBootstrap(
-            credential = name,
-            provider = KeyProvider.GEMINI.provider,
+        return SessionCredential(
+            provider = TranslationProvider.GEMINI,
+            secret = name,
             webSocketUrl = GEMINI_WSS,
             model = GEMINI_MODEL,
-            expiresAt = json.optString("expireTime").takeIf { it.isNotBlank() } ?: expiresAt,
+            expiresAtMs = expiresAtMs,
         )
     }
 
-    /**
-     * Runs the request and turns provider failures into sentences a user can
-     * act on. The provider's own error text is deliberately not surfaced: it is
-     * written for API developers, often mentions parameters the user has never
-     * heard of, and occasionally echoes the key back.
-     */
+    private fun mintOpenAi(apiKey: String): SessionCredential {
+        val safetyIdentifier = safetyIdentifier()
+        val body = JSONObject()
+            .put(
+                "expires_after",
+                JSONObject().put("anchor", "created_at").put("seconds", CREDENTIAL_LIFETIME_MS / 1000),
+            )
+            // No language here: each socket sets its own with session.update.
+            .put("session", JSONObject().put("model", OPENAI_MODEL))
+
+        val request = Request.Builder()
+            .url(OPENAI_SECRET_URL)
+            .header("Authorization", "Bearer $apiKey")
+            .header("OpenAI-Safety-Identifier", safetyIdentifier)
+            .post(body.toString().toRequestBody(JSON))
+            .build()
+
+        val json = execute(request, KeyProvider.OPENAI)
+        val value = json.optString("value").takeIf { it.isNotBlank() }
+            ?: throw BootstrapException("OpenAI returned a session without a credential. Try again.")
+        val expiresAtSeconds = json.optLong("expires_at", 0L)
+
+        return SessionCredential(
+            provider = TranslationProvider.OPENAI,
+            secret = value,
+            webSocketUrl = "$OPENAI_WSS?model=$OPENAI_MODEL",
+            model = OPENAI_MODEL,
+            expiresAtMs = if (expiresAtSeconds > 0) expiresAtSeconds * 1000 else now() + CREDENTIAL_LIFETIME_MS,
+            safetyIdentifier = safetyIdentifier,
+        )
+    }
+
     private fun execute(request: Request, provider: KeyProvider): JSONObject {
+        val name = provider.displayName
         val response = try {
             http.newCall(request).execute()
         } catch (io: IOException) {
-            throw BootstrapException(
-                "Couldn't reach ${provider.displayName}. Check your connection and try again.",
-                io,
-            )
+            throw BootstrapException("Couldn't reach $name. Check your connection and try again.", io)
         }
         response.use {
-            // Reading the body is a SECOND network operation and throws its own
-            // IOException — execute() returns as soon as the headers are in, so
-            // a connection that dies mid-body lands here, outside the guard
-            // above. That escaped as a raw IOException, and ProviderKeyVerifier
-            // catches only BootstrapException, so a truncated reply during key
-            // setup crashed the screen instead of saying "try again". The
-            // session path survived it only because SessionCoordinator happens
-            // to catch Throwable.
+            // Reading the body is a second network read and can fail on its own.
             val raw = try {
                 it.body?.string().orEmpty()
             } catch (io: IOException) {
-                throw BootstrapException(
-                    "The connection to ${provider.displayName} dropped before it finished " +
-                        "replying. Try again.",
-                    io,
-                )
+                throw BootstrapException("The connection to $name dropped before it finished replying. Try again.", io)
             }
-            if (!it.isSuccessful) throw explain(it.code, provider)
+            if (!it.isSuccessful) throw refusal(it.code, raw, name)
             return runCatching { JSONObject(raw) }.getOrElse {
-                throw BootstrapException("${provider.displayName} sent a reply we couldn't read. Try again.")
+                throw BootstrapException("$name sent a reply that couldn't be read. Try again.")
             }
         }
     }
 
-    private fun explain(code: Int, provider: KeyProvider): BootstrapException {
-        val name = provider.displayName
-        val message = when (code) {
-            400 -> "$name rejected the session request. Your key may not have access to the " +
-                "live translation model yet."
-
-            401, 403 -> "$name did not accept that key. Check it was copied in full from " +
-                "${provider.consoleName}, and that it hasn't been revoked."
-
-            402 -> "Your $name account needs billing set up before it can run live translation."
-
-            404 -> "$name doesn't offer the live translation model on this key. It may not be " +
-                "available in your account or region yet."
-
-            429 -> "Your $name key is out of quota, or is being rate limited. Wait a moment, or " +
-                "check your usage limits."
-
-            in 500..599 -> "$name is having trouble right now. Try again in a moment."
-
-            else -> "$name couldn't start a translation session (error $code)."
+    // The provider's own sentence is the diagnosis, so it is shown — with
+    // anything key-shaped removed — instead of a guess from the status code.
+    private fun refusal(code: Int, raw: String, name: String): BootstrapException {
+        val error = runCatching { JSONObject(raw).optJSONObject("error") }.getOrNull()
+        val said = ProviderMessage.sanitize(error?.optString("message"))
+        val ours = when {
+            code == 401 || code == 403 || namesTheKey(error) -> "$name did not accept that key."
+            code == 429 -> "$name refused the request: the key is out of quota or being rate limited."
+            code in 500..599 -> "$name is having trouble right now. Try again in a moment."
+            else -> "$name could not start a translation session."
         }
-        return BootstrapException(message)
+        return BootstrapException(if (said != null) "$ours $name said: $said" else ours)
+    }
+
+    // Google answers a wrong key with a plain 400; its reason code is what names it.
+    private fun namesTheKey(error: JSONObject?): Boolean {
+        val details = error?.optJSONArray("details") ?: return false
+        return (0 until details.length()).any { details.optJSONObject(it)?.optString("reason") == "API_KEY_INVALID" }
+    }
+
+    private fun safetyIdentifier(): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(installId.toByteArray(Charsets.UTF_8))
+        return "earslate_" + digest.joinToString("") { "%02x".format(it) }
     }
 
     private fun iso8601(epochMillis: Long): String =
@@ -191,55 +160,23 @@ class ProviderSessionMinter(
             .apply { timeZone = TimeZone.getTimeZone("UTC") }
             .format(Date(epochMillis))
 
-    private fun String.urlEncoded(): String =
-        java.net.URLEncoder.encode(this, "UTF-8")
-
     companion object {
         // Pinned here rather than fetched, so the app has no configuration
-        // server of any kind. Bump with a release when the provider moves.
+        // server. Each is the provider's only speech-to-speech translate model.
         const val GEMINI_MODEL = "gemini-3.5-live-translate-preview"
+        const val OPENAI_MODEL = "gpt-realtime-translate"
+
+        const val CREDENTIAL_LIFETIME_MS = 30 * 60_000L
 
         private const val GEMINI_TOKEN_URL =
-            "https://generativelanguage.googleapis.com/v1alpha/auth_tokens"
+            "https://generativelanguage.googleapis.com/v1beta/auth_tokens"
         const val GEMINI_WSS =
             "wss://generativelanguage.googleapis.com/ws/" +
-                "google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained"
+                "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained"
+        private const val OPENAI_SECRET_URL =
+            "https://api.openai.com/v1/realtime/translations/client_secrets"
+        const val OPENAI_WSS = "wss://api.openai.com/v1/realtime/translations"
 
         private val JSON = "application/json; charset=utf-8".toMediaType()
-
-        fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(20, TimeUnit.SECONDS)
-            .callTimeout(25, TimeUnit.SECONDS)
-            .retryOnConnectionFailure(true)
-            .build()
-    }
-}
-
-/**
- * Language-code normalisation, matching what the provider APIs accept.
- *
- * Chinese and Portuguese are the two cases where the region genuinely changes
- * the output rather than just the accent, so they keep a script/region suffix;
- * everything else reduces to the base language. Pure and side-effect free so it
- * can be tested without a device.
- */
-object LanguageCodes {
-    private val SHAPE = Regex("^[A-Za-z]{2,3}(?:-[A-Za-z]{2,4})?$")
-
-    fun normalize(raw: String?): String? {
-        val value = raw?.trim().orEmpty()
-        if (!SHAPE.matches(value)) return null
-        val parts = value.split("-")
-        val language = parts[0].lowercase()
-        val region = parts.getOrNull(1)?.lowercase()
-
-        if (language == "zh" && region != null) {
-            return if (region == "tw" || region == "hant") "zh-Hant" else "zh-Hans"
-        }
-        if (language == "pt" && region != null) {
-            return if (region == "pt") "pt-PT" else "pt-BR"
-        }
-        return language
     }
 }

@@ -14,9 +14,9 @@ Requires JDK 17 and an Android SDK. Copy `local.properties.example` to
 There is nothing else to configure — no keys, no service URLs, no accounts. If
 a build asks you for a secret, that is a bug; please report it.
 
-To actually run a translation you will need your own Google Gemini key, entered
-in the app at runtime. It is billed to your account, so develop with a key you
-are happy to spend a little on.
+To actually run a translation you will need your own Gemini or OpenAI key,
+entered in the app at runtime. It is billed to your account, so develop with a
+key you are happy to spend a little on.
 
 ## What makes a change easy to accept
 
@@ -24,9 +24,9 @@ are happy to spend a little on.
 comments should explain why it needed to, and what you considered instead. If
 the reason is subtle, that is exactly the reason to write it down.
 
-**Cover behaviour, not lines.** A test that pins a real property — "one gap
-counts as one underrun however often the loop polls it" — is worth ten that
-assert getters. If you fix a bug, add the test that would have caught it.
+**Cover behaviour, not lines.** A test that pins a real property — "a pause
+between sentences is not counted as the network running late" — is worth ten
+that assert getters. If you fix a bug, add the test that would have caught it.
 
 **Leave the tree green.** `testDebugUnitTest`, `lintDebug` and `assembleDebug`
 must all pass. Lint warnings that you have decided are acceptable should be
@@ -38,21 +38,28 @@ never merge. Send the part that is done.
 ## Areas where care is needed
 
 **Audio.** The playback path is latency-sensitive and easy to make worse by
-accident. The jitter buffer deliberately does not reset on underrun, and
-deliberately counts one underrun per gap rather than per poll — a conversation
-is mostly silence, and per-poll counting ratchets the buffer to its ceiling
-within a second. If you change the adaptation, `JitterBufferTest` should tell
-you immediately.
+accident. Each direction plays on a continuous lane of its own, with a small
+cushion of queued audio. The cushion grows only when a block arrives too late
+to play, and gives the delay back, by shortening silence, only after a
+sustained clean run. A conversation is mostly silence, so a lane that has
+simply run out of things to say must never be counted as a late network. If
+you change the adaptation, `PlayoutLaneTest` should tell you immediately.
+
+**Who is heard.** Two sessions listen to one microphone, and
+`ConversationEngine` decides which may speak. The providers do not mark where
+an utterance ends, so nothing in the app may wait for them to. A change here
+wants a recorded session replayed through it: `RecordedConversationTest` runs
+real provider traffic through the engine.
 
 **Anything touching a key.** Keys must never be logged, never leave `KeyVault`
 in plaintext beyond the moment of use, never be written to a file, and never be
 shown in full in the UI. If a change makes a key more visible, it needs an
 argument.
 
-**The Gemini Live protocol.** The wire format is exact and the API moves.
-Protocol changes want a contract test alongside them so a silent upstream change
-surfaces as a failing build rather than as a session that connects and stays
-quiet.
+**Provider protocols.** Gemini and OpenAI speak different wire formats and
+their APIs move. Protocol changes want a contract test alongside them so a
+silent upstream change surfaces as a failing build rather than as a session
+that connects and stays quiet.
 
 **No backend.** earslate has no server and should acquire none. A change that
 introduces a call to a ClassEve endpoint will not be merged — it breaks the

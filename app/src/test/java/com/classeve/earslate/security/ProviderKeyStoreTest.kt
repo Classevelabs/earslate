@@ -43,6 +43,7 @@ private class RecordingStore(entries: Map<String, String?>) : SecretStore {
 }
 
 private const val GEMINI_ENTRY = "api_key_gemini"
+private const val OPENAI_ENTRY = "api_key_openai"
 
 class ProviderKeyStoreTest {
 
@@ -118,5 +119,23 @@ class ProviderKeyStoreTest {
 
         val absent = ProviderKeyStore(RecordingStore(emptyMap()))
         assertNull(absent.resolve(TranslationProvider.GEMINI))
+    }
+
+    @Test
+    fun `the provider the user chose wins when its key is saved`() {
+        val both = ProviderKeyStore(RecordingStore(mapOf(GEMINI_ENTRY to "g", OPENAI_ENTRY to "o")))
+        assertEquals(KeyProvider.OPENAI, both.resolve(TranslationProvider.OPENAI))
+        assertEquals(KeyProvider.GEMINI, both.resolve(TranslationProvider.GEMINI))
+        assertEquals(listOf(KeyProvider.GEMINI, KeyProvider.OPENAI), both.configured())
+    }
+
+    @Test
+    fun `with no choice, or a choice whose key is gone, the key that exists is used`() {
+        val onlyOpenAi = ProviderKeyStore(RecordingStore(mapOf(OPENAI_ENTRY to "o")))
+        assertEquals(KeyProvider.OPENAI, onlyOpenAi.resolve(null))
+        assertEquals(KeyProvider.OPENAI, onlyOpenAi.resolve(TranslationProvider.GEMINI))
+
+        val both = ProviderKeyStore(RecordingStore(mapOf(GEMINI_ENTRY to "g", OPENAI_ENTRY to "o")))
+        assertEquals(KeyProvider.GEMINI, both.resolve(null))
     }
 }

@@ -5,9 +5,9 @@ package com.classeve.earslate.session
  * more than this; the list is the curated shortlist shown in the UI, ordered by
  * rough global demand.
  *
- * Entries are app-level BCP-47 tags. They are normalised to the provider's
- * `targetLanguageCode` form by `LiveSessionConfigFactory.translateCodeFor`
- * before they go on the wire — do not send these tags to a provider directly.
+ * Entries are app-level BCP-47 tags. Each provider's `wireLanguage` turns them
+ * into the form that provider accepts — do not send these tags to a provider
+ * directly.
  */
 val SupportedLanguages: List<TargetLanguage> = listOf(
     TargetLanguage("English", "en-US"),

@@ -89,8 +89,8 @@ android {
         targetSdk = 36
         // 0.4.4 moved the APK to the brand certificate, so an install signed by
         // the older key cannot take a later version as an update.
-        versionCode = 29
-        versionName = "0.5.4"
+        versionCode = 30
+        versionName = "0.6.0"
 
         vectorDrawables.useSupportLibrary = true
 

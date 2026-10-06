@@ -1,76 +1,81 @@
 package com.classeve.earslate.session
 
 /**
- * Works out, from the transcript of what the microphone heard, WHO is speaking
- * and — when it is the other person — in what.
+ * Follows which language the other person speaks, so that what I say can be
+ * sent back to them in it.
  *
- * The microphone hears both people, so every transcript that comes back is
- * either them or us. Anything detected as [myLanguageBcp47] is us; everything
- * else is them, and whatever language it is in is what we should be speaking
- * back in.
- *
- * Starts at English because that is what the product promises when it has not
- * heard anything it recognises yet — never at "unknown", which would leave the
- * outbound direction with no target at all.
- *
- * The transcript arrives as fragments — a word or two at a time — and a
- * fragment is not enough to name a language: "que" is Spanish, French and
- * Portuguese. So the fragments are accumulated for the length of one turn and
- * detection runs on everything heard so far. The first version ran it per
- * fragment, which meant Latin-script languages were almost never recognised
- * at all, and a "confirm it twice" rule on top of that meant a second language
- * entering the conversation was never followed. Both are gone: the whole turn
- * is the evidence, and a confident answer is acted on.
+ * The microphone hears both people. Anything in [myLanguage] is me; everything
+ * else is them.
  */
 class HeardLanguageTracker(
-    private val myLanguageBcp47: String,
-    initial: String = TargetLanguage.EnglishUS.bcp47,
+    private val myLanguage: String,
+    initialTheirs: String,
 ) {
 
-    /** What the microphone said, once it was clear enough to say anything. */
     sealed interface Heard {
-        /** The device owner, in their own language. */
         data object Me : Heard
 
-        /**
-         * The other person. [changed] is true when [bcp47] differs from the
-         * language we were speaking back in until now — the signal to re-aim
-         * the outbound direction.
-         */
-        data class Them(val bcp47: String, val changed: Boolean) : Heard
+        /** [changed] is true when [language] is not what I was being answered back in until now. */
+        data class Them(val language: String, val changed: Boolean) : Heard
     }
 
-    /** The language the other side is being spoken back in. */
-    var current: String = initial
+    /** The language the other person is being answered in. */
+    var current: String = initialTheirs
         private set
 
-    private val turn = StringBuilder()
+    private var heardThem = false
+    private var candidate: String? = null
 
-    /** True once at least one fragment of the current turn has arrived. */
-    val turnStarted: Boolean get() = turn.isNotEmpty()
-
-    /**
-     * Feed one transcript fragment from the current turn.
-     *
-     * @return who was heard, or null while the turn is still too short or too
-     *   ambiguous to say. Null is the common case early in a turn and means
-     *   "carry on"; it is NOT a fallback signal.
-     */
-    fun observe(fragment: String): Heard? {
-        turn.append(fragment)
-        val detected = LanguageDetector.detect(turn.toString()) ?: return null
-        if (sameLanguage(detected, myLanguageBcp47)) return Heard.Me
-        val changed = !sameLanguage(detected, current)
-        if (changed) current = detected
-        return Heard.Them(detected, changed)
+    fun report(language: String): Heard {
+        if (sameLanguage(language, myLanguage)) {
+            candidate = null
+            return Heard.Me
+        }
+        if (heardThem && sameLanguage(language, current)) {
+            candidate = null
+            return Heard.Them(current, changed = false)
+        }
+        // The first language heard replaces a starting guess at once. Moving
+        // off a language that WAS heard needs it said twice: one misheard
+        // fragment must not send my next sentence out in the wrong language.
+        if (heardThem && !sameLanguage(candidate.orEmpty(), language)) {
+            candidate = language
+            return Heard.Them(current, changed = false)
+        }
+        val changed = !sameLanguage(language, current)
+        heardThem = true
+        candidate = null
+        current = language
+        return Heard.Them(language, changed)
     }
 
-    /** The speaker has finished. What comes next is a new utterance. */
-    fun endTurn() {
-        turn.setLength(0)
+    companion object {
+        /** Regional variants are one language on the wire. */
+        fun sameLanguage(a: String, b: String): Boolean =
+            a.isNotEmpty() && a.substringBefore('-').equals(b.substringBefore('-'), ignoreCase = true)
+    }
+}
+
+/**
+ * Names the language of a transcript from its words, for a provider that
+ * gives words and no language. Judges the last few words only: after a change
+ * of speaker the old language would otherwise outvote the new one.
+ */
+class RecentWords {
+    private val words = ArrayDeque<String>()
+
+    /** The language of what was just said, or null while there is too little to tell. */
+    fun observe(fragment: String): String? {
+        fragment.split(WHITESPACE).filterTo(words) { it.isNotEmpty() }
+        while (words.size > WINDOW) words.removeFirst()
+        return LanguageDetector.detect(words.joinToString(" "))
     }
 
-    /** Regional variants are the same target on the wire, so treat them as equal. */
-    private fun sameLanguage(a: String, b: String): Boolean =
-        a.substringBefore('-').equals(b.substringBefore('-'), ignoreCase = true)
+    /** Nobody has spoken for a while; what comes next is judged on its own words. */
+    fun clear() = words.clear()
+
+    private companion object {
+        const val WINDOW = 12
+        val WHITESPACE = Regex("\\s+")
+    }
 }

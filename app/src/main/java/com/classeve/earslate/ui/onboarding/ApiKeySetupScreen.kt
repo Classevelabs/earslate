@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
@@ -49,8 +50,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.classeve.earslate.EarslateRuntime
 import com.classeve.earslate.bootstrap.ProviderKeyVerifier
+import com.classeve.earslate.live.TranslationLiveProtocols
 import com.classeve.earslate.security.KeyProvider
 import com.classeve.earslate.security.KeyVault
+import com.classeve.earslate.session.TargetLanguage
 import com.classeve.earslate.ui.components.BackRow
 import com.classeve.earslate.ui.components.EmberButton
 import com.classeve.earslate.ui.components.FramedPanel
@@ -59,14 +62,16 @@ import com.classeve.earslate.ui.theme.EarslateTheme
 import kotlinx.coroutines.launch
 
 /**
- * Where the user supplies the Gemini API key that runs their translations.
+ * Where the user chooses a provider and supplies the API key that runs their
+ * translations.
  *
  * earslate has no server, so this key is the whole account system. That makes
  * this screen the one place the app can lose someone entirely, and it is
  * written accordingly:
  *
- *  - The steps to get a key are on this screen, numbered, with a button that
- *    opens Google AI Studio — not a link to a help page.
+ *  - The provider is chosen first, because the steps to get a key depend on it.
+ *  - Those steps are on this screen, numbered, with a button that opens the
+ *    right console — not a link to a help page.
  *  - Format problems are named specifically the moment they are visible
  *    ("that's a web address", "remove the Bearer prefix") rather than a generic
  *    "invalid key".
@@ -86,7 +91,11 @@ fun ApiKeySetupScreen(
      * key at all" and only recomputed it on navigation.
      */
     onKeysChanged: () -> Unit = {},
-    targetLanguageCode: String,
+    /** A key was saved for this provider, which is the one the user wants used. */
+    onProviderChosen: (KeyProvider) -> Unit = {},
+    /** The language the user hears; a provider that cannot speak it is said so. */
+    language: TargetLanguage,
+    initialProvider: KeyProvider = KeyProvider.GEMINI,
     padding: PaddingValues = PaddingValues(0.dp),
 ) {
     val context = LocalContext.current
@@ -94,13 +103,12 @@ fun ApiKeySetupScreen(
     val keys = remember { EarslateRuntime.providerKeys(context) }
     val verifier = remember { EarslateRuntime.keyVerifier(context) }
 
-    // The app talks only to Gemini, so there is nothing to choose here.
-    val provider = KeyProvider.GEMINI
+    var provider by remember { mutableStateOf(initialProvider) }
     var keyText by remember { mutableStateOf("") }
     var revealed by remember { mutableStateOf(false) }
     var checking by remember { mutableStateOf(false) }
     var problem by remember { mutableStateOf<String?>(null) }
-    var keySaved by remember { mutableStateOf(keys.has(provider)) }
+    var saved by remember { mutableStateOf(keys.configured()) }
 
     /**
      * Explains a key that vanished on its own.
@@ -118,7 +126,7 @@ fun ApiKeySetupScreen(
         keys.wasResetByKeystore().also { if (it) keys.acknowledgeKeystoreReset() }
     }
 
-    LaunchedEffect(keyText) { problem = null }
+    LaunchedEffect(keyText, provider) { problem = null }
 
     fun submit() {
         val candidate = keyText.trim()
@@ -130,7 +138,7 @@ fun ApiKeySetupScreen(
         checking = true
         problem = null
         scope.launch {
-            when (val result = verifier.verify(provider, candidate, targetLanguageCode)) {
+            when (val result = verifier.verify(provider, candidate, language.bcp47)) {
                 is ProviderKeyVerifier.Result.Valid -> {
                     // A write to the vault fails closed by design, and nothing
                     // caught it: VaultUnavailable is a RuntimeException with no
@@ -145,7 +153,8 @@ fun ApiKeySetupScreen(
                     stored.fold(
                         onSuccess = {
                             keyText = ""
-                            keySaved = keys.has(provider)
+                            saved = keys.configured()
+                            onProviderChosen(provider)
                             onDone()
                         },
                         onFailure = { failure ->
@@ -183,8 +192,8 @@ fun ApiKeySetupScreen(
                 kicker = "Setup",
                 headline = "Your key, your account.",
                 support = "earslate has no servers. Translation runs directly between your phone " +
-                    "and Google Gemini, billed to your own account. Your key is encrypted on " +
-                    "this device and never sent anywhere else.",
+                    "and the provider you choose, billed to your own account. Your key is " +
+                    "encrypted on this device and never sent anywhere else.",
             )
 
             if (keystoreReset) {
@@ -201,13 +210,28 @@ fun ApiKeySetupScreen(
                 Spacer(Modifier.height(8.dp))
             }
 
-            if (keySaved) {
-                FramedPanel {
-                    SavedKeyRow(
-                        provider = provider,
+            SectionHeader(
+                kicker = "Step 1",
+                headline = "Choose a provider.",
+                support = "Either one translates the conversation in both directions. " +
+                    "OpenAI speaks thirteen languages; Gemini speaks more.",
+            )
+
+            FramedPanel {
+                KeyProvider.entries.forEachIndexed { index, option ->
+                    if (index > 0) ThinDivider()
+                    ProviderRow(
+                        provider = option,
+                        selected = provider == option,
+                        alreadySaved = saved.contains(option),
+                        // Said here, at the choice, rather than after a key has been pasted.
+                        cannotSpeak = language.displayName.takeIf {
+                            TranslationLiveProtocols.forProvider(option.provider).wireLanguage(language.bcp47) == null
+                        },
+                        onSelect = { provider = option },
                         onForget = {
-                            keys.forget(provider)
-                            keySaved = keys.has(provider)
+                            keys.forget(option)
+                            saved = keys.configured()
                             problem = null
                             onKeysChanged()
                         },
@@ -216,14 +240,14 @@ fun ApiKeySetupScreen(
             }
 
             SectionHeader(
-                kicker = "Step 1",
+                kicker = "Step 2",
                 headline = "Get a key.",
                 support = "It takes about a minute. You only do this once.",
             )
 
             FramedPanel {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    GEMINI_INSTRUCTIONS.forEachIndexed { index, line ->
+                    instructionsFor(provider).forEachIndexed { index, line ->
                         NumberedStep(index + 1, line)
                     }
                     Spacer(Modifier.height(4.dp))
@@ -243,7 +267,7 @@ fun ApiKeySetupScreen(
             }
 
             SectionHeader(
-                kicker = "Step 2",
+                kicker = "Step 3",
                 headline = "Paste it here.",
                 support = "We'll check it works before saving — so it can't fail later, " +
                     "mid-conversation.",
@@ -333,8 +357,8 @@ fun ApiKeySetupScreen(
                 // server, which is the claim actually worth making.
                 text = "Your key is sealed by this device's hardware keystore, and is excluded " +
                     "from Android backups and device-to-device transfer. It is sent only to " +
-                    "Google Gemini — over an encrypted connection, once per session, to open " +
-                    "that session. It is never sent to ClassEve.",
+                    "the provider you chose — over an encrypted connection, to open a " +
+                    "session. It is never sent to ClassEve.",
                 style = EarslateTheme.textStyles.bodySmall,
                 color = EarslateTheme.colors.textTertiary,
                 textAlign = TextAlign.Start,
@@ -343,35 +367,39 @@ fun ApiKeySetupScreen(
     }
 }
 
-// Deliberately no claim about what a key looks like. Google has changed that
-// before, and telling someone their valid key is wrong is worse than telling
-// them nothing.
-private val GEMINI_INSTRUCTIONS = listOf(
-    "Open Google AI Studio and sign in with a Google account.",
-    "Select “Get API key”, then “Create API key”.",
-    "Pick a Google Cloud project, or let it make one for you.",
-    "Copy the whole key it shows you and paste it below.",
-)
+// No claim about what a key looks like: providers change that, and telling
+// someone their valid key is wrong is worse than telling them nothing.
+private fun instructionsFor(provider: KeyProvider): List<String> = when (provider) {
+    KeyProvider.GEMINI -> listOf(
+        "Open Google AI Studio and sign in with a Google account.",
+        "Select “Get API key”, then “Create API key”.",
+        "Pick a Google Cloud project, or let it make one for you.",
+        "Copy the whole key it shows you and paste it below.",
+    )
+
+    KeyProvider.OPENAI -> listOf(
+        "Open the OpenAI dashboard and sign in.",
+        "Go to API keys, then “Create new secret key”.",
+        "Copy it straight away — OpenAI shows a secret key only once.",
+        "Make sure the account has billing set up, or live translation will be refused.",
+    )
+}
 
 @Composable
-private fun SavedKeyRow(
+private fun ProviderRow(
     provider: KeyProvider,
-    /**
-     * Removes the stored key.
-     *
-     * ProviderKeyStore.forget() existed and had no caller anywhere in the app,
-     * so there was no way to take a key off the device at all: this screen can
-     * overwrite one but never delete it, and the Settings row only reopens this
-     * screen. Someone selling a phone, handing it over, or rotating a key had
-     * only "clear app data" — which also destroys their languages and
-     * onboarding — or uninstalling.
-     */
+    selected: Boolean,
+    alreadySaved: Boolean,
+    /** The name of the user's language when this provider cannot speak it. */
+    cannotSpeak: String?,
+    onSelect: () -> Unit,
     onForget: () -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .defaultMinSize(minHeight = 48.dp)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onSelect)
             .padding(vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
@@ -380,27 +408,56 @@ private fun SavedKeyRow(
             Text(
                 text = provider.displayName,
                 style = EarslateTheme.textStyles.body,
-                color = EarslateTheme.colors.textPrimary,
+                color = if (selected) EarslateTheme.colors.ember else EarslateTheme.colors.textPrimary,
             )
+            if (alreadySaved) {
+                Text(
+                    text = "Key saved",
+                    style = EarslateTheme.textStyles.bodySmall,
+                    color = EarslateTheme.colors.textTertiary,
+                )
+            }
+            if (cannotSpeak != null) {
+                Text(
+                    text = "Can't translate into $cannotSpeak",
+                    style = EarslateTheme.textStyles.bodySmall,
+                    color = EarslateTheme.colors.textTertiary,
+                )
+            }
+        }
+        // Removing a key is the only way to take it off the device short of
+        // clearing the app's data.
+        if (alreadySaved) {
             Text(
-                text = "Key saved",
-                style = EarslateTheme.textStyles.bodySmall,
+                text = "REMOVE",
+                style = EarslateTheme.textStyles.meta,
                 color = EarslateTheme.colors.textTertiary,
+                modifier = Modifier
+                    .defaultMinSize(minHeight = 48.dp)
+                    .clickable(role = Role.Button, onClick = onForget)
+                    .padding(horizontal = 8.dp, vertical = 14.dp)
+                    .semantics {
+                        contentDescription = "Remove the saved ${provider.displayName} key"
+                    },
             )
         }
         Text(
-            text = "REMOVE",
+            text = if (selected) "SELECTED" else "",
             style = EarslateTheme.textStyles.meta,
-            color = EarslateTheme.colors.textTertiary,
-            modifier = Modifier
-                .defaultMinSize(minHeight = 48.dp)
-                .clickable(role = Role.Button, onClick = onForget)
-                .padding(horizontal = 8.dp, vertical = 14.dp)
-                .semantics {
-                    contentDescription = "Remove the saved ${provider.displayName} key"
-                },
+            color = EarslateTheme.colors.ember,
+            modifier = Modifier.clearAndSetSemantics { },
         )
     }
+}
+
+@Composable
+private fun ThinDivider() {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(color = EarslateTheme.colors.borderSubtle),
+    )
 }
 
 @Composable

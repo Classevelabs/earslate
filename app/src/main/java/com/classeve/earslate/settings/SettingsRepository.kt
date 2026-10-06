@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.classeve.earslate.session.SupportedLanguages
 import com.classeve.earslate.session.TargetLanguage
+import com.classeve.earslate.session.TranslationProvider
 import com.classeve.earslate.session.TranslatorPolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.SharingStarted
@@ -38,6 +39,8 @@ data class UserSettings(
      */
     val otherLanguageBcp47: String? = null,
     val persistentNotification: Boolean = false,
+    /** The provider the user chose, or null to use whichever one has a key. */
+    val provider: TranslationProvider? = null,
 )
 
 class SettingsRepository(
@@ -54,6 +57,8 @@ class SettingsRepository(
         // means Automatic, which is the default the product ships on.
         val OTHER_LANGUAGE = stringPreferencesKey("other_language_bcp47")
         val PERSISTENT_NOTIFICATION = booleanPreferencesKey("persistent_notification")
+        // The key 0.5.3 wrote. Its "auto" reads as no choice, which means the same.
+        val PROVIDER = stringPreferencesKey("translation_provider")
     }
 
     private val defaults = UserSettings()
@@ -62,6 +67,7 @@ class SettingsRepository(
         myLanguageBcp47 = prefs[Keys.MY_LANGUAGE] ?: defaults.myLanguageBcp47,
         otherLanguageBcp47 = prefs[Keys.OTHER_LANGUAGE],
         persistentNotification = prefs[Keys.PERSISTENT_NOTIFICATION] ?: defaults.persistentNotification,
+        provider = TranslationProvider.fromWireValue(prefs[Keys.PROVIDER]),
     )
 
     // ── observable state ───────────────────────────────────────────────
@@ -107,6 +113,10 @@ class SettingsRepository(
 
     suspend fun setPersistentNotification(enabled: Boolean) {
         dataStore.edit { prefs -> prefs[Keys.PERSISTENT_NOTIFICATION] = enabled }
+    }
+
+    suspend fun setProvider(provider: TranslationProvider) {
+        dataStore.edit { prefs -> prefs[Keys.PROVIDER] = provider.wireValue }
     }
 
     /**
@@ -159,5 +169,5 @@ private fun UserSettings.toTranslatorPolicy(): TranslatorPolicy {
     // Null when unset OR when the saved tag is no longer a supported language:
     // either way, fall back to Automatic rather than a target that will not send.
     val other = otherLanguageBcp47?.let { tag -> SupportedLanguages.firstOrNull { it.bcp47 == tag } }
-    return TranslatorPolicy(myLanguage = mine, otherLanguage = other)
+    return TranslatorPolicy(myLanguage = mine, otherLanguage = other, provider = provider)
 }

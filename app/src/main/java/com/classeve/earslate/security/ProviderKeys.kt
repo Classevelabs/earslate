@@ -32,6 +32,12 @@ enum class KeyProvider(
         displayName = "Google Gemini",
         consoleName = "Google AI Studio",
         consoleUrl = "https://aistudio.google.com/apikey",
+    ),
+    OPENAI(
+        provider = TranslationProvider.OPENAI,
+        displayName = "OpenAI",
+        consoleName = "the OpenAI dashboard",
+        consoleUrl = "https://platform.openai.com/api-keys",
     );
 
     /** Storage name. Stable — changing it strands the user's saved key. */
@@ -74,8 +80,8 @@ enum class KeyProvider(
     fun isPlausible(candidate: String): Boolean = rejectionReason(candidate) == null
 
     companion object {
-        fun forProvider(provider: TranslationProvider): KeyProvider? =
-            entries.firstOrNull { it.provider == provider }
+        fun forProvider(provider: TranslationProvider): KeyProvider =
+            entries.first { it.provider == provider }
     }
 }
 
@@ -137,11 +143,11 @@ class ProviderKeyStore(private val vault: SecretStore) {
     fun hasAnyKey(): Boolean = KeyProvider.entries.any { has(it) }
 
     /**
-     * The provider a session should actually use. Returns null when no usable
-     * key exists. One provider today, so this is "Gemini if a key is stored".
+     * The provider a session should use: the one the user chose when its key is
+     * stored, otherwise whichever provider has one. Null when no key exists.
      */
-    fun resolve(preference: TranslationProvider): KeyProvider? =
-        KeyProvider.forProvider(preference)?.takeIf { has(it) }
+    fun resolve(preference: TranslationProvider?): KeyProvider? =
+        preference?.let { KeyProvider.forProvider(it) }?.takeIf { has(it) }
             ?: KeyProvider.entries.firstOrNull { has(it) }
 
     /**

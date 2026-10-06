@@ -18,7 +18,9 @@ import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -27,9 +29,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.classeve.earslate.session.TargetLanguage
+import com.classeve.earslate.session.TranslationProvider
 import com.classeve.earslate.ui.components.BackRow
 import com.classeve.earslate.ui.components.FramedPanel
 import com.classeve.earslate.ui.components.SectionHeader
@@ -59,6 +63,11 @@ fun SettingsScreen(
     /** null resets the other language to Automatic. */
     onOtherLanguageChange: (TargetLanguage?) -> Unit = {},
     onPersistentNotificationChange: (Boolean) -> Unit = {},
+    /** The providers with a saved key. The choice is offered only when there is one to make. */
+    configuredProviders: List<TranslationProvider> = emptyList(),
+    /** The provider sessions use now. */
+    activeProvider: TranslationProvider? = null,
+    onProviderChange: (TranslationProvider) -> Unit = {},
     onOpenOnboarding: () -> Unit = {},
     onOpenHelp: () -> Unit = {},
     onOpenKeySetup: () -> Unit = {},
@@ -84,6 +93,42 @@ fun SettingsScreen(
         remember(initialPersistentNotification) { mutableStateOf(initialPersistentNotification) }
     var showMyPicker by remember { mutableStateOf(false) }
     var showOtherPicker by remember { mutableStateOf(false) }
+    var showProviders by remember { mutableStateOf(false) }
+
+    if (showProviders) {
+        AlertDialog(
+            onDismissRequest = { showProviders = false },
+            containerColor = EarslateTheme.colors.elev2,
+            titleContentColor = EarslateTheme.colors.textPrimary,
+            textContentColor = EarslateTheme.colors.textSecondary,
+            title = { Text("Translation provider") },
+            text = {
+                Column {
+                    configuredProviders.forEach { option ->
+                        TextButton(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .semantics { selected = activeProvider == option },
+                            onClick = {
+                                onProviderChange(option)
+                                showProviders = false
+                            },
+                        ) {
+                            Text(
+                                text = option.displayName,
+                                color = if (activeProvider == option) {
+                                    EarslateTheme.colors.ember
+                                } else {
+                                    EarslateTheme.colors.textPrimary
+                                },
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+        )
+    }
 
     if (showMyPicker) {
         LanguagePickerDialog(
@@ -157,9 +202,9 @@ fun SettingsScreen(
             }
 
             SectionHeader(
-                kicker = "Microphone",
-                headline = "While it speaks.",
-                support = "What the mic does while the translator is talking.",
+                kicker = "Controls",
+                headline = "In the shade.",
+                support = "A start and stop control that stays in the notification shade.",
             )
 
             FramedPanel {
@@ -177,16 +222,25 @@ fun SettingsScreen(
             SectionHeader(
                 kicker = "Service",
                 headline = "Your key.",
-                support = "earslate runs on your own Google Gemini API key, billed to your own " +
-                    "account. There is no ClassEve server in the path.",
+                support = "earslate runs on your own Google Gemini or OpenAI API key, billed to " +
+                    "your own account. There is no ClassEve server in the path.",
             )
 
             FramedPanel {
+                if (configuredProviders.size > 1 && activeProvider != null) {
+                    SettingsRow(
+                        label = "Provider",
+                        value = activeProvider.displayName,
+                        onClick = { showProviders = true },
+                        onClickLabel = "Choose translation provider",
+                    )
+                    Divider()
+                }
                 SettingsRow(
-                    label = "API key",
+                    label = "API keys",
                     value = configuredKeySummary,
                     onClick = onOpenKeySetup,
-                    onClickLabel = "Manage API key",
+                    onClickLabel = "Manage API keys",
                 )
             }
 
