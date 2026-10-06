@@ -228,7 +228,12 @@ fun ApiKeySetupScreen(
                         cannotSpeak = language.displayName.takeIf {
                             TranslationLiveProtocols.forProvider(option.provider).wireLanguage(language.bcp47) == null
                         },
-                        onSelect = { provider = option },
+                        onSelect = {
+                            // A key typed for one provider is never the other's, and
+                            // behind its dots nobody can see that it is still there.
+                            if (provider != option) keyText = ""
+                            provider = option
+                        },
                         onForget = {
                             keys.forget(option)
                             saved = keys.configured()
