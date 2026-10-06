@@ -157,29 +157,29 @@ class LiveOpenAiSessionTest {
         // They speak Spanish.
         quiet(1_000)
         speak(to24k(spanish!!))
-        quietUntil("their translation to be committed") { captions.lines.value.isNotEmpty() }
+        quietUntil("their translation to be committed") { captions.settled().isNotEmpty() }
         quiet(1_000)
         val inbound = playback.written.filter { it.voiced }.groupBy { it.lane }.maxByOrNull { it.value.size }!!.key
         val englishHeard = playback.heardMs(inbound)
-        println("LIVE OpenAI Spanish -> English heard $englishHeard ms; captions ${captions.lines.value}")
+        println("LIVE OpenAI Spanish -> English heard $englishHeard ms; captions ${captions.settled()}")
         assertTrue("their Spanish was translated: $englishHeard ms", englishHeard >= 2_000)
-        assertTrue(captions.lines.value.joinToString(" ").lowercase().let { it.contains("train") || it.contains("station") })
+        assertTrue(captions.settled().joinToString(" ").lowercase().let { it.contains("train") || it.contains("station") })
         // OpenAI does not name the language it hears; the app works it out from the words.
         assertEquals("their language was recognised", "es-ES", state.heardLanguage.value?.bcp47)
 
         // I answer in English.
-        val linesBefore = captions.lines.value.size
+        val linesBefore = captions.settled().size
         speak(to24k(english!!))
-        quietUntil("my translation to be committed") { captions.lines.value.size > linesBefore }
+        quietUntil("my translation to be committed") { captions.settled().size > linesBefore }
         quiet(1_000)
         val outbound = playback.written.map { it.lane }.distinct().firstOrNull { it != inbound }
         val spanishHeard = outbound?.let(playback::heardMs) ?: 0
         val echo = playback.heardMs(inbound) - englishHeard
         println("LIVE OpenAI English -> Spanish heard $spanishHeard ms; my own English repeated back: $echo ms")
-        println("LIVE OpenAI captions ${captions.lines.value}")
+        println("LIVE OpenAI captions ${captions.settled()}")
         assertTrue("my English was translated for them: $spanishHeard ms", spanishHeard >= 2_000)
         assertTrue("my own words were not played back to me: $echo ms", echo <= 500)
-        assertTrue(captions.lines.value.drop(linesBefore).joinToString(" ").lowercase().let { it.contains("minutos") || it.contains("banco") })
+        assertTrue(captions.settled().drop(linesBefore).joinToString(" ").lowercase().let { it.contains("minutos") || it.contains("banco") })
 
         assertNull(state.lastError.value)
         assertNull(state.notice.value)

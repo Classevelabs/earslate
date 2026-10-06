@@ -1,47 +1,15 @@
 package com.classeve.earslate.ui.captions
 
 /**
- * One row of the captions list.
- *
- * [live] marks a line that is still being spoken — a row whose TEXT grows
- * between frames while the row count stays exactly the same.
- */
-data class CaptionRow(
-    val text: String,
-    val live: Boolean,
-)
-
-/**
- * Every row the captions list renders, in order.
- *
- * This exists so that the list and its autoscroll cannot disagree about how
- * many rows there are. They did, and it was the bug: the `LazyColumn` emitted
- * one item per committed line **plus** a trailing item for the partial line,
- * while the scroll effect targeted `lines.lastIndex`. So for as long as
- * somebody was mid-sentence — which is the entire time the app is useful — the
- * newest translated text sat one row below the fold and the view never scrolled
- * to it.
- *
- * Deriving both the rendering and the scroll target from this one list is what
- * removes the whole class rather than the reported instance: add a footer row
- * here tomorrow and the scroll target follows it for free.
- */
-fun captionRows(lines: List<String>, pending: List<String>): List<CaptionRow> =
-    buildList(lines.size + pending.size) {
-        lines.mapTo(this) { CaptionRow(text = it, live = false) }
-        pending.filter { it.isNotEmpty() }.mapTo(this) { CaptionRow(text = it, live = true) }
-    }
-
-/**
- * The row autoscroll must reach: the newest row the list actually renders,
- * live or committed. `-1` when there is nothing to scroll to.
+ * The row autoscroll must reach: the newest caption the list renders, live or
+ * settled. `-1` when there is nothing to scroll to.
  *
  * A one-line function with a test on it, on purpose. "Which index does
- * autoscroll aim at" is the exact thing that was wrong, and naming it means a
- * future edit that quietly goes back to "the last committed line" fails a test
- * instead of shipping.
+ * autoscroll aim at" is the exact thing that was once wrong, and naming it
+ * means a future edit that quietly goes back to "the last settled caption"
+ * fails a test instead of shipping.
  */
-fun captionScrollTarget(rows: List<CaptionRow>): Int = rows.lastIndex
+fun captionScrollTarget(captions: List<Caption>): Int = captions.lastIndex
 
 /**
  * Whether the captions list keeps to its newest row. It does until a hand
@@ -79,3 +47,16 @@ fun captionEndOffset(rowHeight: Int?, panelHeight: Int): Int {
     // number chosen only for being large wraps round and aims at the top.
     return ((rowHeight ?: 0) - panelHeight).coerceAtLeast(0)
 }
+
+/** Who said a caption, for a reader who cannot see which side of the screen it is on. */
+fun CaptionSide.speaker(): String = when (this) {
+    CaptionSide.THEIRS -> "Them"
+    CaptionSide.MINE -> "Me"
+}
+
+/**
+ * The whole conversation as text to paste somewhere else: one line for each
+ * thing said, with who said it, in the order it was said.
+ */
+fun conversationText(captions: List<Caption>): String =
+    captions.joinToString("\n") { "${it.side.speaker()}: ${it.text.trim()}" }

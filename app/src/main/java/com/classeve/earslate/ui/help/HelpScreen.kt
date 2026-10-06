@@ -64,7 +64,7 @@ fun HelpScreen(
                 )
                 HelpEntry(
                     title = "Speaking back",
-                    body = "What you say goes out in the language the other person was last heard speaking. Until something has been recognized, that is English.",
+                    body = "What you say goes out in the language the other person was last heard speaking. Until they have spoken, nothing is said for you; to speak first, tap THEY SPEAK on the main screen and choose their language.",
                 )
                 HelpEntry(
                     title = "Audio output",
@@ -72,7 +72,7 @@ fun HelpScreen(
                 )
                 HelpEntry(
                     title = "Captions",
-                    body = "Translated text appears under the button as it is spoken. Useful in noisy places, and always on.",
+                    body = "The conversation appears under the button as it is spoken: what they said on the left, what you said on the right. Tap a caption to copy it, or COPY ALL for the whole conversation.",
                 )
             }
 

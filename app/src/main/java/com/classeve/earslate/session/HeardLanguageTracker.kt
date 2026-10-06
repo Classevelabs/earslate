@@ -4,61 +4,86 @@ package com.classeve.earslate.session
  * Follows which language the other person speaks, so that what I say can be
  * sent back to them in it.
  *
- * The microphone hears both people. Anything in [myLanguage] is me; everything
- * else is them.
+ * The microphone hears both people. Anything in [myLanguage] is me; a language
+ * that is neither mine nor the one they are known to speak is put on [offer],
+ * and becomes theirs only when whoever is listening [accept]s it: the model's
+ * name for a language is not proof that somebody new is speaking it.
  */
 class HeardLanguageTracker(
     private val myLanguage: String,
-    initialTheirs: String,
+    initialTheirs: String?,
 ) {
 
-    sealed interface Heard {
-        data object Me : Heard
+    /** [language] has been heard since [sinceMs] and may be what they speak now. */
+    class Offer(val language: String, val sinceMs: Long)
 
-        /** [changed] is true when [language] is not what I was being answered back in until now. */
-        data class Them(val language: String, val changed: Boolean) : Heard
-    }
-
-    /** The language the other person is being answered in. */
-    var current: String = initialTheirs
+    /** The language the other person is being answered in; null until one has been heard. */
+    var current: String? = initialTheirs
         private set
 
-    private var heardThem = false
-    private var candidate: String? = null
+    private var pending: Offer? = null
+    private var heard = 0
+    private var beganSpeech = false
+    private var lastHeardAtMs = 0L
 
-    fun report(language: String): Heard {
-        if (sameLanguage(language, myLanguage)) {
-            candidate = null
-            return Heard.Me
+    // A language is on offer at once when it is the first of theirs, or when
+    // somebody began to speak in it. In the middle of speech it has to be said
+    // twice: one misheard fragment must not send my next sentence out in the
+    // wrong language.
+    val offer: Offer? get() = pending?.takeIf { current == null || beganSpeech || heard >= 2 }
+
+    /**
+     * The session listening for the other person heard [language].
+     * @param beginsSpeech true for the first words after a silence.
+     */
+    fun heard(language: String, nowMs: Long, beginsSpeech: Boolean = false) {
+        if (isMine(language) || isTheirs(language)) return withdraw()
+        if (pending?.let { sameLanguage(it.language, language) } != true) {
+            pending = Offer(language, nowMs)
+            heard = 0
+            beganSpeech = beginsSpeech
         }
-        if (heardThem && sameLanguage(language, current)) {
-            candidate = null
-            return Heard.Them(current, changed = false)
-        }
-        // The first language heard replaces a starting guess at once. Moving
-        // off a language that WAS heard needs it said twice: one misheard
-        // fragment must not send my next sentence out in the wrong language.
-        if (heardThem && !sameLanguage(candidate.orEmpty(), language)) {
-            candidate = language
-            return Heard.Them(current, changed = false)
-        }
-        val changed = !sameLanguage(language, current)
-        heardThem = true
-        candidate = null
-        current = language
-        return Heard.Them(language, changed)
+        heard++
+        lastHeardAtMs = nowMs
     }
 
+    /** @return the language that is theirs from now on, or null when none was on offer. */
+    fun accept(): String? {
+        val language = offer?.language ?: return null
+        withdraw()
+        current = language
+        return language
+    }
+
+    /** What was on offer turned out to be one of the languages already in use, misheard. */
+    fun withdraw() {
+        pending = null
+        heard = 0
+        beganSpeech = false
+    }
+
+    /** An offer nobody took up while its speech was being translated belongs to no one. */
+    fun expire(nowMs: Long) {
+        if (pending != null && nowMs - lastHeardAtMs > OFFER_TTL_MS) withdraw()
+    }
+
+    fun isMine(language: String) = sameLanguage(language, myLanguage)
+
+    fun isTheirs(language: String) = current?.let { sameLanguage(language, it) } == true
+
     companion object {
+        /** Longer than a translation takes to begin after the words it translates. */
+        const val OFFER_TTL_MS = 6_000L
+
         /** Regional variants are one language, and so are the names one language goes by. */
         fun sameLanguage(a: String, b: String): Boolean = a.isNotEmpty() && nameOf(a) == nameOf(b)
 
         private fun nameOf(tag: String): String =
             tag.trim().substringBefore('-').lowercase().let { OTHER_NAMES[it] ?: it }
 
-        // The translate model reports Norwegian as "no" and Filipino as "tl", and
-        // hears Malay as Indonesian. The pickers say nb, fil, ms and id.
-        private val OTHER_NAMES = mapOf("no" to "nb", "tl" to "fil", "ms" to "id")
+        // The translate model reports Norwegian as "no" and Filipino as "tl".
+        // The pickers say nb and fil.
+        private val OTHER_NAMES = mapOf("no" to "nb", "tl" to "fil")
     }
 }
 

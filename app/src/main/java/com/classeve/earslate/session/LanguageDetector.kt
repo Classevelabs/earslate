@@ -144,8 +144,8 @@ object LanguageDetector {
 
     private const val MIN_CHARS = 6
     // Two function words, not three. Three meant a whole short sentence had to
-    // pass before the outbound direction could re-aim, so "me → them" sat on its
-    // English default for the first exchange or two. Two words that both score,
+    // pass before the outbound direction could be aimed, so nothing I said was
+    // translated for the first exchange or two. Two words that both score,
     // still gated by [MIN_SCORE] and the [MIN_MARGIN] tie-breaker, is a fair
     // commit — and a wrong commit is now recoverable, because the user can pin
     // the other language outright rather than depend on this at all.

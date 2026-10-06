@@ -270,6 +270,25 @@ class PlayoutLaneTest {
         assertEquals(heardBefore, player.voicedMs)
     }
 
+    // A translation waiting for its turn on the loudspeaker, and behind it the
+    // first words of something that turns out to be a repeat. Only the repeat goes.
+    @Test
+    fun `silencing what is queued of one utterance leaves the sentence waiting ahead of it`() {
+        val player = Player()
+        player.lane.setConsecutive(true, player.now)
+        player.lane.offer(TestAudio.tone(250, rate), voiced = true, nowMs = player.now, begins = true)
+        repeat(3) { player.arrive(250) }
+        player.lane.offer(TestAudio.tone(250, rate), voiced = true, nowMs = player.now, begins = true)
+        player.arrive(250)
+        assertEquals(1_500, player.lane.snapshot().queuedVoicedMs)
+
+        player.lane.muteQueued()
+        assertEquals("the second of translation is still there", 1_000, player.lane.snapshot().queuedVoicedMs)
+        player.lane.release(player.now)
+        player.play(untilMs = 3_000)
+        assertEquals("and is heard whole", 1_000, player.voicedMs)
+    }
+
     // ── a loudspeaker both people share ─────────────────────────────────
 
     @Test

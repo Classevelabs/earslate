@@ -39,26 +39,52 @@ whole conversation as one sentence.
 
 **If regressed.** Captions run on as one endless line and the app feels stuck.
 
-## A direction is heard only for speech in the other language
+## A direction is silenced only when it is seen to be repeating
 
-**Decision.** Both sessions hear the one microphone. `ConversationEngine` lets
-the session that speaks my language be heard only when it reports hearing
-theirs, and the session that speaks theirs only when it reports hearing mine.
-Each session is judged by what that session itself reports, never by the
-other's.
+**Decision.** Both sessions hear the one microphone, and the one aimed at the
+language being spoken has nothing to translate. `ConversationEngine` silences
+a session on two kinds of evidence and no other:
 
-**Symptom.** Asked not to, the model still repeats speech that is already in
-its target language, so people heard their own words back, and the repeat
-could win the loudspeaker over the real translation. Judging both sessions by
-one shared verdict lost 13% of the wanted translation in a recorded
-Hindi-English conversation, because a single contrary report from one session
-silenced the other mid-sentence.
+- it names its own language as the one it hears. A session is believed about
+  that language only, never about the other one;
+- its words. A session whose words are nine in ten the words it heard is
+  repeating; and of two sessions answering the same speech, where one shares
+  almost nothing with what it heard (a third of its words at most), the one
+  that shares more is the repeat.
 
-**Verified against.** `ConversationEngineTest`, and `RecordedConversationTest`
-over two recorded conversations.
+When neither shows who is speaking, both may be heard.
 
-**If regressed.** You hear yourself repeated, or part of a translation goes
-missing.
+**Symptom.** Until 0.7.0 a session was silenced whenever the language the
+model named was "not mine". The name is not dependable. Recorded on 2026-10-06
+and 07, the session aimed at English knew English every time, and wrote a
+Punjabi speaker down as Hindi, Gujarati, Urdu, Vietnamese and Japanese; the
+one aimed at Punjabi wrote the same speaker down as Hindi, and once as an
+English sentence that was a translation of what had been said. In one recorded
+conversation 0.6.0 translated one of the Punjabi speaker's seven sentences for
+the other person and played five of them back to the speaker. The English
+translation itself had been right all seven times, and thrown away. On the
+same recording 0.7.0 translates seven of seven, and plays back two seconds of
+one sentence begun 0.4 s after the other person stopped.
+
+Judging both sessions by one shared verdict had earlier lost 13% of the wanted
+translation in a recorded Hindi-English conversation: a contrary report from
+one session silenced the other mid-sentence. That is why each is believed
+about its own language only.
+
+**Verified against.** `ConversationEngineTest`, `SpokenWordsTest`, and
+`RecordedConversationTest` over ten recorded conversations;
+`LiveGeminiSessionTest` against the real model.
+
+**If regressed.** What you say is not translated for the other person, or you
+hear yourself repeated.
+
+**What it cannot do.** Between two languages as close as Punjabi and Hindi, or
+Norwegian and Danish, the model often takes one for the other and translates
+nothing: recorded, a Punjabi sentence said to a Hindi speaker produced no
+Hindi at all. No rule here can make a translation the model did not produce.
+And a sentence the model writes down in another language's own words, with
+nothing to compare it against, cannot be told from a translation: before the
+other person has been heard, it is let through.
 
 ## Each direction plays on a continuous lane of its own
 
@@ -218,18 +244,24 @@ has not been run against OpenAI's service.
 ## One language can go by two names
 
 **Decision.** Two language codes are the same language when their first parts
-match, and `no`/`nb`, `tl`/`fil` and `ms`/`id` are one language each
+match, and `no`/`nb` and `tl`/`fil` are one language each
 (`HeardLanguageTracker.sameLanguage`). The pickers, the first-run default and
-the provider's own reports all go through that one comparison.
+the provider's own reports all go through that one comparison. A language the
+model merely mistakes for another is not in that list: it is found out by
+what the session says back.
 
 **Symptom.** The translate model reports Norwegian as `no` and Filipino as
-`tl`, and hears Malay as Indonesian, while the pickers say `nb`, `fil` and
-`ms`. Every language in the pickers was spoken to it on 2026-10-06, and all
-but these three came back under the picker's code. The app took a Norwegian or
-Malay speaker for the other person: in the recordings, everything they said
-was played back to them, 10.5 of 10.5 seconds and 16 of 16, and a Filipino
-speaker's sentences were not translated for the other person at all. A Finnish
-phone, `fi`, was matched against `fil` on first run and started in Filipino.
+`tl`, while the pickers say `nb` and `fil`. Every language in the pickers was
+spoken to it on 2026-10-06. The app took a Norwegian speaker for the other
+person: in the recording, everything they said was played back to them, 10.5
+of 10.5 seconds, and a Filipino speaker's sentences were not translated for
+the other person at all. A Finnish phone, `fi`, was matched against `fil` on
+first run and started in Filipino.
+
+It also hears Malay as Indonesian. That used to be a third pair in the list,
+which made an Indonesian speaker indistinguishable from the Malay user. Since
+0.7.0 it is caught as any repeat is: the session aimed at Malay says the Malay
+back word for word, 16 of 16 seconds in the recording, and none of it is heard.
 
 **Verified against.** `RecordedConversationTest` over the three recordings,
 `HeardLanguageTrackerTest`, `TargetLanguageTest` and `SettingsRepositoryTest`.
@@ -301,6 +333,64 @@ keys were still there, and the saved key could still be read.
 
 **If regressed.** After updating, the app translates into a language the
 person did not choose.
+
+## Nothing is said for me until they have been heard
+
+**Decision.** What I say goes out in the language the other person was last
+heard speaking, and in no other. Until one has been heard, or set by hand on
+the main screen, no session is opened for what I say (`SessionCoordinator`).
+
+**Symptom.** Until 0.7.0 that direction opened aimed at English. Somebody who
+spoke first had their words said aloud in English to a person who might speak
+anything, and the screen gave no sign of why.
+
+**Verified against.** `SessionCoordinatorTest`, `HeardLanguageTrackerTest`,
+and `LiveGeminiSessionTest`: Punjabi first, then an English speaker, then a
+Chinese one, against the real model.
+
+**If regressed.** The phone speaks a language nobody present has spoken.
+
+## A language is theirs when it has been translated, not when it has been named
+
+**Decision.** The language a session names is put on offer, and becomes the
+other person's only when the session listening for them is seen translating
+it: what it says shares at most a third of its words with what it heard, the
+session for the other direction, if there is one, heard the same language,
+and neither is saying it back. A language somebody begins to speak in is on
+offer from its first words; in the middle of speech it must be named twice.
+
+**Symptom.** The first language named was taken at once. In the recorded
+Punjabi conversation that was Hindi, twice, for the Punjabi speaker's own
+sentences: their next words would have gone out in Hindi to somebody speaking
+English. Replayed through 0.7.0 the other person's language is English from
+start to finish, and in the recording with a Chinese speaker it becomes
+Chinese at their first translated words, with nothing of it said in English.
+
+**Verified against.** `ConversationEngineTest`, `HeardLanguageTrackerTest`,
+`RecordedConversationTest`, `LiveGeminiSessionTest`.
+
+**If regressed.** What you say goes out in a language the model imagined.
+
+**What it cannot do.** Somebody whose language is close to yours, Danish to
+a Norwegian, is translated for you but their language is not taken up by
+itself: its translation shares too many words with it to be told from your
+own speech misheard. Their language can be set by hand.
+
+## Captions are a conversation, each on its speaker's side
+
+**Decision.** A caption carries whose it is, keeps the place it began in, and
+has a name of its own (`CaptionsStore`). The screen shows what they said on
+the left and what I said on the right; tapping a caption copies it, and COPY
+ALL copies the conversation with who said each line.
+
+**Symptom.** The captions were one column of lines, finished ones first and
+unfinished ones after. Nothing showed which way a line had gone, a line moved
+when it finished, and text could only be taken by selecting it by hand.
+
+**Verified against.** `CaptionsStoreTest`, `CaptionRowsTest`, and
+`CaptionsOnDeviceTest` on a device.
+
+**If regressed.** The conversation cannot be followed by reading it.
 
 ## The newest caption stays on the screen until a hand moves it
 

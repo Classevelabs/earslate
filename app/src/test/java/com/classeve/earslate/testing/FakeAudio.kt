@@ -66,7 +66,7 @@ class FakePlayback : AudioPlaybackEngine {
         running = true
     }
 
-    override fun write(lane: Int, pcm: ByteArray, sampleRateHz: Int, voiced: Boolean) {
+    override fun write(lane: Int, pcm: ByteArray, sampleRateHz: Int, voiced: Boolean, begins: Boolean) {
         written += Written(lane, pcm.size * 1000 / (sampleRateHz * 2), voiced)
     }
 

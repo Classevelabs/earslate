@@ -4,56 +4,94 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+/** Whose words a caption carries. */
+enum class CaptionSide {
+    /** What the other person said, put into my language. */
+    THEIRS,
+
+    /** What I said, put into theirs. */
+    MINE,
+}
+
 /**
- * Rolling window of translated captions. Each direction of the conversation
- * builds its own line, so two people speaking close together do not end up in
- * one sentence; a line is committed when its speaker stops.
+ * One thing somebody said, translated. [live] while it is still being spoken:
+ * its text grows, and its place in the conversation stays where it began.
+ */
+data class Caption(
+    val id: Long,
+    val side: CaptionSide,
+    val text: String,
+    val live: Boolean,
+)
+
+/**
+ * The conversation so far, as translated captions in the order they were
+ * begun. Each direction builds its own caption, so two people speaking close
+ * together do not end up in one sentence; a caption is settled when its
+ * speaker stops.
  */
 class CaptionsStore(
-    private val maxLines: Int = 48,
+    private val maxCaptions: Int = 48,
 ) {
-    private val _lines = MutableStateFlow<List<String>>(emptyList())
-    val lines: StateFlow<List<String>> = _lines.asStateFlow()
+    private class Entry(val id: Long, val side: CaptionSide) {
+        val text = StringBuilder()
+        var live = true
+    }
 
-    /** Lines still being spoken, oldest first. */
-    private val _pending = MutableStateFlow<List<String>>(emptyList())
-    val pending: StateFlow<List<String>> = _pending.asStateFlow()
+    private val _captions = MutableStateFlow<List<Caption>>(emptyList())
+    val captions: StateFlow<List<Caption>> = _captions.asStateFlow()
 
-    private val builders = LinkedHashMap<Int, StringBuilder>()
+    private val entries = ArrayList<Entry>()
+    private val building = HashMap<Int, Entry>()
+    private var nextId = 0L
     private val lock = Any()
 
-    fun appendDelta(source: Int, text: String) {
+    /** What has been said to its end, oldest first. */
+    fun settled(): List<String> = captions.value.filter { !it.live }.map { it.text }
+
+    /** What is still being said, oldest first. */
+    fun live(): List<String> = captions.value.filter { it.live }.map { it.text }
+
+    fun appendDelta(source: Int, side: CaptionSide, text: String) {
         if (text.isEmpty()) return
         synchronized(lock) {
-            builders.getOrPut(source) { StringBuilder() }.append(text)
+            val entry = building.getOrPut(source) { Entry(nextId++, side).also { entries += it } }
+            entry.text.append(text)
             publish()
         }
     }
 
-    /** Throw away the line [source] was building; committed lines are kept. */
+    /** Throw away the caption [source] was building; settled ones are kept. */
     fun discardPending(source: Int) {
         synchronized(lock) {
-            if (builders.remove(source) != null) publish()
+            val entry = building.remove(source) ?: return
+            entries.remove(entry)
+            publish()
         }
     }
 
     fun commitLine(source: Int) {
         synchronized(lock) {
-            val committed = builders.remove(source)?.toString()?.trim().orEmpty()
-            if (committed.isNotEmpty()) _lines.value = (_lines.value + committed).takeLast(maxLines)
+            val entry = building.remove(source) ?: return
+            entry.live = false
+            if (entry.text.isBlank()) entries.remove(entry)
             publish()
         }
     }
 
     fun clear() {
         synchronized(lock) {
-            builders.clear()
-            _pending.value = emptyList()
-            _lines.value = emptyList()
+            entries.clear()
+            building.clear()
+            _captions.value = emptyList()
         }
     }
 
     private fun publish() {
-        _pending.value = builders.values.map { it.toString().trimStart() }.filter { it.isNotEmpty() }
+        while (entries.size > maxCaptions) building.values.remove(entries.removeAt(0))
+        _captions.value = entries.mapNotNull { entry ->
+            val text = if (entry.live) entry.text.trimStart() else entry.text.trim()
+            if (text.isEmpty()) null else Caption(entry.id, entry.side, text.toString(), entry.live)
+        }
     }
 }

@@ -122,13 +122,13 @@ class LiveSessionOnDeviceTest {
             microphone.play(spanish)
             // The room stays silent until the model, a few seconds behind, has finished.
             val deadline = System.currentTimeMillis() + 25_000
-            while (captions.lines.value.isEmpty()) {
+            while (captions.settled().isEmpty()) {
                 check(System.currentTimeMillis() < deadline) {
                     "no caption was committed (state ${state.state.value}, error ${state.lastError.value?.message})"
                 }
                 microphone.play(ByteArray(3_200))
             }
-            val english = captions.lines.value.joinToString(" ").lowercase()
+            val english = captions.settled().joinToString(" ").lowercase()
             assertTrue("the Spanish was translated: $english", english.contains("train") || english.contains("station"))
             assertTrue("translated speech came out of the device's audio output", heardSomething)
             assertEquals("es-ES", state.heardLanguage.value?.bcp47)

@@ -18,6 +18,7 @@ import com.classeve.earslate.testing.FakeCapture
 import com.classeve.earslate.testing.FakeFocus
 import com.classeve.earslate.testing.FakePlayback
 import com.classeve.earslate.testing.LanePlayback
+import com.classeve.earslate.ui.captions.CaptionSide
 import com.classeve.earslate.ui.captions.CaptionsStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
@@ -327,24 +328,24 @@ class LiveGeminiSessionTest {
         val spokeAt = System.currentTimeMillis()
         Thread { await("the first translated audio", 20_000) { playback.written.any { it.voiced } }; println("LIVE first translated audio after ${System.currentTimeMillis() - spokeAt} ms") }.start()
         speak(spanish)
-        val finished = quietUntil("their translation to be committed") { captions.lines.value.isNotEmpty() }
+        val finished = quietUntil("their translation to be committed") { captions.settled().isNotEmpty() }
         println("LIVE their translation was finished and committed $finished ms after they stopped speaking")
         quiet(1_000)
 
         val lanesAfterSpanish = playback.written.map { it.lane }.distinct()
         val inbound = playback.written.drop(spanishFrom).filter { it.voiced }.groupBy { it.lane }.maxByOrNull { it.value.size }!!.key
         val englishHeard = heardMs(inbound)
-        println("LIVE Spanish ${spanish.size / 32} ms -> English heard $englishHeard ms; captions ${captions.lines.value}")
+        println("LIVE Spanish ${spanish.size / 32} ms -> English heard $englishHeard ms; captions ${captions.settled()}")
         assertTrue("their Spanish was translated: $englishHeard ms", englishHeard >= 2_000)
-        assertTrue("captions were committed: ${captions.lines.value}", captions.lines.value.isNotEmpty())
-        assertTrue(captions.lines.value.joinToString(" ").lowercase().let { it.contains("train") || it.contains("station") })
+        assertTrue("captions were committed: ${captions.settled()}", captions.settled().isNotEmpty())
+        assertTrue(captions.settled().joinToString(" ").lowercase().let { it.contains("train") || it.contains("station") })
         assertEquals("their language was recognised", "es-ES", state.heardLanguage.value?.bcp47)
         await("the direction back to them", 5_000) { playback.written.map { it.lane }.distinct().size >= 2 || lanesAfterSpanish.size >= 2 }
 
         // I answer in English.
-        val linesBefore = captions.lines.value.size
+        val linesBefore = captions.settled().size
         speak(english)
-        val answered = quietUntil("my translation to be committed") { captions.lines.value.size > linesBefore }
+        val answered = quietUntil("my translation to be committed") { captions.settled().size > linesBefore }
         println("LIVE my translation was finished and committed $answered ms after I stopped speaking")
         quiet(1_000)
 
@@ -352,11 +353,11 @@ class LiveGeminiSessionTest {
         val spanishHeard = heardMs(outbound)
         val echo = heardMs(inbound) - englishHeard
         println("LIVE English ${english.size / 32} ms -> Spanish heard $spanishHeard ms; my own English repeated back: $echo ms")
-        println("LIVE captions ${captions.lines.value}")
+        println("LIVE captions ${captions.settled()}")
         assertTrue("my English was translated for them: $spanishHeard ms", spanishHeard >= 2_000)
         assertTrue("my own words were not played back to me: $echo ms", echo <= 500)
-        assertTrue(captions.lines.value.size > linesBefore)
-        assertTrue(captions.lines.value.drop(linesBefore).joinToString(" ").lowercase().let { it.contains("minutos") || it.contains("banco") })
+        assertTrue(captions.settled().size > linesBefore)
+        assertTrue(captions.settled().drop(linesBefore).joinToString(" ").lowercase().let { it.contains("minutos") || it.contains("banco") })
 
         assertNull(state.lastError.value)
         assertFalse("never dropped", RuntimeState.RECONNECTING in seen)
@@ -393,7 +394,7 @@ class LiveGeminiSessionTest {
             turnOver("their translation to end")
             quiet(3_000)
             val afterFirst = loudspeaker.totalHeardMs
-            println("LIVE speaker: first translation said, ${afterFirst} ms; captions ${captions.lines.value}")
+            println("LIVE speaker: first translation said, ${afterFirst} ms; captions ${captions.settled()}")
 
             speak(more)
             quietUntil("their second translation to be said", 40_000) { loudspeaker.totalHeardMs - afterFirst >= 1_500 }
@@ -401,8 +402,8 @@ class LiveGeminiSessionTest {
             quiet(3_000)
             val afterSecond = loudspeaker.totalHeardMs
             val answeredAt = now()
-            val englishSaid = captions.lines.value.joinToString(" ").lowercase()
-            println("LIVE speaker: second translation said, ${afterSecond - afterFirst} ms; captions ${captions.lines.value}")
+            val englishSaid = captions.settled().joinToString(" ").lowercase()
+            println("LIVE speaker: second translation said, ${afterSecond - afterFirst} ms; captions ${captions.settled()}")
 
             assertTrue("the first was translated: $englishSaid", englishSaid.contains("train") || englishSaid.contains("station"))
             assertTrue("and the second: $englishSaid", englishSaid.contains("restaurant"))
@@ -415,8 +416,8 @@ class LiveGeminiSessionTest {
             quietUntil("my answer to be said for them", 40_000) { loudspeaker.totalHeardMs - afterSecond >= 2_000 }
             turnOver("my answer to end")
             quiet(5_000)
-            val spanishSaid = captions.lines.value.joinToString(" ").lowercase()
-            println("LIVE speaker: answer said, ${loudspeaker.totalHeardMs - afterSecond} ms; captions ${captions.lines.value}")
+            val spanishSaid = captions.settled().joinToString(" ").lowercase()
+            println("LIVE speaker: answer said, ${loudspeaker.totalHeardMs - afterSecond} ms; captions ${captions.settled()}")
 
             assertTrue("my answer was translated for them: $spanishSaid", spanishSaid.contains("minutos") || spanishSaid.contains("banco"))
             val ownSpanish = words("es", answeredAt)
@@ -458,6 +459,90 @@ class LiveGeminiSessionTest {
         }
         println("LIVE languages opened: ${SupportedLanguages.size - refused.size} of ${SupportedLanguages.size}")
         assertEquals(emptyList<String>(), refused)
+    }
+
+    // What I say goes out in whatever the other person was last heard
+    // speaking. Before anyone has been heard there is no such language, and
+    // guessing one sends my words out in a language nobody present speaks.
+    @Test
+    fun `my words go out in the language they were last heard speaking, and in none before`() {
+        assumeTrue("EARSLATE_LIVE_GEMINI_KEY is not set", key.isNotEmpty())
+        val punjabi = say("pa1", "ਠੀਕ ਹੈ। ਇੱਥੋਂ ਲਗਭਗ ਦਸ ਮਿੰਟ ਲੱਗਦੇ ਹਨ। ਇਸ ਸੜਕ 'ਤੇ ਸਿੱਧੇ ਜਾਓ ਅਤੇ ਬੈਂਕ ਕੋਲੋਂ ਖੱਬੇ ਮੁੜੋ।", "Puck")
+        val mixed = say("pa_mix", "ਮੈਂ ਕੱਲ੍ਹ office ਜਾ ਰਿਹਾ ਹਾਂ ਕਿਉਂਕਿ meeting ਦਸ ਵਜੇ ਹੈ, ਅਤੇ ਮੈਨੂੰ report ਵੀ submit ਕਰਨੀ ਹੈ।", "Puck")
+        val english = say("en1", "Sure. It is about ten minutes from here. Go straight down this street and turn left at the bank.", "Kore")
+        // A third person, in a voice of their own. One voice that changes
+        // language is heard by the model as the language it spoke before.
+        val chinese = say("zh2", "你好，请问最近的地铁站在哪里？我想去市中心，大概要多长时间？", "Charon")
+        fun said(side: CaptionSide) = captions.captions.value.filter { it.side == side && !it.live }.map { it.text }
+        // The session that listens for them is the first one opened, and its lane the first.
+        val forMe = 1
+        fun toMe() = playback.written.sumOf { if (it.voiced && it.lane == forMe) it.ms else 0 }
+        fun toThem() = playback.written.sumOf { if (it.voiced && it.lane != forMe) it.ms else 0 }
+        fun String.has(script: Character.UnicodeScript) = any { Character.UnicodeScript.of(it.code) == script }
+
+        start(TranslatorPolicy(TargetLanguage("ਪੰਜਾਬੀ", "pa-IN")))
+        quiet(1_000)
+
+        // I speak first. Nobody else has been heard.
+        speak(punjabi)
+        quiet(7_000)
+        println("LIVE direction: before anyone is heard: sockets ${sockets.size}, to them ${toThem()} ms, back to me ${toMe()} ms, captions ${captions.captions.value.map { it.side to it.text }}")
+        assertEquals("no direction is open for what I say", 1, sockets.size)
+        assertEquals("and nothing is said for me", 0, toThem())
+        assertTrue("nor written as mine: ${said(CaptionSide.MINE)}", said(CaptionSide.MINE).isEmpty())
+        assertNull("no language has been taken for theirs", state.heardLanguage.value)
+
+        // They speak English: it comes to me in Punjabi, and English is now their language.
+        var theirs = said(CaptionSide.THEIRS).size
+        var heardBefore = toMe()
+        speak(english)
+        quietUntil("their English to reach me in Punjabi") { said(CaptionSide.THEIRS).size > theirs }
+        quiet(1_500)
+        println("LIVE direction: their English -> ${said(CaptionSide.THEIRS).drop(theirs)} (${toMe() - heardBefore} ms)")
+        assertTrue("their English reached me in Punjabi", said(CaptionSide.THEIRS).last().has(Character.UnicodeScript.GURMUKHI))
+        assertTrue("and was spoken: ${toMe() - heardBefore} ms", toMe() - heardBefore >= 2_000)
+        assertEquals("en-US", state.heardLanguage.value?.bcp47)
+
+        // Now what I say goes out in English: a plain sentence, then one with English words in it.
+        for ((name, sentence) in listOf("plain" to punjabi, "mixed with English" to mixed)) {
+            val mine = said(CaptionSide.MINE).size
+            val sentBefore = toThem()
+            heardBefore = toMe()
+            speak(sentence)
+            quietUntil("my Punjabi ($name) to go out in English") { said(CaptionSide.MINE).size > mine }
+            quiet(2_500)
+            val out = said(CaptionSide.MINE).drop(mine)
+            println("LIVE direction: my Punjabi ($name) -> $out (${toThem() - sentBefore} ms to them, ${toMe() - heardBefore} ms back to me)")
+            assertTrue("my Punjabi ($name) went out in English: $out", out.all { it.has(Character.UnicodeScript.LATIN) && !it.has(Character.UnicodeScript.GURMUKHI) })
+            assertTrue("and was spoken: ${toThem() - sentBefore} ms", toThem() - sentBefore >= 2_000)
+            assertEquals("their language is still English", "en-US", state.heardLanguage.value?.bcp47)
+        }
+
+        // Somebody speaks Chinese: it comes to me in Punjabi, and Chinese is now their language.
+        theirs = said(CaptionSide.THEIRS).size
+        var sentBefore = toThem()
+        speak(chinese)
+        quietUntil("their Chinese to reach me in Punjabi") { said(CaptionSide.THEIRS).size > theirs }
+        quietUntil("Chinese to be the language they speak") { state.heardLanguage.value?.bcp47?.startsWith("zh") == true }
+        quiet(1_500)
+        println("LIVE direction: their Chinese -> ${said(CaptionSide.THEIRS).drop(theirs)}; heard ${state.heardLanguage.value?.bcp47}; also said in English for ${toThem() - sentBefore} ms")
+        assertTrue("their Chinese reached me in Punjabi", said(CaptionSide.THEIRS).last().has(Character.UnicodeScript.GURMUKHI))
+        assertTrue("it was not also put into English: ${toThem() - sentBefore} ms", toThem() - sentBefore <= 1_000)
+
+        // And now what I say goes out in Chinese.
+        val mine = said(CaptionSide.MINE).size
+        sentBefore = toThem()
+        speak(punjabi)
+        quietUntil("my Punjabi to go out in Chinese") { said(CaptionSide.MINE).size > mine }
+        quiet(2_500)
+        val out = said(CaptionSide.MINE).drop(mine)
+        println("LIVE direction: my Punjabi -> $out (${toThem() - sentBefore} ms)")
+        assertTrue("my Punjabi went out in Chinese: $out", out.all { it.has(Character.UnicodeScript.HAN) })
+        assertTrue("and was spoken: ${toThem() - sentBefore} ms", toThem() - sentBefore >= 2_000)
+
+        assertNull(state.lastError.value)
+        assertNull(state.notice.value)
+        assertFalse("never dropped", RuntimeState.RECONNECTING in seen)
     }
 
     @Test

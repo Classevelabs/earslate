@@ -6,96 +6,43 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The captions panel scrolled to the wrong row.
+ * The captions panel once scrolled to the wrong row: it rendered one item per
+ * settled line plus one for the line still being spoken, and then scrolled to
+ * the last SETTLED line. While anyone was mid-sentence the newest translated
+ * text sat one row below the fold. For a user who cannot hear the speaker,
+ * that is the product not working.
  *
- * `CaptionsView` rendered one item per committed line **plus** a trailing item
- * for the partial line still being spoken, and then scrolled to
- * `lines.lastIndex` — the last COMMITTED line. So while anyone was mid-sentence
- * the newest translated text sat one row below the fold, and the panel never
- * reached it. For a user who cannot hear the speaker, that is the product not
- * working.
- *
- * These pin the arithmetic: the index the view aims at is the last row the
- * view actually emits, which is the part that was wrong. Whether the list then
- * goes there, on a real screen, is `CaptionsOnDeviceTest`'s to prove.
+ * These pin the arithmetic. Whether the list then goes there, on a real
+ * screen, is `CaptionsOnDeviceTest`'s to prove.
  */
 class CaptionRowsTest {
 
-    @Test
-    fun `the partial line is a row of its own`() {
-        val rows = captionRows(listOf("Good morning.", "How are you?"), listOf("I am fi"))
+    private fun theirs(id: Long, text: String, live: Boolean = false) = Caption(id, CaptionSide.THEIRS, text, live)
+    private fun mine(id: Long, text: String, live: Boolean = false) = Caption(id, CaptionSide.MINE, text, live)
 
-        assertEquals(3, rows.size)
-        assertEquals("I am fi", rows.last().text)
-        assertTrue("the trailing row is the live one", rows.last().live)
-        assertFalse(rows[0].live)
-        assertFalse(rows[1].live)
+    /** The regression this file exists for: the target was the last settled line. */
+    @Test
+    fun `autoscroll targets the caption still being spoken, not the last settled one`() {
+        val captions = listOf(theirs(0, "one"), mine(1, "two"), theirs(2, "three in prog", live = true))
+
+        assertEquals(2, captionScrollTarget(captions))
+        assertTrue("the followed row must be the one still being spoken", captions[captionScrollTarget(captions)].live)
     }
 
     @Test
-    fun `nothing pending means no live row`() {
-        val rows = captionRows(listOf("Good morning."), emptyList())
-
-        assertEquals(1, rows.size)
-        assertFalse(rows.single().live)
+    fun `autoscroll targets the last settled caption when nothing is being spoken`() {
+        assertEquals(2, captionScrollTarget(listOf(theirs(0, "one"), theirs(1, "two"), mine(2, "three"))))
     }
 
-    /**
-     * The regression this file exists for. Before the fix the target was the
-     * last COMMITTED line, so this returned 1 while the list rendered 3 rows.
-     */
+    // The very first thing a session produces is a caption with nothing behind it.
     @Test
-    fun `autoscroll targets the live row, not the last committed line`() {
-        val rows = captionRows(listOf("one", "two"), listOf("three in prog"))
-
-        assertEquals(2, captionScrollTarget(rows))
-        assertTrue(
-            "the followed row must be the one still being spoken",
-            rows[captionScrollTarget(rows)].live,
-        )
+    fun `the first caption of a session is followed while it is still being spoken`() {
+        assertEquals(0, captionScrollTarget(listOf(theirs(0, "hel", live = true))))
     }
 
     @Test
-    fun `autoscroll targets the last committed line when nothing is pending`() {
-        val rows = captionRows(listOf("one", "two", "three"), emptyList())
-
-        assertEquals(2, captionScrollTarget(rows))
-    }
-
-    /**
-     * The very first thing a session produces is a partial line with nothing
-     * committed behind it. It has to be followed, or the app's first visible
-     * output is the row it never scrolls to.
-     */
-    @Test
-    fun `a partial line with no committed lines is still followed`() {
-        val rows = captionRows(emptyList(), listOf("hel"))
-
-        assertEquals(1, rows.size)
-        assertEquals(0, captionScrollTarget(rows))
-    }
-
-    /**
-     * CaptionsStore keeps `takeLast(48)`. At the cap the row COUNT stops
-     * changing, which is what made a size-keyed scroll effect go permanently
-     * quiet — so the full window plus a partial is the case worth pinning.
-     */
-    @Test
-    fun `a full rolling window plus a partial is forty-nine rows`() {
-        val committed = (1..48).map { "line $it" }
-
-        val rows = captionRows(committed, listOf("line 49 in prog"))
-
-        assertEquals(49, rows.size)
-        assertEquals(48, captionScrollTarget(rows))
-    }
-
-    @Test
-    fun `an empty transcript has nothing to scroll to`() {
-        val rows = captionRows(emptyList(), emptyList())
-
-        assertEquals(0, rows.size)
-        assertEquals(-1, captionScrollTarget(rows))
+    fun `an empty conversation has nothing to scroll to`() {
+        assertEquals(-1, captionScrollTarget(emptyList()))
     }
 
     @Test
@@ -141,18 +88,23 @@ class CaptionRowsTest {
         assertEquals("a line taller than the panel is entered by what does not fit", 320, captionEndOffset(rowHeight = 1_200, panelHeight = 880))
     }
 
-    // Two people speaking close together each have a line in progress.
+    // What "copy all" puts on the clipboard.
     @Test
-    fun `each direction still speaking is a live row of its own, after the committed ones`() {
-        val rows = captionRows(listOf("Good morning."), listOf("Where is the", "Dónde está"))
-        assertEquals(
-            listOf(
-                CaptionRow("Good morning.", live = false),
-                CaptionRow("Where is the", live = true),
-                CaptionRow("Dónde está", live = true),
-            ),
-            rows,
+    fun `the whole conversation is copied in order, each line with who said it`() {
+        val captions = listOf(
+            theirs(0, "ਸਤ ਸ੍ਰੀ ਅਕਾਲ, ਸਟੇਸ਼ਨ ਕਿੱਥੇ ਹੈ?"),
+            mine(1, "It is ten minutes from here. "),
+            theirs(2, "ਧੰਨ", live = true),
         )
-        assertEquals(2, captionScrollTarget(rows))
+
+        assertEquals(
+            "Them: ਸਤ ਸ੍ਰੀ ਅਕਾਲ, ਸਟੇਸ਼ਨ ਕਿੱਥੇ ਹੈ?\nMe: It is ten minutes from here.\nThem: ਧੰਨ",
+            conversationText(captions),
+        )
+    }
+
+    @Test
+    fun `an empty conversation copies as nothing`() {
+        assertEquals("", conversationText(emptyList()))
     }
 }

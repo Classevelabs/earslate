@@ -11,13 +11,14 @@ import org.junit.Test
 
 /**
  * Whole conversations, as Gemini Live Translate actually answered them on
- * 2026-10-06, replayed through the app's own parser and engine at their
+ * 2026-10-06 and 07, replayed through the app's own parser and engine at their
  * recorded timing.
  *
  * Each recording holds two sessions listening to one microphone, exactly as
  * the app runs them. The model was asked to stay silent when it heard its own
- * target language, and in these recordings it did not: the assertions below
- * measure that, and then measure that none of it reaches the listener.
+ * target language, and in these recordings it did not; nor did it always know
+ * what language it was hearing. The assertions below measure that, and then
+ * measure what reaches the listener all the same.
  */
 class RecordedConversationTest {
 
@@ -96,6 +97,11 @@ class RecordedConversationTest {
         )
     }
 
+    /** What a session said that was nobody's translation, and how much of it was let through. */
+    private fun Replay.repeats(): Pair<Int, Int> =
+        emitted.filter { (at, leg, _) -> !belongs(at, leg) }.sumOf { it.third } to
+            sink.played.filter { it.voiced && !belongs(it.atMs, it.leg) }.sumOf { it.ms }
+
     private fun Replay.assertEveryUtteranceWasTranslated() {
         for (utterance in session.utterances) {
             val leg = wanted(utterance)
@@ -131,7 +137,8 @@ class RecordedConversationTest {
         assertEquals("the user's own language is never taken for the other person's", emptyList<String>(), replay.sink.heard)
     }
 
-    // The model hears Malay as Indonesian.
+    // The model hears Malay as Indonesian, and then "translates" it into
+    // Malay. No list says Indonesian is Malay: it is found out by what is said back.
     @Test
     fun `Malay and English - a language the model hears under another name is still the user's`() {
         val replay = replay("conversation-ms-en.jsonl")
@@ -149,6 +156,66 @@ class RecordedConversationTest {
         val echoHeard = replay.sink.played.filter { it.voiced && !replay.belongs(it.atMs, it.leg) }.sumOf { it.ms }
         assertTrue("the user's own words played back: $echoHeard ms", echoHeard <= 500)
         assertEquals(emptyList<String>(), replay.sink.heard)
+    }
+
+    // A Punjabi speaker and an English speaker. The model wrote the Punjabi
+    // down as Hindi, Gujarati and Japanese, and said five of its seven
+    // sentences back in Punjabi. 0.6.0, replayed on this recording, translated
+    // one of the seven for the other person, played five of them back to the
+    // speaker, and twice took Hindi for the other person's language.
+    @Test
+    fun `Punjabi and English - every sentence is translated, whatever the model takes Punjabi for`() {
+        val replay = replay("conversation-pa-en.jsonl")
+        replay.assertEveryUtteranceWasTranslated()
+
+        val (said, heard) = replay.repeats()
+        assertTrue("the recording must contain the model's repeats for this to prove anything: $said ms", said >= 15_000)
+        assertTrue("my own words that were played back to me: $heard of $said ms", heard <= 1_000)
+        assertEquals("their language is English from start to finish", emptyList<String>(), replay.sink.heard)
+    }
+
+    // The same two people on another day, when the model knew Punjabi most of the time.
+    @Test
+    fun `Punjabi and English - and nothing is lost when the model does know it`() {
+        val replay = replay("conversation-pa-en-2.jsonl")
+        replay.assertEveryUtteranceWasTranslated()
+
+        val (said, heard) = replay.repeats()
+        assertTrue("my own words that were played back to me: $heard of $said ms", heard <= 1_000)
+        assertEquals(emptyList<String>(), replay.sink.heard)
+    }
+
+    // English first, then somebody who speaks Chinese.
+    @Test
+    fun `Punjabi, English and then Chinese - their language becomes the one last spoken, from its first words`() {
+        val replay = replay("conversation-pa-en-zh2.jsonl")
+        assertEquals(listOf("zh"), replay.sink.heard)
+        replay.assertEveryUtteranceWasTranslated()
+
+        val chinese = replay.session.utterances.filter { it.language == "zh" }
+        val alsoInEnglish = chinese.sumOf { replay.sink.heardMs(outbound, it.fromMs + 1_000, it.toMs + 4_500) }
+        assertTrue("their Chinese was not also said in English: $alsoInEnglish ms", alsoInEnglish <= 500)
+    }
+
+    // Spanish with English words in it, and answers of two words.
+    @Test
+    fun `Spanish and English - mixed and short sentences are translated and nothing is said back`() {
+        val replay = replay("conversation-es-en-mix.jsonl")
+        replay.assertEveryUtteranceWasTranslated()
+        val (said, heard) = replay.repeats()
+        assertTrue("said back: $heard of $said ms", heard <= 500)
+        assertEquals(emptyList<String>(), replay.sink.heard)
+    }
+
+    // Danish put into Norwegian shares two words in three with the Danish. It
+    // is still a translation, and somebody who needs it must still hear it.
+    @Test
+    fun `Norwegian and Danish - a translation between two close languages is not taken for a repeat`() {
+        val replay = replay("conversation-nb-da.jsonl")
+        for (danish in replay.session.utterances.filter { it.language == "da" }) {
+            val heard = replay.sink.heardMs(inbound, danish.fromMs + 1_000, danish.toMs + 4_500)
+            assertTrue("${danish.clip}: $heard ms of Norwegian heard", heard >= 4_000)
+        }
     }
 
     // The app waited for the model to say a sentence had ended. It never does.
@@ -171,10 +238,12 @@ class RecordedConversationTest {
         assertTrue(english, !english.contains("ten minutes") && !english.contains("10 minutes"))
     }
 
+    // Somebody speaks Hindi, and later the Spanish speaker says two words
+    // again. What I say next goes out in the language last heard: Spanish.
     @Test
-    fun `a third language entering the conversation is followed, and a single stray fragment is not`() {
+    fun `their language follows whoever spoke last, and a single stray fragment moves nothing`() {
         val replay = replay("conversation-en-es.jsonl")
-        assertEquals(listOf("hi"), replay.sink.heard)
+        assertEquals(listOf("hi", "es"), replay.sink.heard)
     }
 
     @Test

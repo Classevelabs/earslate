@@ -26,13 +26,15 @@ you ask for them, and the ones that take a key spend a little on it.
 **Against the real provider, from your computer.** Set
 `EARSLATE_LIVE_GEMINI_KEY` and run `LiveGeminiSessionTest`: a two-way
 conversation, a conversation on a loudspeaker with the microphone hearing
-everything the loudspeaker says, and every language in the pickers.
+everything the loudspeaker says, a Punjabi speaker joined first by an English
+speaker and then by a Chinese one, and every language in the pickers.
 `EARSLATE_LIVE_LONG=1` adds an eleven-minute run across the provider's own
 disconnect. `EARSLATE_LIVE_AUDIO_DIR` keeps the synthesized speech between
 runs. `EARSLATE_LIVE_OPENAI_KEY` runs `LiveOpenAiSessionTest`.
 
 **On a device or emulator.** `./gradlew connectedDebugAndroidTest` runs the
-audio engines against the real framework and the captions on a real screen.
+audio engines against the real framework and the captions on a real screen:
+whose side each is on, that a tap copies one, and that the newest stays in view.
 
 **On a device, against the real provider.** Add
 `-Pandroid.testInstrumentationRunnerArguments.geminiKey=…` and two more run:

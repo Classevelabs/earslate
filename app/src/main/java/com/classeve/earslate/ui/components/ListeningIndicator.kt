@@ -6,16 +6,14 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.State
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -41,8 +39,8 @@ fun ListeningIndicator(
 ) {
     val reducedMotion = rememberReducedMotion()
 
-    val fractions: List<Float> = if (reducedMotion) {
-        listOf(0.55f, 0.95f, 0.7f)
+    val moving: List<State<Float>>? = if (reducedMotion) {
+        null
     } else {
         val transition = rememberInfiniteTransition(label = "listening-bars")
         listOf(0, 160, 320).map { delayMs ->
@@ -55,22 +53,30 @@ fun ListeningIndicator(
                     initialStartOffset = StartOffset(delayMs),
                 ),
                 label = "listening-bar-$delayMs",
-            ).value
+            )
         }
     }
 
-    Row(
-        modifier = modifier.height(maxBarHeight),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        fractions.forEach { fraction ->
-            Box(
-                modifier = Modifier
-                    .width(barWidth)
-                    .height(maxBarHeight * fraction)
-                    .background(color = color, shape = RoundedCornerShape(percent = 50)),
+    // The heights are read here, where they are drawn, and nowhere else. Read
+    // while composing, they had whatever holds this indicator composed and
+    // laid out again on every frame for as long as a session ran.
+    Canvas(modifier = modifier.size(width = barWidth * BARS + BAR_GAP * (BARS - 1), height = maxBarHeight)) {
+        val width = barWidth.toPx()
+        val step = width + BAR_GAP.toPx()
+        repeat(BARS) { bar ->
+            val height = size.height * (moving?.get(bar)?.value ?: STILL[bar])
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(bar * step, (size.height - height) / 2),
+                size = Size(width, height),
+                cornerRadius = CornerRadius(width / 2),
             )
         }
     }
 }
+
+private const val BARS = 3
+private val BAR_GAP = 2.dp
+
+/** The bars as they stand when nothing may move. */
+private val STILL = floatArrayOf(0.55f, 0.95f, 0.7f)

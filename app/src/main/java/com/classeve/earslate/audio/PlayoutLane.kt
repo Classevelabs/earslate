@@ -23,7 +23,7 @@ class PlayoutLane(private val sampleRateHz: Int) {
         val droppedMs: Int,
     )
 
-    private class Segment(val pcm: ByteArray?, val length: Int) {
+    private class Segment(val pcm: ByteArray?, val length: Int, val utterance: Int) {
         var offset = 0
         val voiced get() = pcm != null
         val remaining get() = length - offset
@@ -31,6 +31,7 @@ class PlayoutLane(private val sampleRateHz: Int) {
 
     private val lock = Any()
     private val queue = ArrayDeque<Segment>()
+    private var utterance = 0
     private var queuedBytes = 0
     private var queuedVoicedBytes = 0
 
@@ -60,16 +61,20 @@ class PlayoutLane(private val sampleRateHz: Int) {
     private fun bytesFor(ms: Int): Int = (sampleRateHz.toLong() * ms / 1000).toInt() * 2
     private fun msFor(bytes: Int): Int = (bytes.toLong() * 1000 / (sampleRateHz * 2L)).toInt()
 
-    /** Queue one block. [voiced] false queues silence of the same length. */
-    fun offer(pcm: ByteArray, voiced: Boolean, nowMs: Long) {
+    /**
+     * Queue one block. [voiced] false queues silence of the same length;
+     * [begins] marks the first block of an utterance.
+     */
+    fun offer(pcm: ByteArray, voiced: Boolean, nowMs: Long, begins: Boolean = false) {
         synchronized(lock) {
+            if (begins) utterance++
             val block = wholeSamples(pcm) ?: return
             if (!voiced) continuous = true
             if (held) {
                 offerHeld(block, voiced)
                 return
             }
-            append(Segment(if (voiced) block else null, block.size))
+            append(Segment(if (voiced) block else null, block.size, utterance))
             lastBlockBytes = block.size
             if (!flowing) {
                 if (continuous && dryAtMs != UNSET && nowMs - dryAtMs <= UNDERRUN_MAX_MS) {
@@ -113,11 +118,11 @@ class PlayoutLane(private val sampleRateHz: Int) {
     // reduced to a short pause.
     private fun offerHeld(pcm: ByteArray, voiced: Boolean) {
         if (voiced) {
-            append(Segment(pcm, pcm.size))
+            append(Segment(pcm, pcm.size, utterance))
             while (queuedVoicedBytes > bytesFor(MAX_HELD_MS) && queue.size > 1) drop(queue.removeFirst())
             return
         }
-        if (queue.lastOrNull()?.voiced == true) append(Segment(null, minOf(pcm.size, bytesFor(HELD_PAUSE_MS))))
+        if (queue.lastOrNull()?.voiced == true) append(Segment(null, minOf(pcm.size, bytesFor(HELD_PAUSE_MS)), utterance))
     }
 
     /**
@@ -253,12 +258,16 @@ class PlayoutLane(private val sampleRateHz: Int) {
         return voiced
     }
 
-    /** What is queued should never have been spoken: keep its timing, lose its sound. */
+    /**
+     * What is queued of the utterance being spoken should never have been:
+     * keep its timing, lose its sound. A sentence still waiting ahead of it is
+     * somebody's translation, and is left alone.
+     */
     fun muteQueued() = synchronized(lock) {
-        val silent = queue.map { if (it.voiced) Segment(null, it.remaining) else it }
+        val kept = queue.map { if (it.voiced && it.utterance == utterance) Segment(null, it.remaining, utterance) else it }
         queue.clear()
-        queue.addAll(silent)
-        queuedVoicedBytes = 0
+        queue.addAll(kept)
+        queuedVoicedBytes = kept.sumOf { if (it.voiced) it.remaining else 0 }
     }
 
     /** True holds speech until [release]; false plays it as it arrives. */

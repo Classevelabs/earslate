@@ -14,8 +14,9 @@ data class TranslatorPolicy(
     val myLanguage: TargetLanguage,
     /**
      * The other person's language, or null to learn it by listening. Null
-     * starts on English and follows whatever the other person is heard
-     * speaking; a value aims "me → them" from the first word.
+     * translates nothing I say until they have been heard, then follows
+     * whatever they are heard speaking; a value aims "me → them" from the
+     * first word.
      */
     val otherLanguage: TargetLanguage? = null,
     /** The provider the user chose, or null to use whichever one has a key. */

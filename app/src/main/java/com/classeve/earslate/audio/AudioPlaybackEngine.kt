@@ -17,10 +17,13 @@ interface AudioPlaybackEngine {
 
     fun start()
 
-    /** Queue audio on [lane]. [voiced] false keeps the lane's timing but plays silence. */
-    fun write(lane: Int, pcm: ByteArray, sampleRateHz: Int, voiced: Boolean)
+    /**
+     * Queue audio on [lane]. [voiced] false keeps the lane's timing but plays
+     * silence; [begins] marks the first block of an utterance.
+     */
+    fun write(lane: Int, pcm: ByteArray, sampleRateHz: Int, voiced: Boolean, begins: Boolean = false)
 
-    /** What is queued on [lane] should not be heard after all. */
+    /** What is queued of the utterance [lane] is speaking should not be heard after all. */
     fun muteQueued(lane: Int)
 
     /** Nothing more is coming for [lane]: let it finish, then free it. */
@@ -120,9 +123,9 @@ class AndroidAudioPlaybackEngine(
         running = true
     }
 
-    override fun write(lane: Int, pcm: ByteArray, sampleRateHz: Int, voiced: Boolean) {
+    override fun write(lane: Int, pcm: ByteArray, sampleRateHz: Int, voiced: Boolean, begins: Boolean) {
         if (!running || sampleRateHz <= 0) return
-        val made = deck.write(lane, pcm, sampleRateHz, voiced) ?: return
+        val made = deck.write(lane, pcm, sampleRateHz, voiced, begins) ?: return
         val track = open(sampleRateHz)
         if (track == null) {
             deck.remove(made)

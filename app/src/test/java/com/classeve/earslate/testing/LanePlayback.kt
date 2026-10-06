@@ -62,9 +62,9 @@ class LanePlayback(now: () -> Long = { System.nanoTime() / 1_000_000 }) : AudioP
         running = true
     }
 
-    override fun write(lane: Int, pcm: ByteArray, sampleRateHz: Int, voiced: Boolean) {
+    override fun write(lane: Int, pcm: ByteArray, sampleRateHz: Int, voiced: Boolean, begins: Boolean) {
         if (!running) return
-        deck.write(lane, pcm, sampleRateHz, voiced)?.let { slots += it }
+        deck.write(lane, pcm, sampleRateHz, voiced, begins)?.let { slots += it }
     }
 
     override fun muteQueued(lane: Int) = deck.muteQueued(lane)

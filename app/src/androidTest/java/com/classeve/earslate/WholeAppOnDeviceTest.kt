@@ -86,7 +86,7 @@ class WholeAppOnDeviceTest {
             check(System.currentTimeMillis() < deadline) {
                 val state = EarslateRuntime.stateStore
                 "timed out waiting for $what (state ${state.state.value}, error ${state.lastError.value?.message}, " +
-                    "notice ${state.notice.value}, captions ${EarslateRuntime.captionsStore.lines.value})"
+                    "notice ${state.notice.value}, captions ${EarslateRuntime.captionsStore.settled()})"
             }
             Thread.sleep(50)
         }
@@ -166,18 +166,20 @@ class WholeAppOnDeviceTest {
             assertEquals("Gemini is sent 16 kHz", 16_000, microphone.sampleRateHz)
 
             if (spanish.isNotEmpty()) {
-                await("the Spanish to come out as a caption", 60_000) { captions.lines.value.isNotEmpty() }
-                val english = captions.lines.value.joinToString(" ").lowercase()
+                await("the Spanish to come out as a caption", 60_000) { captions.settled().isNotEmpty() }
+                val english = captions.settled().joinToString(" ").lowercase()
                 assertTrue("the Spanish was translated: $english", english.contains("train") || english.contains("station"))
                 assertEquals("es-ES", state.heardLanguage.value?.bcp47)
-                val shown = captions.lines.value.first().split(' ').take(3).joinToString(" ")
+                val theirs = state.heardLanguage.value!!.displayName
+                await("the screen to name their language, $theirs", 5_000) { showing(theirs) != null }
+                val shown = captions.settled().first().split(' ').take(3).joinToString(" ")
                 await("the caption \"$shown\" to be on the screen", 5_000) { showing(shown) != null }
                 // On a loudspeaker the translation waits for the pause, and is then said.
                 await("the translation to be spoken and the app to listen again", 40_000) {
                     RuntimeState.PLAYING in seen && state.state.value == RuntimeState.LISTENING
                 }
             } else {
-                // The microphone and both connections stay up with nobody speaking.
+                // The microphone and the connection stay up with nobody speaking.
                 Thread.sleep(10_000)
                 assertTrue("still running: ${state.state.value}", state.state.value != RuntimeState.IDLE)
             }

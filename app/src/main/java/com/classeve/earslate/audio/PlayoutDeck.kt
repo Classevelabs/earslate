@@ -46,7 +46,7 @@ class PlayoutDeck(
      * Queue audio on lane [id].
      * @return the lane's slot when it had to be made, for the caller to start playing.
      */
-    fun write(id: Int, pcm: ByteArray, sampleRateHz: Int, voiced: Boolean): Slot? {
+    fun write(id: Int, pcm: ByteArray, sampleRateHz: Int, voiced: Boolean, begins: Boolean = false): Slot? {
         var made: Slot? = null
         val slot = synchronized(lock) {
             var current = slots.lastOrNull { it.id == id && !it.retired }
@@ -62,7 +62,7 @@ class PlayoutDeck(
                 made = it
             }
         }
-        slot.lane.offer(pcm, voiced, now())
+        slot.lane.offer(pcm, voiced, now(), begins)
         return made
     }
 

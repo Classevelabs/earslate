@@ -1,6 +1,5 @@
 package com.classeve.earslate.session
 
-import com.classeve.earslate.session.HeardLanguageTracker.Heard
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -9,65 +8,129 @@ import org.junit.Test
 
 class HeardLanguageTrackerTest {
 
-    private fun tracker(mine: String = "en-US", theirs: String = "en-US") = HeardLanguageTracker(mine, theirs)
+    private fun tracker(mine: String = "pa-IN", theirs: String? = null) = HeardLanguageTracker(mine, theirs)
 
+    // What I say goes out in their language and no other. Before anyone has
+    // been heard there is no such language, and English is not a fair guess.
     @Test
-    fun `my own language is me, whatever the region`() {
-        val t = HeardLanguageTracker("en-GB", "es")
-        assertEquals(Heard.Me, t.report("en"))
-        assertEquals(Heard.Me, t.report("en-US"))
-        assertEquals("es", t.current)
-    }
-
-    @Test
-    fun `the first language heard replaces the starting guess at once`() {
+    fun `nobody has a language until somebody has been heard`() {
         val t = tracker()
-        assertEquals(Heard.Them("es", changed = true), t.report("es"))
-        assertEquals("es", t.current)
+        assertNull(t.current)
+        assertNull(t.offer)
     }
 
     @Test
-    fun `the same language again is them, unchanged`() {
+    fun `my own language is never offered as theirs, whatever the region`() {
+        val t = HeardLanguageTracker("en-GB", null)
+        t.heard("en", 0)
+        t.heard("en-US", 100)
+        assertNull(t.offer)
+        assertTrue(t.isMine("en-AU"))
+    }
+
+    @Test
+    fun `the first language heard is on offer at once, and theirs only when it is taken`() {
         val t = tracker()
-        t.report("es")
-        assertEquals(Heard.Them("es", changed = false), t.report("es"))
-        assertEquals(Heard.Them("es", changed = false), t.report("es-MX"))
+        t.heard("en", 1_000)
+        assertEquals("en", t.offer?.language)
+        assertEquals("since its first word", 1_000L, t.offer?.sinceMs)
+        assertNull("hearing a name is not yet knowing who speaks it", t.current)
+
+        assertEquals("en", t.accept())
+        assertEquals("en", t.current)
+        assertNull(t.offer)
+        assertTrue(t.isTheirs("en-US"))
     }
 
     @Test
-    fun `hearing what was already expected is no change`() {
-        val t = tracker(mine = "en-US", theirs = "es-ES")
-        assertEquals(Heard.Them("es", changed = false), t.report("es"))
+    fun `the language they already speak is not offered again`() {
+        val t = tracker(theirs = "es-ES")
+        t.heard("es", 0)
+        t.heard("es-MX", 100)
+        assertNull(t.offer)
+        assertEquals("es-ES", t.current)
     }
 
     // Spanish heard as Portuguese for one fragment must not send my reply out in Portuguese.
     @Test
-    fun `one stray fragment in another language does not move a language that was heard`() {
-        val t = tracker()
-        t.report("es")
-        assertEquals(Heard.Them("es", changed = false), t.report("pt"))
-        assertEquals(Heard.Them("es", changed = false), t.report("es"))
-        assertEquals(Heard.Them("es", changed = false), t.report("pt"))
+    fun `one stray fragment in another language is not an offer to leave the one in use`() {
+        val t = tracker(theirs = "es")
+        t.heard("pt", 0)
+        assertNull(t.offer)
+        t.heard("es", 100)
+        t.heard("pt", 200)
+        assertNull("nor are two strays with their own language between them", t.offer)
         assertEquals("es", t.current)
     }
 
     @Test
-    fun `a second person's language is followed once it is said twice`() {
-        val t = tracker()
-        t.report("es")
-        assertEquals(Heard.Them("es", changed = false), t.report("hi"))
-        assertEquals(Heard.Them("hi", changed = true), t.report("hi"))
-        assertEquals("hi", t.current)
+    fun `a second person's language is on offer once it has been said twice running`() {
+        val t = tracker(theirs = "en")
+        t.heard("zh", 5_000)
+        assertNull(t.offer)
+        t.heard("zh", 6_000)
+        assertEquals("zh", t.offer?.language)
+        assertEquals("from the first of the two", 5_000L, t.offer?.sinceMs)
+        assertEquals("zh", t.accept())
+        assertEquals("zh", t.current)
+    }
+
+    // Somebody new starting to talk is not a misheard fragment in the middle of a sentence.
+    @Test
+    fun `a language somebody begins to speak in is on offer from its first words`() {
+        val t = tracker(theirs = "en")
+        t.heard("zh", 5_000, beginsSpeech = true)
+        assertEquals("zh", t.offer?.language)
+
+        t.withdraw()
+        t.heard("zh", 6_000)
+        assertNull("the rest of that speech is the middle of it", t.offer)
     }
 
     @Test
     fun `my own speech in between does not count towards a change`() {
+        val t = tracker(mine = "en", theirs = "es")
+        t.heard("hi", 0)
+        t.heard("en", 100)
+        t.heard("hi", 200)
+        assertNull(t.offer)
+        t.heard("hi", 300)
+        assertEquals("hi", t.offer?.language)
+    }
+
+    // Recorded: a Punjabi speaker's own sentence, heard as Hindi and said back in Punjabi.
+    @Test
+    fun `an offer that is withdrawn has to be heard all over again`() {
+        val t = tracker(theirs = "en")
+        t.heard("hi", 0)
+        t.heard("hi", 1_000)
+        t.withdraw()
+        assertNull(t.offer)
+        assertNull("nothing was taken", t.accept())
+        assertEquals("en", t.current)
+
+        t.heard("hi", 2_000)
+        assertNull("once is not enough again", t.offer)
+    }
+
+    @Test
+    fun `an offer nobody took up lapses`() {
         val t = tracker()
-        t.report("es")
-        t.report("hi")
-        assertEquals(Heard.Me, t.report("en"))
-        assertEquals(Heard.Them("es", changed = false), t.report("hi"))
-        assertEquals(Heard.Them("hi", changed = true), t.report("hi"))
+        t.heard("hi", 0)
+        t.expire(HeardLanguageTracker.OFFER_TTL_MS)
+        assertEquals("still fresh", "hi", t.offer?.language)
+        t.expire(HeardLanguageTracker.OFFER_TTL_MS + 1)
+        assertNull(t.offer)
+    }
+
+    @Test
+    fun `an offer that keeps being heard does not lapse`() {
+        val t = tracker()
+        t.heard("hi", 0)
+        t.heard("hi", 5_000)
+        t.expire(9_000)
+        assertEquals("hi", t.offer?.language)
+        assertEquals("and is still dated from its first word", 0L, t.offer?.sinceMs)
     }
 
     // What the translate model reported on 2026-10-06 for speech in each of these.
@@ -75,18 +138,26 @@ class HeardLanguageTrackerTest {
     fun `a language is itself under the name the model gives it`() {
         assertTrue("Norwegian", HeardLanguageTracker.sameLanguage("no", "nb-NO"))
         assertTrue("Filipino", HeardLanguageTracker.sameLanguage("tl", "fil-PH"))
-        assertTrue("Malay, which the model hears as Indonesian", HeardLanguageTracker.sameLanguage("id", "ms-MY"))
         assertTrue(HeardLanguageTracker.sameLanguage("nb-NO", "no"))
         assertFalse("Swedish is not Norwegian", HeardLanguageTracker.sameLanguage("sv", "nb-NO"))
         assertFalse("Danish is not Norwegian", HeardLanguageTracker.sameLanguage("da", "nb-NO"))
         assertFalse(HeardLanguageTracker.sameLanguage("tl", "id-ID"))
     }
 
+    // The model hears Malay as Indonesian. That is a mishearing, caught by what
+    // is said back, and not another name for Malay: an Indonesian speaker is not me.
+    @Test
+    fun `Indonesian is not Malay`() {
+        assertFalse(HeardLanguageTracker.sameLanguage("id", "ms-MY"))
+    }
+
     @Test
     fun `a Norwegian speaker is not taken for the other person`() {
-        val tracker = HeardLanguageTracker(myLanguage = "nb-NO", initialTheirs = "en-US")
-        assertEquals(HeardLanguageTracker.Heard.Me, tracker.report("no"))
-        assertEquals("en-US", tracker.current)
+        val t = HeardLanguageTracker(myLanguage = "nb-NO", initialTheirs = "en-US")
+        t.heard("no", 0)
+        t.heard("no", 100)
+        assertNull(t.offer)
+        assertEquals("en-US", t.current)
     }
 
     @Test

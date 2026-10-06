@@ -29,7 +29,8 @@ import com.classeve.earslate.ui.theme.EarslateTheme
 
 @Composable
 fun LanguagePickerDialog(
-    currentLanguage: TargetLanguage,
+    /** The language marked as chosen, or null when none is. */
+    currentLanguage: TargetLanguage?,
     onSelect: (TargetLanguage) -> Unit,
     onDismiss: () -> Unit,
     title: String = "Target language",
@@ -120,7 +121,7 @@ fun LanguagePickerDialog(
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
                     items(filtered, key = { it.bcp47 }) { language ->
-                        val isSelected = language.bcp47 == currentLanguage.bcp47
+                        val isSelected = language.bcp47 == currentLanguage?.bcp47
                         LanguageRow(
                             language = language,
                             isSelected = isSelected,

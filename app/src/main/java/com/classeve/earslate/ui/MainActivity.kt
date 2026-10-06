@@ -59,6 +59,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -69,7 +70,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
@@ -601,8 +601,7 @@ private fun MainScreen(
 
     val state by EarslateRuntime.stateStore.state.collectAsState()
     val route by deviceMonitor.route.collectAsState()
-    val captionLines by EarslateRuntime.captionsStore.lines.collectAsState()
-    val captionPending by EarslateRuntime.captionsStore.pending.collectAsState()
+    val captions by EarslateRuntime.captionsStore.captions.collectAsState()
     val lastError by EarslateRuntime.stateStore.lastError.collectAsState()
     val notice by EarslateRuntime.stateStore.notice.collectAsState()
     val heard by EarslateRuntime.stateStore.heardLanguage.collectAsState()
@@ -620,7 +619,7 @@ private fun MainScreen(
 
     if (showCorrection) {
         LanguagePickerDialog(
-            currentLanguage = heard ?: TargetLanguage.EnglishUS,
+            currentLanguage = heard,
             title = "They are speaking",
             onSelect = { onCorrectHeardLanguage(it); showCorrection = false },
             onAutomatic = if (heardPinned) {
@@ -689,10 +688,6 @@ private fun MainScreen(
                 NoticePlate(shown.value)
             }
 
-            // Not a control — a readout. There is nothing to pick here any
-            // more, but the user still deserves to know which language the app
-            // decided it was hearing, because that decision is what their own
-            // speech is being sent back in.
             AnimatedVisibility(
                 visible = !hasKey,
                 enter = expandVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeIn(tween(MotionBaseMs)),
@@ -709,19 +704,20 @@ private fun MainScreen(
                 FirstRunHint(language = currentLanguage)
             }
 
+            // Shown from the moment a session starts, not only once they have
+            // been heard: what I say is translated into their language and no
+            // other, so until it is known this is where it can be set by hand.
             AnimatedVisibility(
-                visible = heard != null,
+                visible = heard != null || state.isActive,
                 enter = expandVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeIn(tween(MotionBaseMs)),
                 exit = shrinkVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeOut(tween(MotionBaseMs)),
             ) {
-                heard?.let {
-                    HeardLanguageRow(
-                        theirs = it,
-                        mine = currentLanguage,
-                        pinned = heardPinned,
-                        onCorrect = { showCorrection = true },
-                    )
-                }
+                HeardLanguageRow(
+                    theirs = heard,
+                    mine = currentLanguage,
+                    pinned = heardPinned,
+                    onCorrect = { showCorrection = true },
+                )
             }
 
             PrimaryButton(
@@ -756,8 +752,7 @@ private fun MainScreen(
             Spacer(Modifier.height(8.dp))
 
             CaptionsView(
-                lines = captionLines,
-                pending = captionPending,
+                captions = captions,
                 active = state.isActive,
             )
 
@@ -806,14 +801,7 @@ private fun TopBar(onOpenSettings: () -> Unit) {
     }
 }
 
-/**
- * Shown until the first session is started, then never again.
- *
- * Landing on a screen with one button and a status pill leaves the user to
- * guess what happens when they press it — and this app opens a microphone and
- * streams audio, which is not a good thing to be surprised by. Three lines,
- * gone the moment they are no longer news.
- */
+/** Shown while no provider key is saved: without one a session cannot open at all. */
 @Composable
 private fun MissingKeyCard(onFinishSetup: () -> Unit) {
     Column(
@@ -855,6 +843,14 @@ private fun MissingKeyCard(onFinishSetup: () -> Unit) {
     }
 }
 
+/**
+ * Shown until the first session is started, then never again.
+ *
+ * Landing on a screen with one button and a status pill leaves the user to
+ * guess what happens when they press it — and this app opens a microphone and
+ * streams audio, which is not a good thing to be surprised by. Three lines,
+ * gone the moment they are no longer news.
+ */
 @Composable
 private fun FirstRunHint(language: TargetLanguage) {
     Column(
@@ -872,8 +868,8 @@ private fun FirstRunHint(language: TargetLanguage) {
         )
         Text(
             text = "Earbuds in, then tap START. Everything spoken around you arrives in " +
-                "${language.displayName}, and what you say goes back out in whatever they " +
-                "were last speaking.",
+                "${language.displayName}. Once they have spoken, what you say goes back out " +
+                "in their language.",
             style = EarslateTheme.textStyles.body,
             color = EarslateTheme.colors.textSecondary,
         )
@@ -881,18 +877,16 @@ private fun FirstRunHint(language: TargetLanguage) {
 }
 
 /**
- * What the session decided the other person is speaking — and a way to say it
- * is wrong.
+ * The language the other person is taken to speak, which is the language my
+ * own words go out in — and a way to set it by hand. [theirs] is null until
+ * they have been heard: nothing I say is translated before that.
  *
- * It used to be read-only. Detection is not perfect, and when it missed there
- * was no remedy but STOP and START, which throws away the conversation to fix a
- * label. Tapping now corrects it on the live session, and a hand correction
- * sticks: the room cannot immediately overrule it, or it would not be a
- * correction at all.
+ * A language set here sticks: the room cannot immediately overrule it, or it
+ * would not be a correction at all.
  */
 @Composable
 private fun HeardLanguageRow(
-    theirs: TargetLanguage,
+    theirs: TargetLanguage?,
     mine: TargetLanguage,
     pinned: Boolean,
     onCorrect: () -> Unit,
@@ -904,44 +898,61 @@ private fun HeardLanguageRow(
             .clip(EarslateTheme.shapes.lg)
             .clickable(
                 onClick = onCorrect,
-                onClickLabel = "Correct the detected language",
+                onClickLabel = if (theirs == null) "Set their language" else "Correct the detected language",
                 role = Role.Button,
             )
             .padding(horizontal = 16.dp, vertical = 14.dp)
             .semantics(mergeDescendants = true) {
-                contentDescription = if (pinned) {
-                    "Set to ${theirs.displayName}, translating to ${mine.displayName}. Tap to change."
-                } else {
-                    "Hearing ${theirs.displayName}, translating to ${mine.displayName}. Tap to correct."
+                contentDescription = when {
+                    theirs == null ->
+                        "Their language has not been heard yet. What you say is translated once it has. Tap to set it."
+                    pinned -> "Set to ${theirs.displayName}, translating to ${mine.displayName}. Tap to change."
+                    else -> "Hearing ${theirs.displayName}, translating to ${mine.displayName}. Tap to correct."
                 }
             },
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = if (pinned) "SET TO" else "HEARING",
+            text = when {
+                theirs == null -> "THEY SPEAK"
+                pinned -> "SET TO"
+                else -> "HEARING"
+            },
             style = EarslateTheme.textStyles.meta,
             color = EarslateTheme.colors.textTertiary,
         )
-        Text(
-            text = theirs.displayName,
-            style = EarslateTheme.textStyles.body,
-            color = EarslateTheme.colors.textPrimary,
-        )
-        Icon(
-            imageVector = Icons.Rounded.SwapHoriz,
-            contentDescription = null,
-            tint = EarslateTheme.colors.ember,
-            modifier = Modifier.size(18.dp),
-        )
-        Text(
-            text = mine.displayName,
-            style = EarslateTheme.textStyles.body,
-            color = EarslateTheme.colors.textPrimary,
-        )
+        if (theirs == null) {
+            Text(
+                text = "Not heard yet",
+                style = EarslateTheme.textStyles.body,
+                color = EarslateTheme.colors.textSecondary,
+            )
+        } else {
+            Text(
+                text = theirs.displayName,
+                style = EarslateTheme.textStyles.body,
+                color = EarslateTheme.colors.textPrimary,
+            )
+            Icon(
+                imageVector = Icons.Rounded.SwapHoriz,
+                contentDescription = null,
+                tint = EarslateTheme.colors.ember,
+                modifier = Modifier.size(18.dp),
+            )
+            Text(
+                text = mine.displayName,
+                style = EarslateTheme.textStyles.body,
+                color = EarslateTheme.colors.textPrimary,
+            )
+        }
         Spacer(Modifier.weight(1f))
         Text(
-            text = if (pinned) "CHANGE" else "WRONG?",
+            text = when {
+                theirs == null -> "SET"
+                pinned -> "CHANGE"
+                else -> "WRONG?"
+            },
             style = EarslateTheme.textStyles.meta,
             color = EarslateTheme.colors.ember,
         )
@@ -1042,7 +1053,7 @@ private fun StatusPill(state: RuntimeState) {
     // While a session is live the dot breathes gently; static under the
     // system "remove animations" setting (and when idle).
     val reducedMotion = rememberReducedMotion()
-    val dotAlpha: Float = if (active && !reducedMotion) {
+    val breathing: State<Float>? = if (active && !reducedMotion) {
         rememberInfiniteTransition(label = "status-dot").animateFloat(
             initialValue = 0.35f,
             targetValue = 1f,
@@ -1051,9 +1062,9 @@ private fun StatusPill(state: RuntimeState) {
                 repeatMode = RepeatMode.Reverse,
             ),
             label = "status-dot-alpha",
-        ).value
+        )
     } else {
-        1f
+        null
     }
 
     Row(
@@ -1069,7 +1080,9 @@ private fun StatusPill(state: RuntimeState) {
         Box(
             modifier = Modifier
                 .size(8.dp)
-                .alpha(dotAlpha)
+                // Read where it is drawn: read while composing, it had the
+                // whole pill composed again on every frame of a session.
+                .graphicsLayer { alpha = breathing?.value ?: 1f }
                 .background(color = fg, shape = CircleShape),
         )
         Text(

@@ -153,9 +153,9 @@ class SettingsRepository(
 /**
  * Converts persisted [UserSettings] into the [TranslatorPolicy] the runtime
  * consumes. Always bidirectional. The outbound direction is Automatic by
- * default — it starts on English and follows whatever the other person is heard
- * speaking — unless the user has pinned an other-language, in which case it is
- * aimed there from the first frame.
+ * default — it waits until the other person has been heard, then follows
+ * whatever they are heard speaking — unless the user has pinned an
+ * other-language, in which case it is aimed there from the first frame.
  *
  * PRIVATE on purpose. This used to be public, and the service built a policy
  * out of `settings.value` — the eagerly-seeded StateFlow. On a cold process

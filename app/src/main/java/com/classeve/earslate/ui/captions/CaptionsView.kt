@@ -2,6 +2,8 @@ package com.classeve.earslate.ui.captions
 
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.ScrollableState
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.interaction.InteractionSource
@@ -9,15 +11,21 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -28,34 +36,57 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import com.classeve.earslate.ui.components.ListeningIndicator
 import com.classeve.earslate.ui.theme.EarslateTheme
 import com.classeve.earslate.ui.theme.MotionBaseMs
 import com.classeve.earslate.ui.theme.PreciseEasing
+import kotlinx.coroutines.delay
 
 /**
- * Renders the rolling caption transcript. Lines fade in as they commit; the
- * pending partial line shows in a muted tone so the user sees incremental
- * progress without a flicker of stale text.
+ * The conversation as a chat: what they said on the left in my language, what
+ * I said on the right in theirs. A caption still being spoken is shown muted,
+ * so a partial is never mistaken for settled text.
  *
- * Accessibility: the panel is a polite live region — each newly committed
- * caption line is announced by TalkBack without stealing focus, which is the
- * whole point of the app for users who can't hear the source audio. Text
- * remains selectable/copyable.
+ * Tapping a caption copies it; the header copies the whole conversation.
+ *
+ * Accessibility: the panel is a polite live region — each newly settled
+ * caption is announced by TalkBack without stealing focus, which is the whole
+ * point of the app for users who can't hear the source audio.
  */
 @Composable
 fun CaptionsView(
-    lines: List<String>,
-    pending: List<String>,
+    captions: List<Caption>,
     modifier: Modifier = Modifier,
     active: Boolean = false,
 ) {
-    val latestLine = lines.lastOrNull().orEmpty()
+    val clipboard = LocalClipboardManager.current
+    val haptics = LocalHapticFeedback.current
+    val latest = captions.lastOrNull { !it.live }
+
+    // What was just copied, so it can say so for a moment.
+    var copied by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(copied) {
+        if (copied != null) {
+            delay(COPIED_SHOWN_MS)
+            copied = null
+        }
+    }
+    fun copy(text: String, what: Long) {
+        clipboard.setText(AnnotatedString(text))
+        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        copied = what
+    }
 
     Column(
         modifier = modifier
@@ -64,15 +95,16 @@ fun CaptionsView(
                 color = EarslateTheme.colors.elev1,
                 shape = EarslateTheme.shapes.lg,
             )
-            .padding(24.dp)
-            // Polite live region: when the description below changes (a new
-            // committed line), TalkBack announces it without interrupting.
+            .padding(horizontal = 16.dp, vertical = 20.dp)
+            // Polite live region: when the description below changes (a newly
+            // settled caption), TalkBack announces it without interrupting.
             .semantics {
                 liveRegion = LiveRegionMode.Polite
-                if (latestLine.isNotEmpty()) contentDescription = latestLine
+                if (latest != null) contentDescription = latest.spoken()
             },
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        // The header begins and ends where the captions under it do.
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -87,33 +119,29 @@ fun CaptionsView(
                 // spoken "Listening" state for TalkBack.
                 ListeningIndicator(color = EarslateTheme.colors.ember)
             }
+            Spacer(Modifier.weight(1f))
+            if (captions.isNotEmpty()) {
+                CopyAll(
+                    done = copied == ALL,
+                    onClick = { copy(conversationText(captions), ALL) },
+                )
+            }
         }
 
-        if (lines.isEmpty() && pending.isEmpty()) {
+        if (captions.isEmpty()) {
             EmptyState(active = active)
         } else {
-            // ONE list, used for both rendering and scrolling. The two used to
-            // be computed separately and disagreed: the column emitted
-            // `lines.size + 1` items whenever a partial line was in flight,
-            // while the effect scrolled to `lines.lastIndex`.
-            val rows = remember(lines, pending) { captionRows(lines, pending) }
-            val target = captionScrollTarget(rows)
+            val target = captionScrollTarget(captions)
 
             // Opened on a conversation already under way, the list starts at its end.
             val listState = rememberLazyListState(initialFirstVisibleItemIndex = target.coerceAtLeast(0))
 
             val following = keepsToItsEnd(listState, listState.interactionSource)
 
-            // Keyed on the ROWS, not on their count.
-            //
-            // `LaunchedEffect(lines.size)` missed the two cases that matter
-            // most. The live partial row grows without the count changing, so
-            // the translation appeared below the fold while the user watched
-            // it being typed. And CaptionsStore keeps a `takeLast(48)` rolling
-            // window, so once 48 lines have committed the count never changes
-            // again — a size-keyed effect simply stopped firing for the rest of
-            // the session.
-            LaunchedEffect(rows, following) {
+            // Keyed on the captions, not on their count: the caption being
+            // spoken grows without the count changing, and once the store's
+            // window is full the count never changes again.
+            LaunchedEffect(captions, following) {
                 if (!following || target < 0) return@LaunchedEffect
                 val layout = listState.layoutInfo
                 val row = layout.visibleItemsInfo.lastOrNull { it.index == target }
@@ -121,45 +149,118 @@ fun CaptionsView(
                 listState.animateScrollToItem(target, scrollOffset = captionEndOffset(row?.size, panel))
             }
 
-            SelectionContainer {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 320.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 400.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(captions, key = { it.id }) { caption ->
+                    Bubble(
+                        caption = caption,
+                        copied = copied == caption.id,
+                        onCopy = { copy(caption.text, caption.id) },
+                        modifier = Modifier.animateItem(
+                            fadeInSpec = tween(durationMillis = MotionBaseMs, easing = PreciseEasing),
+                            fadeOutSpec = tween(durationMillis = MotionBaseMs, easing = PreciseEasing),
+                        ),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** How TalkBack says a caption: who, then what. */
+private fun Caption.spoken(): String = "${side.speaker()}: $text"
+
+@Composable
+private fun CopyAll(done: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .defaultMinSize(minHeight = 40.dp)
+            .clip(EarslateTheme.shapes.sm)
+            .clickable(
+                onClick = onClick,
+                onClickLabel = "Copy the whole conversation",
+                role = Role.Button,
+            )
+            .padding(start = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = if (done) "COPIED" else "COPY ALL",
+            style = EarslateTheme.textStyles.meta,
+            color = EarslateTheme.colors.ember,
+        )
+    }
+}
+
+/**
+ * One caption. Theirs sits on the left and mine on the right, each with its
+ * squared corner on its own side, the way a conversation is read everywhere.
+ */
+@Composable
+private fun Bubble(
+    caption: Caption,
+    copied: Boolean,
+    onCopy: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val mine = caption.side == CaptionSide.MINE
+    val shape = if (mine) MineShape else TheirsShape
+    val colors = EarslateTheme.colors
+
+    Box(
+        modifier = modifier.fillMaxWidth(),
+        contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart,
+    ) {
+        // Never the full width, so the side a caption is on can be seen at a glance.
+        Box(
+            modifier = Modifier.fillMaxWidth(BUBBLE_WIDTH),
+            contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart,
+        ) {
+            Column(
+                modifier = Modifier
+                    .clip(shape)
+                    .background(if (mine) colors.emberSoft else colors.elev3)
+                    .then(if (mine) Modifier.border(1.dp, colors.emberLine, shape) else Modifier)
+                    .clickable(
+                        onClick = onCopy,
+                        onClickLabel = "Copy",
+                        role = Role.Button,
+                    )
+                    .semantics { contentDescription = caption.spoken() }
+                    .padding(start = 14.dp, end = 12.dp, top = 10.dp, bottom = 8.dp),
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = caption.text,
+                    style = EarslateTheme.textStyles.body,
+                    color = if (caption.live) colors.textSecondary else colors.textPrimary,
+                    modifier = Modifier.align(Alignment.Start),
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    // Keys stay POSITIONAL, deliberately. A caption is a plain
-                    // string with no stable id of its own, and duplicates are
-                    // routine in conversation — "yes", "okay", "mm" — so keying
-                    // on content would hand the LazyColumn duplicate keys and
-                    // crash it. Positional keys over a rolling window are the
-                    // lesser problem, and the one already shipped. Give
-                    // CaptionsStore a per-line id and this can improve; until
-                    // then, leave it.
-                    itemsIndexed(rows, key = { index, _ -> index }) { _, row ->
+                    if (copied) {
                         Text(
-                            text = row.text,
-                            style = EarslateTheme.textStyles.body,
-                            // The line still being spoken stays muted, so a
-                            // partial is never mistaken for settled text.
-                            color = if (row.live) {
-                                EarslateTheme.colors.textSecondary
-                            } else {
-                                EarslateTheme.colors.textPrimary
-                            },
-                            modifier = Modifier.animateItem(
-                                fadeInSpec = tween(
-                                    durationMillis = MotionBaseMs,
-                                    easing = PreciseEasing,
-                                ),
-                                fadeOutSpec = tween(
-                                    durationMillis = MotionBaseMs,
-                                    easing = PreciseEasing,
-                                ),
-                            ),
+                            text = "COPIED",
+                            style = EarslateTheme.textStyles.meta,
+                            color = colors.ember,
                         )
                     }
+                    // The mark that says a caption can be copied. Decorative:
+                    // the whole caption is the button, and says so itself.
+                    Icon(
+                        imageVector = if (copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
+                        contentDescription = null,
+                        tint = if (copied) colors.ember else colors.textTertiary,
+                        modifier = Modifier.size(14.dp),
+                    )
                 }
             }
         }
@@ -231,10 +332,18 @@ private fun EmptyState(active: Boolean) {
             text = if (active) {
                 "Captions appear the moment someone speaks."
             } else {
-                "Tap Start listening and translated speech will stream here, line by line."
+                "Tap Start listening and the conversation will appear here, caption by caption."
             },
             style = EarslateTheme.textStyles.bodySmall,
             color = EarslateTheme.colors.textSecondary,
         )
     }
 }
+
+/** The key under which "copy all" reports itself copied; no caption has it. */
+private const val ALL = -1L
+private const val COPIED_SHOWN_MS = 1_600L
+private const val BUBBLE_WIDTH = 0.86f
+
+private val TheirsShape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomEnd = 16.dp, bottomStart = 4.dp)
+private val MineShape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomEnd = 4.dp, bottomStart = 16.dp)

@@ -5,26 +5,39 @@ import com.classeve.earslate.testing.RecordingSink
 import com.classeve.earslate.testing.TestAudio
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * I speak English; they speak Spanish. The inbound leg speaks English for
- * them, the outbound leg speaks Spanish for me, and both hear everything.
+ * Unless a test says otherwise: I speak English, they speak Spanish. The
+ * inbound leg speaks English for them, the outbound leg speaks Spanish for me,
+ * and both hear everything.
+ *
+ * The Punjabi, Hindi, Vietnamese and Japanese in here are what Gemini Live
+ * Translate wrote down, on 2026-10-06 and 07, for a Punjabi speaker's own
+ * sentences.
  */
 class ConversationEngineTest {
 
     private val inbound = 1
     private val outbound = 2
 
-    private inner class Scene(follows: Boolean = true, theirs: String = "es", mine: String = "en") {
+    /** @param twoWay false while nobody has been heard: there is no direction for me yet. */
+    private inner class Scene(
+        follows: Boolean = true,
+        theirs: String? = "es",
+        mine: String = "en",
+        twoWay: Boolean = theirs != null,
+    ) {
         val sink = RecordingSink()
         val engine = ConversationEngine(mine, theirs, follows, sink)
         var now = 0L
+        private val open = if (twoWay) listOf(inbound, outbound) else listOf(inbound)
 
         init {
             engine.legOpened(inbound, LegRole.INBOUND)
-            engine.legOpened(outbound, LegRole.OUTBOUND)
+            if (twoWay) engine.legOpened(outbound, LegRole.OUTBOUND)
         }
 
         /** Let [ms] pass, ticking as the session does. */
@@ -38,7 +51,7 @@ class ConversationEngineTest {
 
         /** Both legs hear the same microphone, so by default both report. */
         fun heard(text: String, language: String?, leg: Int? = null) {
-            for (id in listOfNotNull(leg).ifEmpty { listOf(inbound, outbound) }) {
+            for (id in listOfNotNull(leg).ifEmpty { open }) {
                 engine.onEvent(id, LiveEvent.SourceTranscript(text, language), now)
             }
         }
@@ -57,7 +70,7 @@ class ConversationEngineTest {
         fun caption(leg: Int, text: String) = engine.onEvent(leg, LiveEvent.CaptionDelta(text), now)
     }
 
-    // ── never speak the language you just heard ─────────────────────────
+    // ── never say again what was just said ──────────────────────────────
 
     @Test
     fun `when they speak, their translation is heard and the echo in their own language is not`() {
@@ -96,17 +109,6 @@ class ConversationEngineTest {
     }
 
     @Test
-    fun `a third language is translated for me only, not also into the other person's language`() {
-        val s = Scene()
-        s.heard("नमस्ते", "hi")
-        s.speaks(inbound, 4)
-        s.speaks(outbound, 4)
-
-        assertEquals(1_000, s.sink.heardMs(inbound))
-        assertEquals(0, s.sink.heardMs(outbound))
-    }
-
-    @Test
     fun `the model repeating its last verdict with no words does not change who is speaking`() {
         val s = Scene()
         s.heard("Hola", "es")
@@ -114,6 +116,247 @@ class ConversationEngineTest {
         s.heard("   ", "en")
         assertEquals(Speaker.THEM, s.engine.hears(inbound))
         assertEquals(Speaker.THEM, s.engine.hears(outbound))
+    }
+
+    // ── a language's name is believed only from the session that speaks it ──
+
+    // Recorded: a Punjabi sentence, written down as Japanese by the session
+    // aimed at English and as Hindi by the one aimed at Punjabi. Its English
+    // translation was right, and used to be thrown away as "not my language".
+    @Test
+    fun `my words go out whatever the model takes my language for`() {
+        val s = Scene(mine = "pa-IN", theirs = "en")
+        s.heard("हां जी। ये यहां से लगभग 10 मिनट की दूरी पर है।", "hi", leg = inbound)
+        s.heard("ハンジえっと10分ぐらいの距離です。", "ja", leg = outbound)
+        s.caption(outbound, "Hanji, uh, it's about a 10-minute walk from here.")
+        s.speaks(outbound, 6)
+
+        assertEquals(1_500, s.sink.heardMs(outbound))
+        assertEquals("Hanji, uh, it's about a 10-minute walk from here.", s.sink.pending(outbound))
+        assertEquals("nobody is known to be speaking", Speaker.UNKNOWN, s.engine.hears(outbound))
+    }
+
+    // Recorded: the session aimed at Punjabi wrote a Punjabi sentence down as
+    // an English one, and called it English. It is not the one that knows English.
+    @Test
+    fun `the session that speaks my language is not believed when it names theirs`() {
+        val s = Scene(mine = "pa-IN", theirs = "en")
+        s.heard("It's about 10 minutes from here. Go straight down this street.", "en", leg = inbound)
+        s.heard("Hả? Ừ, tôi khoảng 10 phút đi tới thôi.", "vi", leg = outbound)
+        s.caption(outbound, "Yeah, it's about 10 minutes away.")
+        s.speaks(outbound, 4)
+
+        assertEquals("what I said still goes out", 1_000, s.sink.heardMs(outbound))
+        assertTrue(s.sink.heard.isEmpty())
+    }
+
+    @Test
+    fun `a language neither of us is known to speak silences nobody`() {
+        val s = Scene(follows = false)
+        s.heard("नमस्ते", "hi")
+        s.speaks(inbound, 4)
+        s.speaks(outbound, 4)
+
+        assertEquals("it may be them", 1_000, s.sink.heardMs(inbound))
+        assertEquals("and it may be me, misheard", 1_000, s.sink.heardMs(outbound))
+    }
+
+    // They spoke; seconds later I answer, and only one session says what it heard.
+    @Test
+    fun `a session that has said nothing about the present speech is not still believed about the last`() {
+        val s = Scene()
+        s.heard("Muchas gracias", "es")
+        s.pass(3_000)
+        s.heard("You are welcome", "en", leg = inbound)
+        s.speaks(outbound, 4)
+
+        assertEquals("my reply is translated", 1_000, s.sink.heardMs(outbound))
+    }
+
+    // Recorded: one leg heard "नमस्ते" as Hindi, the other wrote it "Namaste" and called it English.
+    @Test
+    fun `when the two sessions disagree, neither is silenced on the other's word`() {
+        val s = Scene()
+        s.heard("Sí, hay uno muy bueno", "es")
+        s.speaks(inbound, 2)
+        // I begin to answer. The outbound leg hears English; the inbound leg mishears it as Spanish.
+        s.heard("Okay", "en", leg = outbound)
+        s.heard("Oké", "es", leg = inbound)
+        s.speaks(outbound, 4)
+
+        assertEquals("the leg that heard me translates me, whatever the other one thought", 1_000, s.sink.heardMs(outbound))
+    }
+
+    // ── the words themselves ────────────────────────────────────────────
+
+    // Recorded: "ਹਾਂ ਜੀ, ਠੀਕ ਹੈ", heard as Hindi by both sessions. The one aimed
+    // at Punjabi then "translated" it into Punjabi: my own words, back to me.
+    @Test
+    fun `my own words said back to me under another language's name are not heard, and my translation is`() {
+        val s = Scene(mine = "pa-IN", theirs = "en")
+        s.heard("हां जी। ठीक है।", "hi")
+        s.caption(inbound, "ਹਾਂ ਜੀ। ਠੀਕ ਹੈ।")
+        s.caption(outbound, "Yes. Okay.")
+        s.speaks(inbound, 6)
+        s.speaks(outbound, 6)
+
+        assertEquals("my own words", 0, s.sink.heardMs(inbound))
+        assertEquals("", s.sink.pending(inbound))
+        assertEquals("what they are in English", 1_500, s.sink.heardMs(outbound))
+        assertEquals("Yes. Okay.", s.sink.pending(outbound))
+        assertTrue("Hindi is nobody's language here: ${s.sink.heard}", s.sink.heard.isEmpty())
+        assertEquals("en", s.engine.theirLanguage)
+    }
+
+    @Test
+    fun `a repeat found out after it began to speak is cut off, and its caption thrown away`() {
+        val s = Scene(mine = "pa-IN", theirs = "en")
+        s.heard("मेरा फोन चार्ज नहीं है।", "hi")
+        s.caption(inbound, "ਮੇ")
+        s.speaks(inbound, 2)
+        assertEquals("half a word is no evidence", 500, s.sink.heardMs(inbound))
+        assertEquals("ਮੇ", s.sink.pending(inbound))
+
+        s.caption(inbound, "ਰਾ ਫੋਨ ਚਾਰਜ ਨਹੀਂ ਹੈ।")
+        assertEquals(listOf(inbound), s.sink.mutedQueued)
+        assertEquals(listOf(inbound), s.sink.discarded)
+        s.speaks(inbound, 4)
+        assertEquals("and nothing more of it is heard", 500, s.sink.heardMs(inbound))
+
+        s.quiet(inbound, 3)
+        assertTrue("nor written", s.sink.lines.isEmpty())
+    }
+
+    // Recorded: "God dag, kan du si meg…" in Norwegian, and its Swedish
+    // translation, which begins with the same three words.
+    @Test
+    fun `a translation that begins with the words it heard is held back only until it differs, then shown whole`() {
+        val s = Scene(mine = "sv-SE", theirs = "nb-NO")
+        s.heard("God dag, kan du si meg hvor nærmeste togstasjon er?", "no")
+        s.caption(inbound, "God dag, kan ")
+        s.speaks(inbound, 2)
+        assertEquals("those words were just said", 0, s.sink.heardMs(inbound))
+        assertEquals("", s.sink.pending(inbound))
+
+        s.caption(inbound, "du säga var närmaste tågstation ligger?")
+        assertEquals("God dag, kan du säga var närmaste tågstation ligger?", s.sink.pending(inbound))
+        s.speaks(inbound, 4)
+        assertEquals(1_000, s.sink.heardMs(inbound))
+
+        s.quiet(inbound, 3)
+        assertEquals(listOf(inbound to "God dag, kan du säga var närmaste tågstation ligger?"), s.sink.lines)
+    }
+
+    // Recorded: a whole Punjabi sentence, written down in Hindi's own words, so
+    // that only half of what came back matched it. The session aimed at English
+    // was translating the same speech, and shared nothing with what it heard.
+    @Test
+    fun `beside a direction that is plainly translating, the one saying mostly what it heard is the repeat`() {
+        val s = Scene(mine = "pa-IN", theirs = "en")
+        s.heard("हां जी। ये यहां से लगभग 10 मिनट की दूरी पर है।", "hi", leg = inbound)
+        s.heard("ハンジえっと10分ぐらいの距離です。", "ja", leg = outbound)
+        s.caption(inbound, "ਹਾਂ ਜੀ। ਇਹ ਇੱਥੋਂ ਲਗਭਗ 10 ਮਿੰਟ ਦੀ ਦੂਰੀ 'ਤੇ ਹੈ। ")
+        s.speaks(inbound, 1)
+        assertEquals("on its own it could be a translation", 250, s.sink.heardMs(inbound))
+
+        s.caption(outbound, "Hanji, uh, it's about a 10-minute walk from here. ")
+        s.speaks(outbound, 1)
+        s.speaks(inbound, 4)
+        s.speaks(outbound, 4)
+
+        assertEquals("my own words are not said back to me", 250, s.sink.heardMs(inbound))
+        assertEquals(listOf(inbound), s.sink.mutedQueued)
+        assertEquals("", s.sink.pending(inbound))
+        assertEquals("and my translation is heard whole", 1_250, s.sink.heardMs(outbound))
+        assertTrue("Hindi is nobody's language: ${s.sink.heard}", s.sink.heard.isEmpty())
+    }
+
+    // A third person, speaking a language that is neither of ours: both directions really are translating.
+    @Test
+    fun `when both directions are plainly translating, neither is taken for a repeat`() {
+        val s = Scene(follows = false)
+        s.heard("नमस्ते, क्या आप मुझे बता सकते हैं", "hi")
+        s.caption(inbound, "Hello, can you tell me ")
+        s.caption(outbound, "Hola, ¿me puede decir ")
+        s.speaks(inbound, 4)
+        s.speaks(outbound, 4)
+
+        assertEquals(1_000, s.sink.heardMs(inbound))
+        assertEquals(1_000, s.sink.heardMs(outbound))
+        assertTrue(s.sink.mutedQueued.isEmpty())
+    }
+
+    // My "ਠੀਕ ਹੈ, ਧੰਨਵਾਦ" was still being said in English when they answered in the same words.
+    @Test
+    fun `a translation still being spoken is not cut off by what somebody says next`() {
+        val s = Scene(mine = "pa-IN", theirs = "en")
+        s.heard("ठीक है, धन्यवाद।", "hi")
+        s.caption(outbound, "Okay, thank ")
+        s.speaks(outbound, 10)
+        s.heard("Okay, thank you.", "en")
+        s.caption(outbound, "you.")
+        s.speaks(outbound, 2)
+
+        assertEquals("neither as a repeat of their words, nor as their echo", 3_000, s.sink.heardMs(outbound))
+        assertTrue(s.sink.mutedQueued.isEmpty())
+    }
+
+    // What they said two turns ago is not what I am repeating now.
+    @Test
+    fun `a translation is measured against the speech it answers, not against the conversation`() {
+        val s = Scene()
+        s.heard("Hola", "es")
+        s.speaks(inbound, 2)
+        s.quiet(inbound, 4)
+        s.pass(2_000)
+        // I greet them back. In Spanish that is the very word they used.
+        s.heard("Hello", "en")
+        s.caption(outbound, "Hola.")
+        s.speaks(outbound, 2)
+
+        assertEquals(500, s.sink.heardMs(outbound))
+        assertEquals("Hola.", s.sink.pending(outbound))
+    }
+
+    // Recorded: French "Bonjour, je cherche" came back as "नमस्ते, मैं", the second
+    // word still unfinished, and the decision waited 1.2 s for the next piece
+    // of text while the wrong direction spoke.
+    @Test
+    fun `a word still being written already counts as one that was not heard`() {
+        val s = Scene(mine = "hi-IN", theirs = "en")
+        s.heard("Okay.", "en")
+        s.pass(3_000)
+        s.heard(" Bonjour, je cherche la", "fr")
+        s.caption(inbound, " नमस्ते, मैं")
+        s.speaks(inbound, 1)
+
+        assertEquals("French is theirs from the second word of its translation", listOf("fr"), s.sink.heard)
+    }
+
+    @Test
+    fun `a repeat is not let go because its next word is only half written`() {
+        val s = Scene(mine = "pa-IN", theirs = "en")
+        s.heard("हां जी। ठीक है।", "hi")
+        s.caption(inbound, "ਹਾਂ ਜੀ। ")
+        s.speaks(inbound, 1)
+        s.caption(inbound, "ਠੀ")
+        s.speaks(inbound, 2)
+
+        assertEquals(0, s.sink.heardMs(inbound))
+        assertEquals("", s.sink.pending(inbound))
+    }
+
+    @Test
+    fun `the words a session heard may arrive after the first of what it says`() {
+        val s = Scene(mine = "pa-IN", theirs = "en")
+        s.caption(inbound, "ਹਾਂ ਜੀ। ਠੀਕ ਹੈ। ")
+        s.speaks(inbound, 1)
+        assertEquals(250, s.sink.heardMs(inbound))
+
+        s.heard("हां जी। ठीक है।", "hi")
+        s.speaks(inbound, 3)
+        assertEquals("from then on it is known for a repeat", 250, s.sink.heardMs(inbound))
+        assertEquals(listOf(inbound), s.sink.mutedQueued)
     }
 
     // ── before anyone is identified ─────────────────────────────────────
@@ -205,6 +448,21 @@ class ConversationEngineTest {
         assertEquals(1_500, s.sink.heardMs(inbound))
     }
 
+    // What is queued of a repeat is silenced; the sentence queued before it is somebody's translation.
+    @Test
+    fun `the first block of every utterance is marked as its beginning`() {
+        val s = Scene()
+        s.heard("Hola, buenos días", "es")
+        s.speaks(inbound, 2)
+        s.quiet(inbound, 4)
+        s.speaks(inbound, 2)
+
+        assertEquals(
+            listOf(true, false, false, false, false, false, true, false),
+            s.sink.played.filter { it.leg == inbound }.map { it.begins },
+        )
+    }
+
     // ── captions ────────────────────────────────────────────────────────
 
     @Test
@@ -248,17 +506,17 @@ class ConversationEngineTest {
     @Test
     fun `the two directions build separate lines`() {
         val s = Scene()
-        s.heard("Hola", "es")
+        s.heard("Buenos días", "es")
         s.speaks(inbound, 1)
-        s.caption(inbound, "Hello.")
-        s.heard("Hi there", "en")
+        s.caption(inbound, "Good morning.")
+        s.heard(" Hi there", "en")
         s.caption(outbound, "Hola.")
         s.quiet(inbound, 1)
         s.speaks(outbound, 1)
         s.quiet(inbound, 3)
         s.quiet(outbound, 3)
 
-        assertEquals(listOf(inbound to "Hello.", outbound to "Hola."), s.sink.lines)
+        assertEquals(listOf(inbound to "Good morning.", outbound to "Hola."), s.sink.lines)
     }
 
     @Test
@@ -347,63 +605,219 @@ class ConversationEngineTest {
         assertEquals(Speaker.ME, s.engine.hears(inbound))
     }
 
-    // Recorded: one leg heard "नमस्ते" as Hindi, the other wrote it "Namaste" and called it English.
+    // ── their language ──────────────────────────────────────────────────
+
+    // What I say goes out in their language and no other. Sending it out in
+    // English until then was speaking a language nobody present had spoken.
     @Test
-    fun `when the two legs disagree about a word, each is judged by what it heard itself`() {
-        val s = Scene()
-        s.heard("Sí, hay uno muy bueno", "es")
+    fun `before anyone else has been heard there is no language of theirs, and nothing is said for me`() {
+        val s = Scene(mine = "pa-IN", theirs = null)
+        s.heard("ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ ਜੀ। ਤੁਹਾਡਾ ਕੀ ਹਾਲ ਹੈ?", "pa")
+        // The moment of sound the model sometimes makes on hearing its own language.
         s.speaks(inbound, 2)
-        // I begin to answer. The outbound leg hears English; the inbound leg mishears it as Spanish.
-        s.heard("Okay", "en", leg = outbound)
-        s.heard("Oké", "es", leg = inbound)
-        s.speaks(outbound, 4)
+        s.quiet(inbound, 3)
 
-        assertEquals("the leg that heard me translates me, whatever the other one thought", 1_000, s.sink.heardMs(outbound))
-        assertEquals(Speaker.ME, s.engine.hears(outbound))
-        assertEquals(Speaker.THEM, s.engine.hears(inbound))
-    }
-
-    // ── following their language ────────────────────────────────────────
-
-    @Test
-    fun `the first language heard from them is reported at once`() {
-        val s = Scene(theirs = "en")
-        s.heard("Hola", "es")
-        assertEquals(listOf("es"), s.sink.heard)
-    }
-
-    @Test
-    fun `a new language is reported once it has been said twice`() {
-        val s = Scene()
-        s.heard("Hola", "es")
-        // Both legs report the fragment; that is one hearing of it, not two.
-        s.heard("नमस्ते", "hi")
+        assertNull(s.engine.theirLanguage)
+        assertEquals(0, s.sink.heardMs(inbound))
         assertTrue(s.sink.heard.isEmpty())
-        s.heard("क्या आप", "hi")
-        assertEquals(listOf("hi"), s.sink.heard)
-        assertEquals("hi", s.engine.theirLanguage)
+        assertTrue(s.sink.lines.isEmpty())
+    }
+
+    @Test
+    fun `the first language heard is theirs once it has been translated for me`() {
+        val s = Scene(mine = "pa-IN", theirs = null)
+        s.heard("Sure. It is about 10 minutes from here.", "en")
+        assertTrue("its name alone is not enough", s.sink.heard.isEmpty())
+
+        s.caption(inbound, "ਹਾਂਜੀ। ਇਹ ਇੱਥੋਂ ਲਗਭਗ 10 ਮਿੰਟ ")
+        s.speaks(inbound, 1)
+        assertEquals(listOf("en"), s.sink.heard)
+        assertEquals("en", s.engine.theirLanguage)
+        assertEquals(250, s.sink.heardMs(inbound))
+    }
+
+    // "Hello." comes back as one word; it is plainly a translation only once it is all there is.
+    @Test
+    fun `a first language heard in a word or two is theirs when its translation is over`() {
+        val s = Scene(mine = "pa-IN", theirs = null)
+        s.heard("Hello.", "en")
+        s.caption(inbound, "ਹੈਲੋ।")
+        s.speaks(inbound, 2)
+        assertTrue(s.sink.heard.isEmpty())
+        s.quiet(inbound, 3)
+        assertEquals(listOf("en"), s.sink.heard)
+    }
+
+    // Recorded: my own Punjabi, taken for Hindi and "translated" back. Had the
+    // name been believed, my next sentence would have gone out in Hindi.
+    @Test
+    fun `my own language under another name is never taken for theirs`() {
+        val s = Scene(mine = "pa-IN", theirs = null)
+        s.heard("हां जी। ठीक है।", "hi")
+        s.caption(inbound, "ਹਾਂ ਜੀ। ਠੀਕ ਹੈ।")
+        s.speaks(inbound, 4)
+        s.quiet(inbound, 3)
+
+        assertTrue(s.sink.heard.isEmpty())
+        assertNull(s.engine.theirLanguage)
+        assertEquals(0, s.sink.heardMs(inbound))
+    }
+
+    // Recorded: the same sentence in a longer form, written down in Hindi's
+    // own words. Half of what came back was what had been said: not a repeat
+    // that can be proved, and not a new language either.
+    @Test
+    fun `a language is not theirs while what it is turned into shares half its words`() {
+        val s = Scene(mine = "pa-IN", theirs = null)
+        s.heard("हां जी। ये यहां से लगभग 10 मिनट की दूरी पर है।", "hi")
+        s.caption(inbound, "ਹਾਂ ਜੀ। ਇਹ ਇੱਥੋਂ ਲਗਭਗ 10 ਮਿੰਟ ਦੀ ਦੂਰੀ 'ਤੇ ਹੈ। ")
+        s.speaks(inbound, 6)
+        s.quiet(inbound, 3)
+
+        assertTrue(s.sink.heard.isEmpty())
+        assertNull(s.engine.theirLanguage)
+        assertEquals("it cannot be told from a translation, so it is let through", 1_500, s.sink.heardMs(inbound))
+    }
+
+    // "Now somebody speaks Chinese": what I say next goes out in Chinese.
+    @Test
+    fun `somebody who begins to speak another language is followed from their first translated words`() {
+        val s = Scene(mine = "pa-IN", theirs = "en")
+        s.heard("Okay, thank you.", "en")
+        s.pass(3_000)
+        s.heard("你好,请问", "zh")
+        assertTrue("its name alone is not enough", s.sink.heard.isEmpty())
+
+        s.caption(inbound, "ਹੈਲੋ, ਮੈਂ ਪੁੱਛਣਾ ਚਾਹੁੰਦਾ ਹਾਂ ")
+        s.caption(outbound, "Hello, may I ask ")
+        s.speaks(inbound, 1)
+        assertEquals(listOf("zh"), s.sink.heard)
+        assertEquals("zh", s.engine.theirLanguage)
+
+        s.speaks(outbound, 4)
+        assertEquals("their Chinese is not also put into English", 0, s.sink.heardMs(outbound))
+        assertEquals(Speaker.THEM, s.engine.hears(outbound))
+    }
+
+    @Test
+    fun `in the middle of speech a new language has to be said twice before it can be theirs`() {
+        val s = Scene(mine = "pa-IN", theirs = "en")
+        s.heard("Okay, thank you.", "en")
+        s.heard(" 你好,请问", "zh")
+        s.caption(inbound, "ਹੈਲੋ, ਮੈਂ ਪੁੱਛਣਾ ਚਾਹੁੰਦਾ ਹਾਂ ")
+        s.speaks(inbound, 2)
+        assertTrue("once could be one misheard fragment", s.sink.heard.isEmpty())
+
+        s.heard("最近的地铁站在哪里?", "zh")
+        assertEquals(listOf("zh"), s.sink.heard)
+    }
+
+    // They are still being translated when two fragments are called Chinese.
+    // The translation under way began before them, and proves nothing about them.
+    @Test
+    fun `the translation of what was said before does not vouch for a language named after it`() {
+        val s = Scene(mine = "pa-IN", theirs = "en")
+        s.heard("Okay, thank you.", "en")
+        s.caption(inbound, "ਠੀਕ ਹੈ, ਧੰਨਵਾਦ। ")
+        s.speaks(inbound, 2)
+        s.heard(" 你好", "zh")
+        s.heard("请问", "zh")
+
+        assertTrue(s.sink.heard.isEmpty())
+        assertEquals("en", s.engine.theirLanguage)
+    }
+
+    // Recorded: a Punjabi sentence heard as Hindi by one session and as Japanese by the other.
+    @Test
+    fun `a language the two sessions cannot agree on is nobody's`() {
+        val s = Scene(mine = "pa-IN", theirs = "en")
+        s.heard("हां जी। ये यहां से", "hi", leg = inbound)
+        s.heard("ハンジえっと", "ja", leg = outbound)
+        s.caption(inbound, "Hello there, ")
+        s.speaks(inbound, 2)
+        s.heard(" लगभग 10 मिनट", "hi", leg = inbound)
+        s.heard("10分ぐらい", "ja", leg = outbound)
+
+        assertTrue(s.sink.heard.isEmpty())
+        assertEquals("en", s.engine.theirLanguage)
+    }
+
+    // The same thing from the other side: I speak English, they speak Punjabi,
+    // and the session aimed at Punjabi says their own words back to them.
+    @Test
+    fun `their own language under another name does not become a new one`() {
+        val s = Scene(mine = "en", theirs = "pa-IN")
+        s.heard("हां जी। ठीक है।", "hi")
+        s.heard(" मेरा फोन चार्ज नहीं है।", "hi")
+        s.caption(outbound, "ਹਾਂ ਜੀ। ਠੀਕ ਹੈ। ")
+        s.caption(inbound, "Yes. Okay. My phone ")
+        s.speaks(outbound, 4)
+        s.speaks(inbound, 4)
+
+        assertEquals("their words are not said back to them", 0, s.sink.heardMs(outbound))
+        assertEquals("and I hear what they said", 1_000, s.sink.heardMs(inbound))
+        assertTrue(s.sink.heard.isEmpty())
+        assertEquals("pa-IN", s.engine.theirLanguage)
+    }
+
+    @Test
+    fun `an offer that came with speech nobody translated is forgotten`() {
+        val s = Scene(mine = "pa-IN", theirs = null)
+        s.heard("Hm.", "en")
+        s.pass(HeardLanguageTracker.OFFER_TTL_MS.toInt() + 100)
+        // Something else entirely is translated later.
+        s.caption(inbound, "ਕੁਝ ਹੋਰ ਗੱਲ ")
+        s.speaks(inbound, 2)
+
+        assertTrue(s.sink.heard.isEmpty())
+    }
+
+    @Test
+    fun `a provider that sends no text is taken at its word once it has translated for a while`() {
+        val s = Scene(mine = "pa-IN", theirs = null)
+        s.heard("Sure. It is about 10 minutes from here.", "en")
+        s.speaks(inbound, 5)
+        assertTrue(s.sink.heard.isEmpty())
+        s.speaks(inbound, 2)
+        assertEquals(listOf("en"), s.sink.heard)
     }
 
     @Test
     fun `a pinned language is never moved by what is heard`() {
         val s = Scene(follows = false)
         s.heard("नमस्ते", "hi")
+        s.caption(inbound, "Hello, could you ")
+        s.speaks(inbound, 2)
         s.heard("क्या आप", "hi")
         s.heard("बता सकते हैं", "hi")
+
         assertTrue(s.sink.heard.isEmpty())
-        assertEquals("but it is still known to be them", Speaker.THEM, s.engine.hears(inbound))
-        assertEquals("and the language fixed by hand has not drifted", "es", s.engine.theirLanguage)
+        assertEquals("the language fixed by hand has not drifted", "es", s.engine.theirLanguage)
     }
 
     @Test
     fun `going back to following starts from the language that was fixed`() {
         val s = Scene(follows = false)
         s.heard("नमस्ते", "hi")
-        s.heard("क्या आप", "hi")
         s.engine.followsTheirLanguage = true
-        s.heard("बता सकते हैं", "hi")
+        s.heard("क्या आप", "hi")
+        assertTrue("once is not enough to leave it", s.sink.heard.isEmpty())
 
-        assertEquals("heard once they are being followed again", listOf("hi"), s.sink.heard)
+        s.heard("बता सकते हैं", "hi")
+        s.caption(inbound, "Hello, could you tell me ")
+        s.speaks(inbound, 1)
+        assertEquals(listOf("hi"), s.sink.heard)
+    }
+
+    @Test
+    fun `changing a language by hand forgets who was speaking`() {
+        val s = Scene()
+        s.heard("Hola", "es")
+        assertEquals(Speaker.THEM, s.engine.hears(inbound))
+        s.engine.reconfigure("en", null)
+
+        assertEquals(Speaker.UNKNOWN, s.engine.hears(inbound))
+        assertNull(s.engine.theirLanguage)
     }
 
     // ── state ───────────────────────────────────────────────────────────
@@ -418,6 +832,17 @@ class ConversationEngineTest {
         assertEquals(listOf(true), s.sink.speaking)
         s.quiet(inbound, 3)
         assertEquals(listOf(true, false), s.sink.speaking)
+    }
+
+    @Test
+    fun `a repeat is not speaking either`() {
+        val s = Scene(mine = "pa-IN", theirs = "en")
+        s.heard("हां जी। ठीक है।", "hi")
+        s.caption(inbound, "ਹਾਂ ਜੀ। ਠੀਕ ਹੈ।")
+        s.speaks(inbound, 2)
+
+        assertTrue(s.sink.speaking.isEmpty())
+        assertFalse(s.engine.isMidRun(inbound))
     }
 
     @Test

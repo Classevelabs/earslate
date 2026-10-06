@@ -5,7 +5,7 @@ import com.classeve.earslate.session.ConversationSink
 /** Remembers everything the engine decided, so a test can ask what was actually heard. */
 class RecordingSink : ConversationSink {
 
-    class Played(val atMs: Long, val leg: Int, val ms: Int, val voiced: Boolean)
+    class Played(val atMs: Long, val leg: Int, val ms: Int, val voiced: Boolean, val begins: Boolean)
 
     var nowMs = 0L
     val played = ArrayList<Played>()
@@ -21,8 +21,8 @@ class RecordingSink : ConversationSink {
     fun heardMs(leg: Int, fromMs: Long = 0, untilMs: Long = Long.MAX_VALUE): Int =
         played.filter { it.leg == leg && it.voiced && it.atMs >= fromMs && it.atMs < untilMs }.sumOf { it.ms }
 
-    override fun play(leg: Int, pcm: ByteArray, sampleRateHz: Int, voiced: Boolean) {
-        played += Played(nowMs, leg, pcm.size * 1000 / (sampleRateHz * 2), voiced)
+    override fun play(leg: Int, pcm: ByteArray, sampleRateHz: Int, voiced: Boolean, begins: Boolean) {
+        played += Played(nowMs, leg, pcm.size * 1000 / (sampleRateHz * 2), voiced, begins)
     }
 
     override fun muteQueued(leg: Int) {

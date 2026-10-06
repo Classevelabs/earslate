@@ -11,6 +11,7 @@ import com.classeve.earslate.testing.FakePlayback
 import com.classeve.earslate.testing.FakeSocket
 import com.classeve.earslate.testing.LanePlayback
 import com.classeve.earslate.testing.TestAudio
+import com.classeve.earslate.ui.captions.CaptionSide
 import com.classeve.earslate.ui.captions.CaptionsStore
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -129,6 +130,15 @@ class SessionCoordinatorTest {
     private fun heard(text: String, language: String) =
         """{"serverContent":{"inputTranscription":{"text":"$text","languageCode":"$language"}}}"""
 
+    private fun said(text: String) = """{"serverContent":{"outputTranscription":{"text":"$text"}}}"""
+
+    /** [text] is said in [language], and this session begins to say it as [translation]. */
+    private fun FakeSocket.translates(text: String, language: String, translation: String) {
+        serve(heard(text, language))
+        serve(said(translation))
+        serve(audio())
+    }
+
     private fun micFrames(socket: FakeSocket): List<ByteArray> = socket.sent
         .filter { it.contains("realtimeInput") }
         .map { Base64.getDecoder().decode(JSONObject(it).getJSONObject("realtimeInput").getJSONObject("audio").getString("data")) }
@@ -155,9 +165,43 @@ class SessionCoordinatorTest {
 
     @Test
     fun `when both people speak one language there is one direction`() {
-        start(TranslatorPolicy(english))
+        start(TranslatorPolicy(english, otherLanguage = english))
         awaitListening()
         assertEquals(listOf("en"), sockets.map(::target))
+    }
+
+    // It used to open a direction into English for whoever had not spoken yet.
+    @Test
+    fun `until the other person has been heard, nothing is opened to translate what I say`() {
+        start(TranslatorPolicy(punjabi))
+        awaitListening()
+        val inbound = sockets.single()
+        assertEquals("pa", target(inbound))
+        assertNull("no language is shown as theirs", state.heardLanguage.value)
+
+        // I speak first, and the model knows my language.
+        repeat(3) { inbound.serve(heard("ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ ਜੀ। ਤੁਹਾਡਾ ਕੀ ਹਾਲ ਹੈ?", "pa")) }
+        Thread.sleep(400)
+        assertEquals("still one direction", 1, sockets.size)
+        assertNull(state.heardLanguage.value)
+        assertNull(state.notice.value)
+        assertTrue(captions.captions.value.isEmpty())
+    }
+
+    // Recorded: a Punjabi speaker's own words, taken for Hindi and said back in Punjabi.
+    @Test
+    fun `my own language heard under another name does not open a direction into that language`() {
+        start(TranslatorPolicy(punjabi))
+        awaitListening()
+        val inbound = sockets.single()
+        inbound.translates("हां जी। ठीक है।", "hi", "ਹਾਂ ਜੀ। ਠੀਕ ਹੈ।")
+        repeat(3) { inbound.serve(audio()) }
+        Thread.sleep(400)
+
+        assertEquals(1, sockets.size)
+        assertNull(state.heardLanguage.value)
+        assertEquals("my own words are not played back to me", 0, playback.written.sumOf { if (it.voiced) it.ms else 0 })
+        assertTrue("nor written as theirs", captions.captions.value.isEmpty())
     }
 
     @Test
@@ -192,6 +236,30 @@ class SessionCoordinatorTest {
     }
 
     @Test
+    fun `what they said and what I said are captioned each on its own side`() {
+        start(TranslatorPolicy(english, otherLanguage = spanish))
+        awaitListening()
+        val inbound = socketFor("en")
+        val outbound = socketFor("es")
+        for (socket in listOf(inbound, outbound)) socket.serve(heard("Hola, buenos días", "es"))
+        inbound.serve(said("Hello, good morning."))
+        inbound.serve(audio())
+        repeat(3) { inbound.serve(audio(voiced = false)) }
+        await("their caption") { captions.settled() == listOf("Hello, good morning.") }
+
+        for (socket in listOf(inbound, outbound)) socket.serve(heard(" Good morning to you", "en"))
+        outbound.serve(said("Buenos días a usted."))
+        outbound.serve(audio())
+        repeat(3) { outbound.serve(audio(voiced = false)) }
+        await("my caption") { captions.settled().size == 2 }
+
+        assertEquals(
+            listOf(CaptionSide.THEIRS to "Hello, good morning.", CaptionSide.MINE to "Buenos días a usted."),
+            captions.captions.value.map { it.side to it.text },
+        )
+    }
+
+    @Test
     fun `captions appear as they are spoken and commit when the speaker stops`() {
         start(TranslatorPolicy(english, otherLanguage = spanish))
         awaitListening()
@@ -199,12 +267,12 @@ class SessionCoordinatorTest {
         inbound.serve(heard("Hola", "es"))
         inbound.serve(audio())
         inbound.serve("""{"serverContent":{"outputTranscription":{"text":" Hello there.","languageCode":"en"}}}""")
-        await("the live caption") { captions.pending.value == listOf("Hello there.") }
-        assertTrue(captions.lines.value.isEmpty())
+        await("the live caption") { captions.live() == listOf("Hello there.") }
+        assertTrue(captions.settled().isEmpty())
 
         repeat(3) { inbound.serve(audio(voiced = false)) }
-        await("the committed line") { captions.lines.value == listOf("Hello there.") }
-        assertTrue(captions.pending.value.isEmpty())
+        await("the committed line") { captions.settled() == listOf("Hello there.") }
+        assertTrue(captions.live().isEmpty())
     }
 
     // The lines stay on the screen after the session. One left half said
@@ -217,12 +285,12 @@ class SessionCoordinatorTest {
         inbound.serve(heard("Hola", "es"))
         inbound.serve(audio())
         inbound.serve("""{"serverContent":{"outputTranscription":{"text":" Hello there.","languageCode":"en"}}}""")
-        await("the live caption") { captions.pending.value == listOf("Hello there.") }
+        await("the live caption") { captions.live() == listOf("Hello there.") }
 
         coordinator.stop()
         await("the session to end") { state.state.value == RuntimeState.IDLE }
-        assertEquals(listOf("Hello there."), captions.lines.value)
-        assertTrue("nothing is left looking as if it were still being said", captions.pending.value.isEmpty())
+        assertEquals(listOf("Hello there."), captions.settled())
+        assertTrue("nothing is left looking as if it were still being said", captions.live().isEmpty())
     }
 
     @Test
@@ -233,13 +301,13 @@ class SessionCoordinatorTest {
         inbound.serve(heard("Hola", "es"))
         inbound.serve(audio())
         inbound.serve("""{"serverContent":{"outputTranscription":{"text":" Hello there.","languageCode":"en"}}}""")
-        await("the live caption") { captions.pending.value == listOf("Hello there.") }
+        await("the live caption") { captions.live() == listOf("Hello there.") }
 
         networkChanged.tryEmit(Unit)
-        await("the half-said line to be finished") { captions.pending.value.isEmpty() }
-        assertEquals(listOf("Hello there."), captions.lines.value)
+        await("the half-said line to be finished") { captions.live().isEmpty() }
+        assertEquals(listOf("Hello there."), captions.settled())
         await("the session to be back") { sockets.size >= 4 && state.state.value == RuntimeState.LISTENING }
-        assertTrue("and it stays finished", captions.pending.value.isEmpty())
+        assertTrue("and it stays finished", captions.live().isEmpty())
     }
 
     @Test
@@ -257,11 +325,15 @@ class SessionCoordinatorTest {
     // ── following their language ────────────────────────────────────────
 
     @Test
-    fun `hearing their language opens the direction back to them`() {
+    fun `hearing their language translated opens the direction back to them`() {
         start(TranslatorPolicy(english))
         awaitListening()
         sockets.single().serve(heard("Hola, buenos días", "es"))
+        Thread.sleep(300)
+        assertEquals("its name alone opens nothing", 1, sockets.size)
 
+        sockets.single().serve(said("Hello, good morning. "))
+        sockets.single().serve(audio())
         val outbound = socketFor("es")
         await("the heard language to be shown") { state.heardLanguage.value?.bcp47 == "es-ES" }
         await("the microphone to reach the new direction") {
@@ -390,7 +462,7 @@ class SessionCoordinatorTest {
         }
         start(TranslatorPolicy(english))
         awaitListening()
-        sockets.single().serve(heard("Hola, buenos días", "es"))
+        sockets.single().translates("Hola, buenos días", "es", "Hello, good morning. ")
 
         val outbound = socketFor("es", after = 2)
         await("the microphone to reach it") {
@@ -408,7 +480,7 @@ class SessionCoordinatorTest {
         server = { if (++opened >= 2 && refusing) FakeSocket(onConnect = { fails(httpStatus = 429) }) else gemini() }
         start(TranslatorPolicy(english))
         awaitListening()
-        sockets.single().serve(heard("Hola, buenos días", "es"))
+        sockets.single().translates("Hola, buenos días", "es", "Hello, good morning. ")
 
         await("the notice", timeoutMs = 15_000) { state.notice.value != null }
         val message = state.notice.value!!
@@ -639,11 +711,11 @@ class SessionCoordinatorTest {
         inbound.serve(heard("Hola", "es"))
         inbound.serve(audio())
         inbound.serve("""{"serverContent":{"outputTranscription":{"text":" Hello there","languageCode":"en"}}}""")
-        await("the live caption") { captions.pending.value == listOf("Hello there") }
+        await("the live caption") { captions.live() == listOf("Hello there") }
 
         inbound.fails()
-        await("the line to be finished") { captions.pending.value.isEmpty() }
-        assertEquals(listOf("Hello there"), captions.lines.value)
+        await("the line to be finished") { captions.live().isEmpty() }
+        assertEquals(listOf("Hello there"), captions.settled())
     }
 
     // ── replacing a connection ──────────────────────────────────────────
@@ -769,11 +841,15 @@ class SessionCoordinatorTest {
         val coordinator = start(TranslatorPolicy(english, otherLanguage = spanish))
         awaitListening()
         val inbound = socketFor("en")
+        val outbound = socketFor("es")
         repeat(3) { inbound.serve(heard("bom dia tudo bem", "pt")) }
         Thread.sleep(200)
         coordinator.setLanguages(follow = true)
         await("no longer fixed") { !state.theirLanguagePinned.value }
-        inbound.serve(heard("obrigado pela ajuda", "pt"))
+        // Said twice, heard by both sessions, and translated for me.
+        repeat(2) { for (socket in listOf(outbound, inbound)) socket.serve(heard(" obrigado pela ajuda", "pt")) }
+        inbound.serve(said("thank you for the help "))
+        inbound.serve(audio())
 
         socketFor("pt-BR")
         await("the language to be shown") { state.heardLanguage.value?.bcp47 == "pt-BR" }
@@ -840,14 +916,24 @@ class SessionCoordinatorTest {
         server = ::openAi
         start(TranslatorPolicy(english), FakeCredentials(TranslationProvider.OPENAI))
         awaitListening()
+        fun input(text: String) = """{"type":"session.input_transcript.delta","delta":"$text"}"""
+        fun output(text: String) = """{"type":"session.output_transcript.delta","delta":"$text"}"""
+        val speech = """{"type":"session.output_audio.delta","delta":"${Base64.getEncoder().encodeToString(TestAudio.tone(200))}"}"""
         val inbound = sockets.single()
-        inbound.serve("""{"type":"session.input_transcript.delta","delta":"hola que tal como está usted"}""")
+        inbound.serve(input("hola que tal como está usted"))
+        inbound.serve(output("hello how are you "))
+        inbound.serve(speech)
         val outbound = socketFor("es")
+        await("the Spanish translation to end") { state.state.value == RuntimeState.LISTENING && captions.settled().isNotEmpty() }
 
-        // A second person, speaking French. Said twice before it is followed.
-        inbound.serve("""{"type":"session.input_transcript.delta","delta":" bonjour je cherche les"}""")
-        inbound.serve("""{"type":"session.input_transcript.delta","delta":" vous êtes avec nous dans cette"}""")
-        inbound.serve("""{"type":"session.input_transcript.delta","delta":" merci beaucoup pour les"}""")
+        // A second person, speaking French: both sessions hear it, and it is translated for me.
+        for (socket in listOf(inbound, outbound)) {
+            socket.serve(input(" bonjour je cherche les"))
+            socket.serve(input(" vous êtes avec nous dans cette"))
+            socket.serve(input(" merci beaucoup pour les"))
+        }
+        inbound.serve(output("hello I am looking for the "))
+        inbound.serve(speech)
         await("the outbound session to be re-aimed") { outbound.sent.any { it.contains("session.update") && it.contains("\"fr\"") } }
         assertEquals("no third socket", 2, sockets.size)
     }

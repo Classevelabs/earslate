@@ -145,7 +145,7 @@ fun SettingsScreen(
     if (showOtherPicker) {
         LanguagePickerDialog(
             title = "Other language",
-            currentLanguage = otherLanguage ?: myLanguage,
+            currentLanguage = otherLanguage,
             onSelect = { selected ->
                 otherLanguage = selected
                 onOtherLanguageChange(selected)

@@ -18,6 +18,7 @@ import com.classeve.earslate.live.TranslationLiveProtocol
 import com.classeve.earslate.live.TranslationLiveProtocols
 import com.classeve.earslate.live.failure
 import com.classeve.earslate.session.HeardLanguageTracker.Companion.sameLanguage
+import com.classeve.earslate.ui.captions.CaptionSide
 import com.classeve.earslate.ui.captions.CaptionsStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -85,8 +86,8 @@ class SessionCoordinator(
     // a reconnect.
     @Volatile private var policy: TranslatorPolicy? = null
 
-    // Kept across reconnects, or a dropped connection would send my next
-    // sentence out in English again.
+    // Kept across reconnects, or after a dropped connection what I say would
+    // go untranslated until they had spoken again.
     @Volatile private var heardTheirs: String? = null
 
     @Volatile private var focusHeld = false
@@ -305,15 +306,16 @@ class SessionCoordinator(
                     "Choose another language, or another provider, in Settings.",
             )
 
+            // No language is assumed for them. Until one has been heard, or
+            // set by hand, what I say has nowhere to go and is left alone.
             val pinned = pinnedTheirs
-            val theirs = pinned?.bcp47 ?: heardTheirs ?: TargetLanguage.EnglishUS.bcp47
+            val theirs = pinned?.bcp47 ?: heardTheirs
             engine = ConversationEngine(myLanguage.bcp47, theirs, followsTheirLanguage = pinned == null, sink = this)
             stateStore.setTheirLanguagePinned(pinned != null)
             stateStore.setHeardLanguage(pinned ?: heardTheirs?.let(TargetLanguage::forCode))
 
             stateStore.set(RuntimeState.CONNECTING)
-            val oneLanguage = sameLanguage(theirs, myLanguage.bcp47)
-            val theirWire = protocol.wireLanguage(theirs).takeUnless { oneLanguage }
+            val theirWire = theirs?.takeUnless { sameLanguage(it, myLanguage.bcp47) }?.let(protocol::wireLanguage)
             val opened = try {
                 openBoth(credential, myWire, theirWire)
             } catch (first: LinkFailure) {
@@ -633,8 +635,9 @@ class SessionCoordinator(
             val theirs = synchronized(engineLock) { engine.theirLanguage }
             return retargeting.withLock {
                 val current = micLegs.firstOrNull { it.role == LegRole.OUTBOUND }
-                // Both sides speak one language: there is no second direction.
-                if (sameLanguage(theirs, myLanguage.bcp47)) {
+                // Nobody else has been heard yet, or both sides speak one
+                // language: there is no second direction.
+                if (theirs == null || sameLanguage(theirs, myLanguage.bcp47)) {
                     current?.let(::retire)
                     return@withLock true
                 }
@@ -732,12 +735,17 @@ class SessionCoordinator(
 
         // ── what the engine decided ─────────────────────────────────────
 
-        override fun play(leg: Int, pcm: ByteArray, sampleRateHz: Int, voiced: Boolean) =
-            playbackEngine.write(leg, pcm, sampleRateHz, voiced)
+        override fun play(leg: Int, pcm: ByteArray, sampleRateHz: Int, voiced: Boolean, begins: Boolean) =
+            playbackEngine.write(leg, pcm, sampleRateHz, voiced, begins)
 
         override fun muteQueued(leg: Int) = playbackEngine.muteQueued(leg)
 
-        override fun captionDelta(leg: Int, text: String) = captionsStore.appendDelta(leg, text)
+        // What I said is carried by the direction that speaks their language.
+        override fun captionDelta(leg: Int, text: String) = captionsStore.appendDelta(
+            source = leg,
+            side = if (legs[leg]?.role == LegRole.OUTBOUND) CaptionSide.MINE else CaptionSide.THEIRS,
+            text = text,
+        )
 
         override fun captionCommit(leg: Int) = captionsStore.commitLine(leg)
 

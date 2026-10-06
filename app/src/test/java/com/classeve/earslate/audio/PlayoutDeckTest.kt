@@ -154,6 +154,23 @@ class PlayoutDeckTest {
         assertFalse("silent again once the speech has left the room", deck.snapshot(running = true).audible)
     }
 
+    // A translation waiting for its turn, and after it on the same lane the
+    // start of something found to be a repeat.
+    @Test
+    fun `silencing what is queued of an utterance leaves the one waiting ahead of it`() {
+        deck.setConsecutive(true)
+        fun utterance(ms: Int) = repeat(ms / 250) { block ->
+            deck.write(1, TestAudio.tone(250), 24_000, voiced = true, begins = block == 0)?.let { slots += it }
+        }
+        utterance(1_000)
+        utterance(500)
+        deck.muteQueued(1)
+        deck.release()
+        play(3_000)
+
+        assertEquals("the translation is heard whole, and the repeat not at all", 1_000, heard[1])
+    }
+
     @Test
     fun `speech that turns out to be unwanted is silenced on its own lane only`() {
         arrive(lane = 1)
