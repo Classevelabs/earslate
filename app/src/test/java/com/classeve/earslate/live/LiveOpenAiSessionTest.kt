@@ -157,13 +157,15 @@ class LiveOpenAiSessionTest {
         // They speak Spanish.
         quiet(1_000)
         speak(to24k(spanish!!))
-        quietUntil("their translation to be committed") { captions.settled().isNotEmpty() }
+        // The first caption may be no more than "Hi, good morning."
+        quietUntil("their translation, asking for the station, to be committed") {
+            captions.settled().joinToString(" ").lowercase().let { it.contains("train") || it.contains("station") }
+        }
         quiet(1_000)
         val inbound = playback.written.filter { it.voiced }.groupBy { it.lane }.maxByOrNull { it.value.size }!!.key
         val englishHeard = playback.heardMs(inbound)
         println("LIVE OpenAI Spanish -> English heard $englishHeard ms; captions ${captions.settled()}")
         assertTrue("their Spanish was translated: $englishHeard ms", englishHeard >= 2_000)
-        assertTrue(captions.settled().joinToString(" ").lowercase().let { it.contains("train") || it.contains("station") })
         // OpenAI does not name the language it hears; the app works it out from the words.
         assertEquals("their language was recognised", "es-ES", state.heardLanguage.value?.bcp47)
 
