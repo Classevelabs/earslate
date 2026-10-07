@@ -2,10 +2,13 @@ package com.classeve.earslate.audio
 
 import android.annotation.SuppressLint
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
+import android.media.AudioRecordingConfiguration
 import android.media.MediaRecorder
 import android.os.Process
 import android.util.Log
+import java.util.concurrent.Executor
 
 /**
  * Owns the microphone. Every frame is delivered: the translate model does its
@@ -20,9 +23,19 @@ interface AudioCaptureEngine {
      * [onError] fires at most once, if the microphone is lost after a
      * successful start.
      *
+     * [onTaken] says true when the system starts handing this app silence in
+     * place of the microphone, as it does for a phone call, and false when the
+     * microphone is given back. Frames keep arriving all the while.
+     *
      * @return false when the microphone could not be opened.
      */
-    fun start(sampleRateHz: Int, frameMs: Int, onFrame: (ByteArray) -> Unit, onError: () -> Unit): Boolean
+    fun start(
+        sampleRateHz: Int,
+        frameMs: Int,
+        onFrame: (ByteArray) -> Unit,
+        onError: () -> Unit,
+        onTaken: (Boolean) -> Unit = {},
+    ): Boolean
 
     fun stop()
 }
@@ -43,6 +56,7 @@ class AndroidAudioCaptureEngine(
         frameMs: Int,
         onFrame: (ByteArray) -> Unit,
         onError: () -> Unit,
+        onTaken: (Boolean) -> Unit,
     ): Boolean {
         stop()
         if (!hasRecordAudioPermission()) {
@@ -78,20 +92,36 @@ class AndroidAudioCaptureEngine(
             record.release()
             return false
         }
+
+        val session = Capture(record)
+        // A phone call does not stop the record: it goes on delivering frames,
+        // of silence. Asked for before recording starts, so that a session
+        // begun in the middle of a call is told as well.
+        val taken = object : AudioManager.AudioRecordingCallback() {
+            override fun onRecordingConfigChanged(configs: List<AudioRecordingConfiguration>) {
+                val mine = configs.firstOrNull { it.clientAudioSessionId == record.audioSessionId } ?: return
+                if (session.active) runCatching { onTaken(mine.isClientSilenced) }
+            }
+        }
+        runCatching { record.registerAudioRecordingCallback(Executor(Runnable::run), taken) }
+        fun release() {
+            runCatching { record.unregisterAudioRecordingCallback(taken) }
+            runCatching { record.release() }
+        }
+
         try {
             record.startRecording()
         } catch (t: Exception) {
             Log.e(TAG, "startRecording failed: ${t.message}")
-            record.release()
+            release()
             return false
         }
         // Another app holding the microphone leaves the record idle, silently.
         if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-            record.release()
+            release()
             return false
         }
 
-        val session = Capture(record)
         capture = session
         Thread({
             runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO) }
@@ -117,7 +147,7 @@ class AndroidAudioCaptureEngine(
                 // Released here, by the thread that reads: freeing the record
                 // under a read still in flight crashes the process.
                 runCatching { record.stop() }
-                runCatching { record.release() }
+                release()
             }
         }, "earslate-capture").start()
         return true

@@ -15,18 +15,26 @@ import java.util.concurrent.atomic.AtomicInteger
 class FakeCapture : AudioCaptureEngine {
     @Volatile private var onFrame: ((ByteArray) -> Unit)? = null
     @Volatile private var onError: (() -> Unit)? = null
+    @Volatile private var onTaken: ((Boolean) -> Unit)? = null
     @Volatile var sampleRateHz = 0
     @Volatile var frameMs = 0
     @Volatile var refuses = false
     val starts = AtomicInteger()
     val stops = AtomicInteger()
 
-    override fun start(sampleRateHz: Int, frameMs: Int, onFrame: (ByteArray) -> Unit, onError: () -> Unit): Boolean {
+    override fun start(
+        sampleRateHz: Int,
+        frameMs: Int,
+        onFrame: (ByteArray) -> Unit,
+        onError: () -> Unit,
+        onTaken: (Boolean) -> Unit,
+    ): Boolean {
         if (refuses) return false
         this.sampleRateHz = sampleRateHz
         this.frameMs = frameMs
         this.onFrame = onFrame
         this.onError = onError
+        this.onTaken = onTaken
         starts.incrementAndGet()
         return true
     }
@@ -44,6 +52,11 @@ class FakeCapture : AudioCaptureEngine {
 
     fun breaks() {
         onError?.invoke()
+    }
+
+    /** A phone call takes the microphone, or gives it back. */
+    fun taken(byACall: Boolean) {
+        onTaken?.invoke(byACall)
     }
 }
 

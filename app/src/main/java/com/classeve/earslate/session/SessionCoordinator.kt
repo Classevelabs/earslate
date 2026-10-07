@@ -283,6 +283,7 @@ class SessionCoordinator(
         @Volatile private var pinnedTheirs: TargetLanguage? = asked.otherLanguage
         @Volatile private var consecutive = false
         @Volatile private var micClosed = false
+        @Volatile private var micTaken = false
         @Volatile private var lastMicSpeechAtMs = 0L
         @Volatile private var engineSpeaking = false
         @Volatile private var lastNotice: String? = null
@@ -357,6 +358,7 @@ class SessionCoordinator(
                         ),
                     )
                 },
+                onTaken = { micTaken = it },
             )
             if (!listening) {
                 return failed(RuntimeError.Kind.UNKNOWN, "Could not open the microphone. Another app may be using it.")
@@ -719,10 +721,16 @@ class SessionCoordinator(
 
         private fun show() {
             val current = stateStore.state.value
-            if (current != RuntimeState.LISTENING && current != RuntimeState.PLAYING) return
+            if (current !in WHILE_UP) return
             // On a loudspeaker "listening" is only true once the microphone is open again.
             val heard = if (consecutive) floor.micClosed else engineSpeaking
-            val next = if (heard) RuntimeState.PLAYING else RuntimeState.LISTENING
+            val next = when {
+                // Said first: while a call has the microphone nothing can be
+                // heard, whatever is still being played.
+                micTaken -> RuntimeState.MICROPHONE_TAKEN
+                heard -> RuntimeState.PLAYING
+                else -> RuntimeState.LISTENING
+            }
             if (next != current) stateStore.set(next)
         }
 
@@ -772,6 +780,9 @@ class SessionCoordinator(
         private const val TICK_MS = 50L
         private const val RETRY_DELAY_MS = 1_500L
         private const val MAX_RETRY_DELAY_MS = 6_000L
+
+        /** The states a session that is up moves between by itself. */
+        private val WHILE_UP = setOf(RuntimeState.LISTENING, RuntimeState.PLAYING, RuntimeState.MICROPHONE_TAKEN)
 
         /** A stumble or two is not worth a word to the user; this many is. */
         private const val ATTEMPTS_BEFORE_SAYING = 4

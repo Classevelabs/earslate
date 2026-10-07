@@ -71,6 +71,7 @@ object NotificationFactory {
             RuntimeState.CONNECTING -> R.string.status_connecting
             RuntimeState.LISTENING -> R.string.status_listening
             RuntimeState.PLAYING -> R.string.status_playing
+            RuntimeState.MICROPHONE_TAKEN -> R.string.status_microphone_taken
             RuntimeState.RECONNECTING -> R.string.status_reconnecting
         }
 

@@ -14,7 +14,9 @@
     <string name="status_connecting">Connecting</string>
     <string name="status_listening">Listening</string>
     <string name="status_playing">Translating</string>
+    <string name="status_microphone_taken">No microphone</string>
     <string name="status_reconnecting">Reconnecting</string>
+    <string name="microphone_taken">earslate cannot hear: a call or another app has the microphone, or it is switched off. Translating carries on when it is back.</string>
 
     <!-- Route labels -->
     <string name="route_bluetooth">BLUETOOTH</string>

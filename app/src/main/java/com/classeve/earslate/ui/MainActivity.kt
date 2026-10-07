@@ -678,6 +678,14 @@ private fun MainScreen(
             }
 
             AnimatedVisibility(
+                visible = state == RuntimeState.MICROPHONE_TAKEN,
+                enter = expandVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeIn(tween(MotionBaseMs)),
+                exit = shrinkVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeOut(tween(MotionBaseMs)),
+            ) {
+                NoticePlate(stringResource(R.string.microphone_taken))
+            }
+
+            AnimatedVisibility(
                 visible = state.isActive && notice != null,
                 enter = expandVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeIn(tween(MotionBaseMs)),
                 exit = shrinkVertically(tween(MotionBaseMs, easing = PreciseEasing)) + fadeOut(tween(MotionBaseMs)),
@@ -1036,7 +1044,7 @@ private fun StatusPill(state: RuntimeState) {
     val targetBg = if (active) EarslateTheme.colors.ember else EarslateTheme.colors.surfaceSoft
     val targetFg = when {
         active -> EarslateTheme.colors.onEmber
-        state == RuntimeState.RECONNECTING -> EarslateTheme.colors.warning
+        state == RuntimeState.RECONNECTING || state == RuntimeState.MICROPHONE_TAKEN -> EarslateTheme.colors.warning
         else -> EarslateTheme.colors.creamSoft
     }
     val bg by animateColorAsState(
@@ -1157,5 +1165,6 @@ private fun statusLabelFor(state: RuntimeState): Int = when (state) {
     RuntimeState.CONNECTING -> R.string.status_connecting
     RuntimeState.LISTENING -> R.string.status_listening
     RuntimeState.PLAYING -> R.string.status_playing
+    RuntimeState.MICROPHONE_TAKEN -> R.string.status_microphone_taken
     RuntimeState.RECONNECTING -> R.string.status_reconnecting
 }

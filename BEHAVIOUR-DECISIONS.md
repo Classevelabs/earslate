@@ -288,6 +288,30 @@ nothing.
 **If regressed.** A conversation that looks live and translates in one
 direction only.
 
+## A phone call takes the microphone, and the app says so
+
+**Decision.** For the length of a phone call Android hands every other app
+silence in place of the microphone. The record does not stop and no read
+fails, so `AndroidAudioCaptureEngine` asks to be told
+(`AudioRecord.registerAudioRecordingCallback`), and asks before recording
+starts, so that a session begun during a call is told as well. While it lasts
+the session shows "No microphone", on the screen and in the notification, with
+the reason under it. It goes on sending the provider its frames, so there is
+nothing to put back together when the call ends. The same is said when another
+app is given the microphone, and when the microphone is switched off for the
+whole phone.
+
+**Symptom.** The screen said "Listening" all through a call. Whoever spoke to
+the phone got no translation and no sign of why.
+
+**Verified against.** `SessionCoordinatorTest`. On an emulator, in a run that
+asks for a call (`-e phoneCall true`): `AudioTeardownTest` for the microphone
+alone, and `WholeAppOnDeviceTest` for the whole app, with a call placed in the
+middle of a real session. The microphone switch was tried by hand on the same
+emulator and is reported the same way.
+
+**If regressed.** A phone that says it is listening while it hears nothing.
+
 ## A reconnect is given up only when the provider says no
 
 **Decision.** While a session is being brought back, a failure to reach the

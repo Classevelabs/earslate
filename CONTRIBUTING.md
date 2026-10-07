@@ -42,6 +42,13 @@ a real session (`LiveSessionOnDeviceTest`) and the whole app through its own
 screen, service and microphone (`WholeAppOnDeviceTest`). Both look for a
 recording of Spanish speech pushed to the device; each says where.
 
+**On an emulator, through a phone call.** Add
+`-Pandroid.testInstrumentationRunnerArguments.phoneCall=true` and the emulator
+places a call to nobody while the microphone is open: `AudioTeardownTest`
+checks the app is told the call has the microphone, and `WholeAppOnDeviceTest`
+that a running session says so and listens again afterwards. On a real phone
+the call would be a real one, so there it is never placed.
+
 A key given to a test is used from memory and is never stored.
 
 ## What makes a change easy to accept
