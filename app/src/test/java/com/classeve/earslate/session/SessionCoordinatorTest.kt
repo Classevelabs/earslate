@@ -342,6 +342,23 @@ class SessionCoordinatorTest {
         }
     }
 
+    // After a drop, what I say would go untranslated until they had spoken again.
+    @Test
+    fun `their language is still theirs after a reconnect`() {
+        start(TranslatorPolicy(english))
+        awaitListening()
+        sockets.single().translates("Hola, buenos días", "es", "Hello, good morning. ")
+        socketFor("es")
+        await("the heard language to be shown") { state.heardLanguage.value?.bcp47 == "es-ES" }
+
+        val before = sockets.size
+        networkChanged.tryEmit(Unit)
+        await("a fresh pair of sockets") { sockets.size >= before + 2 && state.state.value == RuntimeState.LISTENING }
+        await("both to be set up") { sockets.drop(before).all { it.sent.isNotEmpty() } }
+        assertEquals(setOf("en", "es"), sockets.drop(before).map(::target).toSet())
+        assertEquals("and the screen still names it", "es-ES", state.heardLanguage.value?.bcp47)
+    }
+
     @Test
     fun `a pinned language is never moved by what is heard`() {
         start(TranslatorPolicy(english, otherLanguage = spanish))

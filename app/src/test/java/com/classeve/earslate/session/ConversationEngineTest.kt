@@ -286,6 +286,23 @@ class ConversationEngineTest {
         assertEquals("what they said is translated for me", 1_000, s.sink.heardMs(inbound))
     }
 
+    // While a connection is being replaced there are two for one direction:
+    // the old one finishing its sentence, the new one starting the next.
+    @Test
+    fun `a direction is not outdone by the connection it is replacing`() {
+        val s = Scene(mine = "pa-IN", theirs = "en")
+        val replacement = 3
+        s.engine.legOpened(replacement, LegRole.INBOUND)
+        s.heard("Sure. It is about ten minutes from here.", "en", leg = inbound)
+        s.caption(inbound, "ਹਾਂਜੀ। ਇਹ ਲਗਭਗ ਦਸ ਮਿੰਟ ਦੂਰ ਹੈ। ")
+        s.speaks(inbound, 2)
+        s.heard("जरूर। यह यहां से लगभग 10 मिनट की दूरी पर है।", "hi", leg = replacement)
+        s.caption(replacement, "ਜ਼ਰੂਰ। ਇਹ ਇੱਥੋਂ ਲਗਭਗ 10 ਮਿੰਟ ਦੀ ਦੂਰੀ 'ਤੇ ਹੈ। ")
+        s.speaks(replacement, 4)
+
+        assertEquals("the new connection's translation is heard", 1_000, s.sink.heardMs(replacement))
+    }
+
     // I talk on for ten seconds. My translation began long before the other
     // direction started to say my words back, and both answer the same speech.
     @Test
