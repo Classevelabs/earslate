@@ -3,7 +3,6 @@ package com.classeve.earslate.session
 import com.classeve.earslate.audio.Pcm
 import com.classeve.earslate.live.LiveEvent
 import com.classeve.earslate.session.HeardLanguageTracker.Companion.sameLanguage
-import kotlin.math.abs
 
 /** Whose voice a translate session believes it is hearing. */
 enum class Speaker { UNKNOWN, ME, THEM }
@@ -297,9 +296,8 @@ class ConversationEngine(
         }
         if (run.outdone) return true
         run.outdone = run.closeToHeard && legs.values.any { other ->
-            other.role != leg.role && other.run?.let {
-                it.allowed && !it.stale && it.plain && abs(it.beganAtMs - run.beganAtMs) <= SAME_SPEECH_MS
-            } == true
+            // One that is finishing for the last speaker answers other speech.
+            other.role != leg.role && other.run?.let { it.allowed && !it.stale && it.plain } == true
         }
         return run.outdone
     }

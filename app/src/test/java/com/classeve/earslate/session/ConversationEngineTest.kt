@@ -271,6 +271,55 @@ class ConversationEngineTest {
         assertTrue("Hindi is nobody's language: ${s.sink.heard}", s.sink.heard.isEmpty())
     }
 
+    // My own long translation was still being spoken when somebody answered
+    // in Hindi, whose Punjabi shares half its words with it.
+    @Test
+    fun `a direction is not outdone by one still finishing what was said before`() {
+        val s = Scene(mine = "pa-IN", theirs = "en")
+        s.heard("ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ ਜੀ। ਤੁਹਾਡਾ ਕੀ ਹਾਲ ਹੈ?", "pa")
+        s.caption(outbound, "Hello. How are you? I called you yesterday ")
+        s.speaks(outbound, 12)
+        s.heard(" जरूर। यह यहां से लगभग 10 मिनट की दूरी पर है।", "hi")
+        s.caption(inbound, "ਜ਼ਰੂਰ। ਇਹ ਇੱਥੋਂ ਲਗਭਗ 10 ਮਿੰਟ ਦੀ ਦੂਰੀ 'ਤੇ ਹੈ। ")
+        s.speaks(inbound, 4)
+
+        assertEquals("what they said is translated for me", 1_000, s.sink.heardMs(inbound))
+    }
+
+    // I talk on for ten seconds. My translation began long before the other
+    // direction started to say my words back, and both answer the same speech.
+    @Test
+    fun `a repeat that starts late in a long sentence is still outdone by its translation`() {
+        val s = Scene(mine = "pa-IN", theirs = "en")
+        s.heard("ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ ਜੀ। ਤੁਹਾਡਾ ਕੀ ਹਾਲ ਹੈ?", "pa")
+        s.caption(outbound, "Hello. How are you? ")
+        s.speaks(outbound, 6)
+        s.heard(" ये यहां से लगभग 10 मिनट की दूरी पर है।", "pa", leg = outbound)
+        s.heard(" ये यहां से लगभग 10 मिनट की दूरी पर है।", "hi", leg = inbound)
+        s.speaks(outbound, 6)
+        s.caption(outbound, "It is about ten minutes from here. ")
+        s.caption(inbound, "ਇਹ ਇੱਥੋਂ ਲਗਭਗ 10 ਮਿੰਟ ਦੀ ਦੂਰੀ 'ਤੇ ਹੈ। ")
+        s.speaks(inbound, 4)
+        s.speaks(outbound, 2)
+
+        assertEquals("my own words are not said back to me", 0, s.sink.heardMs(inbound))
+        assertEquals("and all of my translation is heard", 3_500, s.sink.heardMs(outbound))
+    }
+
+    // Recorded: Norwegian said back with one word in eight respelled.
+    @Test
+    fun `a repeat is still a repeat when a word in it is respelled`() {
+        val s = Scene(mine = "nb-NO", theirs = "en")
+        s.heard("God dag, kan du si meg hvor nærmeste togstasjon er?", "da")
+        s.caption(inbound, "God dag, kan du ")
+        s.speaks(inbound, 1)
+        s.caption(inbound, "si meg hvor neste ")
+        s.speaks(inbound, 3)
+
+        assertEquals(0, s.sink.heardMs(inbound))
+        assertEquals("", s.sink.pending(inbound))
+    }
+
     // A third person, speaking a language that is neither of ours: both directions really are translating.
     @Test
     fun `when both directions are plainly translating, neither is taken for a repeat`() {

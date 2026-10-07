@@ -24,9 +24,15 @@ That means:
   the provider's own rates. We never see them.
 
 A conversation runs two translation sessions on one microphone, one for each
-direction. Both hear everything, and the app lets a direction be heard only for
-speech in the other language, so nobody gets their own words repeated back. The
-other person's language is worked out by listening — you only pick your own.
+direction. Both hear everything, and the one aimed at the language being spoken
+has nothing to translate: the app keeps it quiet when it says back what it
+heard, so nobody gets their own words repeated. The other person's language is
+worked out by listening — you only pick your own — and what you say is
+translated for them once they have been heard, or once you set their language
+yourself.
+
+The screen shows the conversation as it goes: what they said on the left, what
+you said on the right. Tap a caption to copy it, or copy all of it at once.
 
 In earbuds the translation plays while the other person is still speaking. On
 the phone's loudspeaker, where the microphone would hear it, the translation
