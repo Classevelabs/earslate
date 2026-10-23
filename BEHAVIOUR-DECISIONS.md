@@ -443,3 +443,33 @@ start a session.
 
 **If regressed.** Keys or audio pass through ClassEve, which the privacy policy
 says never happens.
+
+## Updates: Play's for a Play copy, the site's for a site copy
+
+**Decision.** A copy installed from Google Play asks Play about updates through
+Play's in-app updates (`PlayUpdates`): a release uploaded at priority 4 or 5
+must be installed before the app opens again, 1 to 3 is offered, 0 is left to
+Play's auto-update. A copy installed from classeve.com (`BuildConfig.FROM_SITE`,
+true for every APK and false for the Play bundle) reads
+`https://classeve.com/apps/earslate.json` once a UTC day (`SiteUpdates`): below
+its `minimumVersion` the app shows only "Update earslate", below its `version`
+an update is offered. The file is written by the site from its product list.
+
+**Symptom.** No copy could be made to update, and nobody could tell how many
+copies from the site were in use: Play cannot update a copy signed with the
+brand key, and nothing else asked.
+
+**Why it keeps "No ClassEve server in the path".** Keys and audio still go only
+to the provider. The site copy's request carries nothing but itself and
+`earslate/<version>` as its user agent, which is how the Deck counts copies; a
+Play copy never asks the site, and a site copy never asks Play, which cannot
+update a copy signed with the brand key. An update file that points anywhere but
+classeve.com/downloads is ignored, and the last answer stands between reads, so
+a required update cannot be waited out.
+
+**Verified against.** `UpdatesTest`; the site's `npm run check:registry`, which
+refuses a minimum newer than the download.
+
+**If regressed.** A required update that copies never ask for; a site copy
+offered a download it cannot install over itself; or a Play copy that starts
+asking the site.

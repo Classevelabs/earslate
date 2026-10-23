@@ -38,4 +38,16 @@
     <string name="notification_channel_name">Translator runtime</string>
     <string name="notification_channel_description">Keeps the translator active while the screen is off.</string>
     <string name="notification_action_stop">Stop</string>
+
+    <!-- Updates: from Google Play for a Play copy, from classeve.com for a copy downloaded there -->
+    <string name="update_required_title">Update earslate</string>
+    <string name="update_required_play">This version needs the update before it can translate again. It comes from Google Play.</string>
+    <string name="update_required_site">This version needs the update before it can translate again. It comes from classeve.com.</string>
+    <string name="update_action_play">Update</string>
+    <string name="update_action_site">Get the update</string>
+    <string name="update_ready">An update is ready.</string>
+    <string name="update_restart">Restart</string>
+    <string name="update_available">earslate %1$s is out.</string>
+    <string name="update_get">Get it</string>
+    <string name="update_later">Later</string>
 </resources>

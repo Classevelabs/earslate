@@ -107,6 +107,9 @@ import com.classeve.earslate.ui.theme.MotionFastMs
 import com.classeve.earslate.ui.theme.PreciseEasing
 import com.classeve.earslate.ui.theme.rememberReducedMotion
 import com.classeve.earslate.service.NotificationControlService
+import com.classeve.earslate.update.PlayUpdates
+import com.classeve.earslate.update.SiteUpdates
+import com.classeve.earslate.update.UpdateLayer
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
@@ -115,6 +118,10 @@ class MainActivity : ComponentActivity() {
     companion object {
         const val ACTION_REQUEST_START = "com.classeve.earslate.action.REQUEST_START"
     }
+
+    // Built with the activity: Play's result launcher must be registered before it starts.
+    private val playUpdates = PlayUpdates(this)
+    private val siteUpdates = SiteUpdates(this)
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -209,14 +216,17 @@ class MainActivity : ComponentActivity() {
                     containerColor = EarslateTheme.colors.canvas,
                     contentColor = EarslateTheme.colors.textPrimary,
                 ) { inner ->
-                    EarslateApp(
-                        padding = inner,
-                        onStart = ::requestStart,
-                        onStop = { TranslatorService.stop(this) },
-                        onRequestQsTile = ::requestAddQuickSettingsTile,
-                        onOpenAppSettings =
-                            if (micPermissionPermanentlyDenied) ::openAppSettings else null,
-                    )
+                    Box(Modifier.fillMaxSize()) {
+                        EarslateApp(
+                            padding = inner,
+                            onStart = ::requestStart,
+                            onStop = { TranslatorService.stop(this@MainActivity) },
+                            onRequestQsTile = ::requestAddQuickSettingsTile,
+                            onOpenAppSettings =
+                                if (micPermissionPermanentlyDenied) ::openAppSettings else null,
+                        )
+                        UpdateLayer(play = playUpdates, site = siteUpdates)
+                    }
                 }
             }
         }

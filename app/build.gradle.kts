@@ -89,8 +89,12 @@ android {
         targetSdk = 36
         // 0.4.4 moved the APK to the brand certificate, so an install signed by
         // the older key cannot take a later version as an update.
-        versionCode = 31
-        versionName = "0.7.0"
+        versionCode = 32
+        versionName = "0.7.1"
+
+        // A bundle is only ever Google Play's, which updates its copies itself;
+        // every APK is the classeve.com download, which asks the site instead.
+        buildConfigField("boolean", "FROM_SITE", (!bundleRequested).toString())
 
         vectorDrawables.useSupportLibrary = true
 
@@ -234,6 +238,8 @@ dependencies {
 
     // Used by the Gemini Live WebSocket client (OkHttpLiveSocketClient).
     implementation(libs.okhttp)
+
+    implementation(libs.play.app.update)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
