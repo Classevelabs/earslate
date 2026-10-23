@@ -240,6 +240,7 @@ dependencies {
     implementation(libs.okhttp)
 
     implementation(libs.play.app.update)
+    implementation(libs.androidx.fragment)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
