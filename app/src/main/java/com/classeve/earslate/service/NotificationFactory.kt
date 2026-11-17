@@ -58,12 +58,25 @@ object NotificationFactory {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
-        val startIntent = PendingIntent.getService(
-            context,
-            2,
-            Intent(context, TranslatorService::class.java).setAction(TranslatorService.ACTION_START),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
+        // Without the microphone or the consent the app has to ask first, and a service
+        // started from a notification may not open it (Android 12+): Start did nothing.
+        val startIntent = if (TranslatorService.readyToStart(context)) {
+            PendingIntent.getService(
+                context,
+                2,
+                Intent(context, TranslatorService::class.java).setAction(TranslatorService.ACTION_START),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+        } else {
+            PendingIntent.getActivity(
+                context,
+                3,
+                Intent(context, MainActivity::class.java)
+                    .setAction(MainActivity.ACTION_REQUEST_START)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+        }
 
         val statusRes = when (state) {
             RuntimeState.IDLE -> R.string.status_idle

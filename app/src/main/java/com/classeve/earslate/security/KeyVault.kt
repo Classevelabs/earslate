@@ -170,7 +170,9 @@ class KeyVault(context: Context) : SecretStore {
             Log.w(TAG, "stored secret failed authentication; discarding entry")
             remove(name)
             null
-        } catch (unavailable: VaultUnavailable) {
+        } catch (unavailable: RuntimeException) {
+            // VaultUnavailable, or the keystore's own ProviderException ("operation
+            // failed"), which it raises for a transient fault as often as a real one.
             // A READ cannot usefully fail closed, and this one was crashing the
             // app on launch.
             //

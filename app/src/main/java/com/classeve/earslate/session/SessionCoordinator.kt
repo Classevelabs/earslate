@@ -78,6 +78,10 @@ class SessionCoordinator(
     private val legIds = AtomicInteger()
 
     @Volatile private var lifecycleJob: Job? = null
+
+    // The last session's whole life, kept after it stops counting as running: its
+    // teardown still stops the loudspeaker, gives up the audio focus and writes IDLE.
+    @Volatile private var lastJob: Job? = null
     @Volatile private var stopRequested = false
     @Volatile private var live: LiveSession? = null
 
@@ -115,9 +119,13 @@ class SessionCoordinator(
         heardTheirs = null
         stateStore.setHeardLanguage(null)
         stateStore.setTheirLanguagePinned(false)
+        val previous = lastJob
 
         scope.launch {
             try {
+                // A start in the last session's teardown had its loudspeaker stopped
+                // and its state set to IDLE by that teardown: it waits it out.
+                previous?.join()
                 playbackEngine.start()
                 reconnectLoop()
             } catch (_: CancellationException) {
@@ -132,7 +140,10 @@ class SessionCoordinator(
                 )
             } finally {
                 synchronized(this@SessionCoordinator) { lifecycleJob = null }
-                playbackEngine.stop(graceful = true)
+                // Nothing catches past this block: a throw here ends the app, and leaves
+                // the screen showing a session that is gone.
+                runCatching { playbackEngine.stop(graceful = true) }
+                    .onFailure { Log.e(TAG, "playback did not stop cleanly", it) }
                 if (focusHeld) {
                     focusHeld = false
                     audioFocus.release()
@@ -143,7 +154,21 @@ class SessionCoordinator(
                 if (stateStore.state.value != RuntimeState.IDLE) stateStore.set(RuntimeState.IDLE)
                 stateStore.setHeardLanguage(null)
             }
-        }.also { lifecycleJob = it }
+        }.also {
+            lifecycleJob = it
+            lastJob = it
+        }
+    }
+
+    /** The running session, its teardown not counted: null from the moment that begins. */
+    internal val running: Job? get() = synchronized(this) { lifecycleJob }
+
+    /** The last session's whole life while any of it is left, its teardown included. */
+    val lastSession: Job? get() = lastJob?.takeIf { !it.isCompleted }
+
+    /** Returns once a session that was asked to stop has closed; at once when none is closing. */
+    suspend fun awaitClosed() {
+        synchronized(this) { lastJob?.takeIf { stopRequested } }?.join()
     }
 
     /** @return true if a live session was actually cancelled. */

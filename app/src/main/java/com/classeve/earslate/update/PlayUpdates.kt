@@ -108,15 +108,23 @@ class PlayUpdates(
     init {
         // A copy from classeve.com is signed with a key Play cannot update; SiteUpdates serves it.
         if (!BuildConfig.FROM_SITE) {
+            // Every call into Play is guarded: a phone whose Play Store is missing,
+            // disabled or updating itself must still open earslate.
             activity.lifecycle.addObserver(object : DefaultLifecycleObserver {
-                override fun onCreate(owner: LifecycleOwner) = manager.registerListener(listener)
-                override fun onResume(owner: LifecycleOwner) = check()
-                override fun onDestroy(owner: LifecycleOwner) = manager.unregisterListener(listener)
+                override fun onCreate(owner: LifecycleOwner) {
+                    runCatching { manager.registerListener(listener) }
+                }
+                override fun onResume(owner: LifecycleOwner) {
+                    check()
+                }
+                override fun onDestroy(owner: LifecycleOwner) {
+                    runCatching { manager.unregisterListener(listener) }
+                }
             })
         }
     }
 
-    private fun check() {
+    private fun check() = runCatching {
         manager.appUpdateInfo.addOnSuccessListener { info ->
             when (info.step()) {
                 PlayStep.Require -> when {
@@ -131,19 +139,24 @@ class PlayUpdates(
                 PlayStep.Restart -> gateState.value = PlayGate.Ready
                 PlayStep.Nothing -> if (gateState.value == PlayGate.Required) gateState.value = PlayGate.None
             }
+        }.addOnFailureListener {
+            // Play cannot answer (offline, updating itself): the gate's button would do nothing.
+            if (gateState.value == PlayGate.Required) gateState.value = PlayGate.None
         }
     }
 
     /** The required gate's button: Play's update screen again. */
     fun update() {
-        manager.appUpdateInfo.addOnSuccessListener { info ->
-            if (info.step() == PlayStep.Require) start(info, AppUpdateType.IMMEDIATE) else gateState.value = PlayGate.None
-        }
+        runCatching {
+            manager.appUpdateInfo.addOnSuccessListener { info ->
+                if (info.step() == PlayStep.Require) start(info, AppUpdateType.IMMEDIATE) else gateState.value = PlayGate.None
+            }.addOnFailureListener { gateState.value = PlayGate.None }
+        }.onFailure { gateState.value = PlayGate.None }
     }
 
     /** Installs an update downloaded in the background; Play restarts earslate. */
     fun restart() {
-        manager.completeUpdate()
+        runCatching { manager.completeUpdate() }
     }
 
     fun later() {

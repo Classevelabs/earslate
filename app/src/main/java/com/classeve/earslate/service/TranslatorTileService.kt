@@ -1,22 +1,19 @@
 package com.classeve.earslate.service
 
 import android.annotation.SuppressLint
-import android.Manifest
 import android.app.PendingIntent
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.graphics.drawable.Icon
 import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import android.util.Log
-import androidx.core.content.ContextCompat
 import com.classeve.earslate.EarslateRuntime
 import com.classeve.earslate.R
 import com.classeve.earslate.session.RuntimeState
 import com.classeve.earslate.session.SupportedLanguages
 import com.classeve.earslate.session.isActive
-import com.classeve.earslate.ui.MainActivity
+import com.classeve.earslate.ui.StartActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -70,25 +67,13 @@ class TranslatorTileService : TileService() {
     }
 
     /**
-     * Attempts to start the translator. Checks mic permission first; if missing,
-     * launches MainActivity for the grant flow instead of silently failing.
-     * Wrapped in try-catch for ForegroundServiceStartNotAllowedException on API 31+.
+     * Starts the translator through [StartActivity]. Started from here, the
+     * service ran with no microphone (Android 11+: "can not have ... microphone
+     * access") and translated silence; StartActivity also opens the app when the
+     * permission or the consent is still missing.
      */
     private fun safeStart() {
-        val hasAudio = ContextCompat.checkSelfPermission(
-            this, Manifest.permission.RECORD_AUDIO,
-        ) == PackageManager.PERMISSION_GRANTED
-
-        if (hasAudio) {
-            try {
-                TranslatorService.start(this)
-            } catch (e: Exception) {
-                Log.w(TAG, "service start failed, falling back to activity: ${e.message}")
-                launchMainActivity()
-            }
-        } else {
-            launchMainActivity()
-        }
+        open(Intent(this, StartActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 
     /**
@@ -103,16 +88,9 @@ class TranslatorTileService : TileService() {
         }
     }
 
-    /**
-     * Opens MainActivity for the permission flow or as a fallback when the
-     * foreground service can't be started from the tile context.
-     */
+    /** Opens [intent]'s activity and closes the shade, the only way a tile may open one. */
     @SuppressLint("StartActivityAndCollapseDeprecated")
-    private fun launchMainActivity() {
-        val intent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            action = MainActivity.ACTION_REQUEST_START
-        }
+    private fun open(intent: Intent) {
         if (Build.VERSION.SDK_INT >= 34) {
             val pi = PendingIntent.getActivity(
                 this, 0, intent,

@@ -83,7 +83,8 @@ fun CaptionsView(
         }
     }
     fun copy(text: String, what: Long) {
-        clipboard.setText(AnnotatedString(text))
+        // Some phones' clipboard services refuse with a throw; then nothing says "copied".
+        if (runCatching { clipboard.setText(AnnotatedString(text)) }.isFailure) return
         haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
         copied = what
     }

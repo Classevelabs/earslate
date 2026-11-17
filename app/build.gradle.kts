@@ -89,8 +89,8 @@ android {
         targetSdk = 36
         // 0.4.4 moved the APK to the brand certificate, so an install signed by
         // the older key cannot take a later version as an update.
-        versionCode = 32
-        versionName = "0.7.1"
+        versionCode = 33
+        versionName = "0.7.2"
 
         // A bundle is only ever Google Play's, which updates its copies itself;
         // every APK is the classeve.com download, which asks the site instead.

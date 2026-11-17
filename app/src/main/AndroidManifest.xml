@@ -48,6 +48,15 @@
             </intent-filter>
         </activity>
 
+        <!-- The tile's start: in front for a moment, so the session gets the microphone. -->
+        <activity
+            android:name=".ui.StartActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Earslate.Start" />
+
         <service
             android:name=".service.TranslatorService"
             android:enabled="true"

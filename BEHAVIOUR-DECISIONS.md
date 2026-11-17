@@ -497,3 +497,146 @@ refuses a minimum newer than the download.
 **If regressed.** A required update that copies never ask for; a site copy
 offered a download it cannot install over itself; or a Play copy that starts
 asking the site.
+
+## A settings file the phone cannot read never stops the app
+
+**Decision.** The settings store replaces a file it cannot parse with an empty
+one (`SettingsFileDamaged`); the settings the screens show fall back to the
+defaults when the disk will not read; a write the disk refuses keeps the
+setting as it was. The policy for a new session still waits for a real read,
+and says "Could not read your settings" when there is none.
+
+**Symptom.** The settings flow lives as long as the app, on a scope with no
+handler. A damaged settings file, or a disk that would not read, threw on that
+scope at launch and ended the app, every launch, until its data was cleared. A
+write refused by a full disk did the same from the screen that made it.
+
+**Verified against.** `SettingsRepositoryTest`: a damaged file reads as a fresh
+install and keeps the next choice; a disk that fails every read and write ends
+nothing. Each fails with its guard taken out. On an Android 15 emulator, 0.7.1
+given a damaged settings file closed at launch ("Unable to parse preferences
+proto"), and at the next launch Android said "earslate keeps stopping"; 0.7.2
+opened and started the file afresh.
+
+**If regressed.** earslate closes as it opens, every time, and only clearing
+its storage brings it back.
+
+## A start is promoted before anything can end it; a stop is never a foreground start
+
+**Decision.** `TranslatorService` promotes itself to a microphone foreground
+service first, for every start, and checks the microphone permission and the
+consent after that. `TranslatorService.stop` sends a plain start, never a
+foreground one. The service ends only when no command is left for it
+(`ServiceLifetime`; `stopSelfResult` with the newest command's id), and a stop
+waits for the whole of the session it stopped, its close included
+(`SessionCoordinator.lastSession`).
+
+**Symptom.** Android ends an app whose service, started for the foreground,
+stops before it has promoted itself. 0.7.1 asked for a foreground start even to
+stop, and its service stopped before promoting when the microphone permission
+was missing. A promotion Android refused still let a session start; and the end
+of one session could take down the service a newer start was running in.
+
+**Verified against.** `ServiceLifetimeTest`; each case fails with the rule
+broken. On an Android 15 emulator, with the microphone permission revoked, a
+foreground start of the service ended 0.7.1
+(`ForegroundServiceDidNotStartInTimeException`), and so did 0.7.1's own stop.
+0.7.2 was refused the promotion (Android's `SecurityException`, logged) and
+closed nothing, and its stop closed nothing. `WholeAppOnDeviceTest`, a live
+Gemini session from START to STOP and through a phone call, passes.
+
+**If regressed.** The app closes when a session is started or stopped in the
+wrong state, or a session runs on with no service to keep it.
+
+## A new session waits for the last one to finish closing
+
+**Decision.** A session's job stops counting as running the moment its close
+begins, and that close still stops the loudspeaker, gives up the audio focus
+and sets the state to IDLE. A new session waits for it (`previous.join()` in
+`SessionCoordinator.start`), and the service waits for a stopped session to
+close before it starts the next (`awaitClosed`).
+
+**Symptom.** A start made in that moment ran a session whose loudspeaker the
+old close had switched off: it listened, and nothing it translated was heard.
+A start made a moment earlier was taken for the closing session and did nothing.
+
+**Verified against.** `SessionCoordinatorTest`: a start made while the last
+session is still closing ends up listening with its loudspeaker on; a stopped
+session is waited out and the next start runs; a running one is not waited for.
+Each fails with its wait taken out.
+
+**If regressed.** Stop then Start in quick succession gives a session that
+says it is listening and is never heard.
+
+## The tile starts a session that can hear
+
+**Decision.** The Quick Settings tile opens `StartActivity`, an activity with
+nothing to draw that starts the session while it is in front and closes. It
+also opens the app when the microphone permission or the consent is missing.
+From the lock screen the phone asks to be unlocked first, as it does for any
+app a tile opens.
+
+**Symptom.** Since Android 11 a foreground service started from the background
+gets no microphone: Android records silence for it and says so only in its own
+log. The tile started the service itself, so a session started from the tile
+listened to silence. The tile is the way into earslate the help and the
+onboarding describe.
+
+**Verified against.** On an Android 15 emulator, from the home screen
+(`cmd statusbar click-tile`): 0.7.1's start was judged from the background
+(`uidState: CEM`) and Android logged "Foreground service started from
+background can not have location/camera/microphone access"; 0.7.2's was judged
+in front (`uidState: TOP`, `PROC_STATE_TOP`), with no such line.
+`TileOnDeviceTest` starts and stops a live Gemini session from the tile. It
+cannot show the rule itself: under instrumentation the app may start
+activities from the background, which also gives its services the microphone.
+
+**If regressed.** The tile turns on, the notification says listening, and
+nothing anyone says is translated.
+
+## Start from outside the app opens the app when it has to ask
+
+**Decision.** The notification's Start goes straight to the service only when
+the microphone is granted and the consent given
+(`TranslatorService.readyToStart`); otherwise it opens the app with
+REQUEST_START, which asks. A REQUEST_START is acted on once: not again when the
+activity is recreated, nor when earslate is reopened from Recents. The consent
+question is put back after a rotation and is never shown twice.
+
+**Symptom.** Since Android 12 a service started from a notification may not
+open an activity, so the notification's Start before the consent was given did
+nothing. Reopened from Recents, the intent that had once asked for a start
+asked again, and with the consent given it started the microphone service. A
+rotation asked for the microphone twice; the second request came back empty
+and was read as a permanent refusal ("OPEN SETTINGS").
+
+**Verified against.** On an Android 15 emulator: 0.7.1's Start in the
+notification was "Indirect notification activity start (trampoline) ...
+blocked" and nothing showed; 0.7.2's opened the consent question. Reopened
+from Recents (`FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY`) with the consent given,
+0.7.1 started the microphone service and 0.7.2 started nothing. Rotated during
+the microphone request, 0.7.1 logged "Can request only one set of permissions
+at a time" and 0.7.2 asked once.
+
+**If regressed.** A Start that does nothing, or the microphone asked for when
+earslate is only being looked at.
+
+## Calls the platform can refuse are guarded where they are made
+
+**Decision.** Google Play's in-app update calls, the offer to add the Quick
+Settings tile, the clipboard and a keystore read each carry on when the phone
+refuses: the update gate lets the person in when Play cannot answer, a copy
+that failed does not say "copied", a key that cannot be read now is left to be
+read later. A key is sealed off the main thread.
+
+**Symptom.** None reported. Each is a refusal some phones make (no Play Store,
+no tile service, an OEM clipboard, the keystore's own "operation failed"), and
+each would have ended the app on the screen that made the call. Sealing a key
+in a StrongBox chip can hold a screen for seconds.
+
+**Verified against.** Nothing on a phone that refuses, since the emulator
+refuses none of these. Each guard is one catch around one call; the update
+gate's are Folio 1.2.6's.
+
+**If regressed.** A crash on the phones that refuse, or a frozen screen while
+a key is saved.

@@ -2,9 +2,12 @@ package com.classeve.earslate.settings
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.classeve.earslate.session.HeardLanguageTracker
@@ -15,13 +18,22 @@ import com.classeve.earslate.session.TranslatorPolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import java.io.IOException
+
+/**
+ * A settings file the phone damaged is started afresh: read as it was, it
+ * failed every launch from the first screen on.
+ */
+internal val SettingsFileDamaged = ReplaceFileCorruptionHandler { emptyPreferences() }
 
 /** Single app-wide DataStore instance — must be a top-level extension property. */
 val Context.earslateDataStore: DataStore<Preferences> by preferencesDataStore(
     name = "earslate_settings",
+    corruptionHandler = SettingsFileDamaged,
 )
 
 /**
@@ -86,6 +98,9 @@ class SettingsRepository(
      * [awaitSettings] for those. See [translatorPolicy] for what went wrong.
      */
     val settings: StateFlow<UserSettings> = dataStore.data
+        // This flow lives as long as the app, on a scope with no handler: a disk
+        // that will not read shows the defaults instead of ending the process.
+        .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
         .map(::read)
         .stateIn(scope, SharingStarted.Eagerly, defaults)
 
@@ -105,25 +120,26 @@ class SettingsRepository(
     suspend fun translatorPolicy(): TranslatorPolicy = awaitSettings().toTranslatorPolicy()
 
     // ── setters ────────────────────────────────────────────────────────
-    suspend fun setMyLanguage(bcp47: String) {
-        dataStore.edit { prefs -> prefs[Keys.MY_LANGUAGE] = bcp47 }
-    }
+    suspend fun setMyLanguage(bcp47: String) = save { prefs -> prefs[Keys.MY_LANGUAGE] = bcp47 }
 
     /** [bcp47] null resets to Automatic (the session learns the other language). */
-    suspend fun setOtherLanguage(bcp47: String?) {
-        dataStore.edit { prefs ->
-            // A choice made now replaces a pair fixed in 0.5.3 for good.
-            prefs.remove(Keys.FIXED_PAIR_0_5_3)
-            if (bcp47 == null) prefs.remove(Keys.OTHER_LANGUAGE) else prefs[Keys.OTHER_LANGUAGE] = bcp47
+    suspend fun setOtherLanguage(bcp47: String?) = save { prefs ->
+        // A choice made now replaces a pair fixed in 0.5.3 for good.
+        prefs.remove(Keys.FIXED_PAIR_0_5_3)
+        if (bcp47 == null) prefs.remove(Keys.OTHER_LANGUAGE) else prefs[Keys.OTHER_LANGUAGE] = bcp47
+    }
+
+    suspend fun setPersistentNotification(enabled: Boolean) = save { prefs -> prefs[Keys.PERSISTENT_NOTIFICATION] = enabled }
+
+    suspend fun setProvider(provider: TranslationProvider) = save { prefs -> prefs[Keys.PROVIDER] = provider.wireValue }
+
+    // Every setter runs in a screen's coroutine, where a throw ends the app: a full
+    // or failing disk keeps the setting as it was, and the screens show what is stored.
+    private suspend fun save(change: (MutablePreferences) -> Unit) {
+        try {
+            dataStore.edit { change(it) }
+        } catch (_: IOException) {
         }
-    }
-
-    suspend fun setPersistentNotification(enabled: Boolean) {
-        dataStore.edit { prefs -> prefs[Keys.PERSISTENT_NOTIFICATION] = enabled }
-    }
-
-    suspend fun setProvider(provider: TranslationProvider) {
-        dataStore.edit { prefs -> prefs[Keys.PROVIDER] = provider.wireValue }
     }
 
     /**
@@ -137,7 +153,12 @@ class SettingsRepository(
         // decide the user had never chosen a language, and overwrite a real
         // saved choice with the device locale. This method WRITES, so a wrong
         // read is not a stale label — it is silent data loss.
-        val current = awaitSettings()
+        // Unread is not English: a disk that cannot answer leaves the choice alone.
+        val current = try {
+            awaitSettings()
+        } catch (_: IOException) {
+            return
+        }
         if (current.myLanguageBcp47 != "en-US") return
         // The tag, not getLanguage(): before Android 14 that still answers
         // "iw" and "in" for Hebrew and Indonesian.

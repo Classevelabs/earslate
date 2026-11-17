@@ -16,7 +16,6 @@ import com.classeve.earslate.ui.MainActivity
 import com.classeve.earslate.session.RuntimeError
 import com.classeve.earslate.session.RuntimeState
 import com.classeve.earslate.session.SupportedLanguages
-import com.classeve.earslate.session.isActive
 import com.classeve.earslate.settings.OnboardingPrefs
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -31,10 +30,10 @@ import kotlinx.coroutines.launch
  * Foreground service that owns the live translator runtime lifecycle.
  *
  * Responsibilities:
- *   - promote to foreground with a microphone notification on first start
+ *   - promote to foreground with a microphone notification for every start
  *   - route ACTION_START / ACTION_STOP into the SessionCoordinator
  *   - mirror runtime state into the ongoing notification
- *   - demote + stopSelf when the coordinator transitions back to IDLE
+ *   - demote + stop once no command is left for it to act on
  *
  * The service holds no business logic — it is a thin controller over
  * [EarslateRuntime.sessionCoordinator]. It is deliberately NOT sticky: a
@@ -53,29 +52,119 @@ class TranslatorService : Service() {
      */
     private var startJob: Job? = null
 
+    private val lifetime = ServiceLifetime()
+
     override fun onCreate() {
         super.onCreate()
-        // RECORD_AUDIO can be revoked while the ongoing notification (or a QS tile)
-        // still offers a "Start" action. On Android 14+ a microphone-typed
-        // startForeground without the permission throws SecurityException, which
-        // would crash-loop the service under START_STICKY. Bounce to MainActivity
-        // to re-request the permission and bail out cleanly instead.
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            runCatching {
-                startActivity(
-                    Intent(this, MainActivity::class.java)
-                        .setAction(MainActivity.ACTION_REQUEST_START)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                )
-            }
-            stopSelf()
+        NotificationFactory.ensureChannel(this)
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        lifetime.received(startId)
+        when (intent?.action) {
+            ACTION_START -> begin(startId)
+            ACTION_STOP -> end()
+            else -> if (lifetime.free) finishIfIdle()
+        }
+        // NOT sticky. A session is always started by an explicit user action
+        // (button, QS tile, notification), so there is nothing to resume
+        // automatically. Under START_STICKY the system re-created this service
+        // after a process kill with a null intent and a microphone notification
+        // for a session that would never run.
+        return START_NOT_STICKY
+    }
+
+    private fun begin(startId: Int) {
+        // Promoted before anything else, whatever follows: a service started for the
+        // foreground that stops without promoting itself takes the whole app down.
+        if (!promote() || !hasMicrophone(this)) {
+            ask()
+            if (lifetime.free) finish()
             return
         }
-        NotificationFactory.ensureChannel(this)
+        // Play Prominent Disclosure & Consent gate. The QS tile and the
+        // notification's Start check it before they come here, and the main
+        // screen asks before it does; this is the one place every start passes
+        // through, so no microphone audio reaches a provider without consent.
+        // The consent dialog needs a window, which a service does not have.
+        if (!OnboardingPrefs.isAudioDisclosureAccepted(this)) {
+            ask()
+            if (lifetime.free) finish()
+            return
+        }
+        lifetime.opening(startId)
+        // The policy is AWAITED, not read from settings.value.
+        //
+        // This service is reachable with a cold process — the QS tile and
+        // the notification's Start action both call it directly — and the
+        // settings StateFlow is seeded with the default myLanguage of
+        // "en-US" until DataStore's first disk read lands. Reading .value
+        // here would build a session that translates into English rather
+        // than the user's real language, connected and listening and
+        // producing the wrong output, with nothing reporting an error.
+        startJob?.cancel()
+        startJob = scope.launch {
+            // Reading from disk can fail where reading a StateFlow could
+            // not. Starting anyway is not the fallback: a policy built from
+            // defaults is the exact defect this await exists to prevent. So it
+            // says so and stops.
+            val policy = try {
+                EarslateRuntime.settingsRepository(this@TranslatorService).translatorPolicy()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                Log.e(TAG, "could not read settings", t)
+                EarslateRuntime.stateStore.setError(
+                    RuntimeError(
+                        kind = RuntimeError.Kind.UNKNOWN,
+                        message = "Could not read your settings. Try again.",
+                    ),
+                )
+                if (lifetime.ended(startId)) finishIfIdle()
+                return@launch
+            }
+            val coordinator = EarslateRuntime.sessionCoordinator(this@TranslatorService)
+            // A session still closing after a stop finishes first; a start made in
+            // that moment was otherwise taken for the session being closed.
+            coordinator.awaitClosed()
+            // A STOP can arrive while that read is in flight; without this the
+            // session would start immediately after being stopped.
+            coroutineContext.ensureActive()
+            // The service lasts exactly as long as the session. Watching the
+            // state for IDLE is not enough: a session that fails at once goes
+            // there and back between two looks, and the microphone notification
+            // would then never be taken down.
+            coordinator.start(policy).invokeOnCompletion {
+                scope.launch { if (lifetime.ended(startId)) finishIfIdle() }
+            }
+        }
+    }
+
+    private fun end() {
+        startJob?.cancel()
+        startJob = null
+        lifetime.stopped()
+        // Ask the coordinator, which owns the session, rather than the state
+        // store, which only mirrors it. Its teardown counts: a stop arriving in it
+        // otherwise found nothing running and left the service up for good.
+        val coordinator = EarslateRuntime.sessionCoordinator(this)
+        coordinator.stop()
+        val closing = coordinator.lastSession
+        if (closing == null) {
+            finishIfIdle()
+        } else {
+            closing.invokeOnCompletion { scope.launch { if (lifetime.free) finishIfIdle() } }
+        }
+    }
+
+    /**
+     * Into the foreground with the microphone type, as Android requires before
+     * capture. False when Android refuses: no microphone permission (Android 14+)
+     * or a start it does not allow from where the app is.
+     */
+    private fun promote(): Boolean {
         val notification = NotificationFactory.buildTranslatorNotification(
-            this, RuntimeState.IDLE, currentLanguageName(),
+            this, EarslateRuntime.stateStore.state.value, currentLanguageName(),
         )
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -87,138 +176,50 @@ class TranslatorService : Service() {
             } else {
                 startForeground(NotificationFactory.NOTIFICATION_ID, notification)
             }
-        } catch (t: Throwable) {
+        } catch (t: Exception) {
             Log.e(TAG, "startForeground failed", t)
-            stopSelf()
-            return
+            return false
+        }
+        if (stateJob == null) {
+            stateJob = scope.launch {
+                EarslateRuntime.stateStore.state.collect { state ->
+                    // Guarded like NotificationControlService's: an OEM channel quirk
+                    // here would otherwise end the app in the middle of a session.
+                    runCatching {
+                        getSystemService(NotificationManager::class.java)?.notify(
+                            NotificationFactory.NOTIFICATION_ID,
+                            NotificationFactory.buildTranslatorNotification(
+                                this@TranslatorService, state, currentLanguageName(),
+                            ),
+                        )
+                    }.onFailure { Log.w(TAG, "notification update failed: ${it.message}") }
+                }
+            }
         }
         // Warm up the audio device monitor so the UI route indicator populates immediately.
         EarslateRuntime.deviceMonitor(this)
+        return true
+    }
 
-        stateJob = scope.launch {
-            EarslateRuntime.stateStore.state.collect { state ->
-                val manager = getSystemService(NotificationManager::class.java)
-                manager?.notify(
-                    NotificationFactory.NOTIFICATION_ID,
-                    NotificationFactory.buildTranslatorNotification(
-                        this@TranslatorService, state, currentLanguageName(),
-                    ),
-                )
-            }
+    /** The app asks for what a service cannot: the microphone permission, or the consent. */
+    private fun ask() {
+        runCatching {
+            startActivity(
+                Intent(this, MainActivity::class.java)
+                    .setAction(MainActivity.ACTION_REQUEST_START)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
         }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_START -> {
-                // Play Prominent Disclosure & Consent gate. MainActivity.requestStart()
-                // is not the only entry point that can reach here — the QS tile
-                // (TranslatorTileService.safeStart()) and the idle notification's
-                // "Start" action both call TranslatorService.start() directly,
-                // bypassing MainActivity entirely when RECORD_AUDIO is already
-                // granted. This is the single choke point every ACTION_START passes
-                // through before a capture session begins, so the consent check
-                // belongs here, not just in the activity. If the user hasn't
-                // accepted the audio-egress disclosure yet, don't start capture —
-                // bounce to MainActivity (which owns the AlertDialog UI; a Service
-                // has no window to show it in) so requestStart() can show the
-                // disclosure and the user must explicitly agree before any mic
-                // audio reaches Gemini.
-                if (!OnboardingPrefs.isAudioDisclosureAccepted(this)) {
-                    runCatching {
-                        startActivity(
-                            Intent(this, MainActivity::class.java)
-                                .setAction(MainActivity.ACTION_REQUEST_START)
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                        )
-                    }
-                    stopForegroundSmart()
-                    stopSelf()
-                    return START_NOT_STICKY
-                }
-                // The policy is AWAITED, not read from settings.value.
-                //
-                // This service is reachable with a cold process — the QS tile and
-                // the notification's Start action both call it directly — and the
-                // settings StateFlow is seeded with the default myLanguage of
-                // "en-US" until DataStore's first disk read lands. Reading .value
-                // here would build a session that translates into English rather
-                // than the user's real language, connected and listening and
-                // producing the wrong output, with nothing reporting an error.
-                //
-                // Suspending costs one disk read before capture opens. The
-                // session already reports BOOTSTRAPPING through the same state
-                // store, so there is no window where the UI looks idle.
-                startJob?.cancel()
-                startJob = scope.launch {
-                    // Reading from disk can fail where reading a StateFlow could
-                    // not, and this scope has no exception handler — an
-                    // unhandled IOException from a corrupted preferences file
-                    // would take the process down. Starting anyway is not the
-                    // fallback: a policy built from defaults is the exact defect
-                    // this await exists to prevent. So it says so and stops.
-                    val policy = try {
-                        EarslateRuntime.settingsRepository(this@TranslatorService)
-                            .translatorPolicy()
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (t: Throwable) {
-                        Log.e(TAG, "could not read settings", t)
-                        EarslateRuntime.stateStore.setError(
-                            RuntimeError(
-                                kind = RuntimeError.Kind.UNKNOWN,
-                                message = "Could not read your settings. Try again.",
-                            ),
-                        )
-                        stopForegroundSmart()
-                        stopSelf()
-                        return@launch
-                    }
-                    // A STOP can arrive while that read is in flight; without this
-                    // the session would start immediately after being stopped.
-                    // ensureActive() rather than a bare `isActive`, which this
-                    // file already imports for RuntimeState — two extension
-                    // properties of the same name cannot both be imported.
-                    coroutineContext.ensureActive()
-                    // The service lasts exactly as long as the session. Watching
-                    // the state for IDLE is not enough: a session that fails at
-                    // once goes there and back between two looks, and the
-                    // microphone notification would then never be taken down.
-                    EarslateRuntime.sessionCoordinator(this@TranslatorService).start(policy).invokeOnCompletion {
-                        scope.launch {
-                            if (EarslateRuntime.stateStore.state.value == RuntimeState.IDLE) {
-                                Log.i(TAG, "session over; stopping service")
-                                stopForegroundSmart()
-                                stopSelf()
-                            }
-                        }
-                    }
-                }
-            }
-            ACTION_STOP -> {
-                startJob?.cancel()
-                startJob = null
-                // Ask the coordinator, which owns the session, rather than
-                // the state store, which only mirrors it. stop() is safe to
-                // call either way and reports whether there was anything to
-                // stop; when there was, the lifecycle's own teardown drives the
-                // store to IDLE and the collector above stops this service.
-                if (!EarslateRuntime.sessionCoordinator(this).stop()) {
-                    stopForegroundSmart()
-                    stopSelf()
-                }
-            }
-        }
-        // NOT sticky. A session is always started by an explicit user action
-        // (button, QS tile, notification), so there is nothing to resume
-        // automatically. Under START_STICKY the system re-created this service
-        // after a process kill with a null intent: no branch above ran, but
-        // onCreate had already posted the microphone-typed foreground
-        // notification, leaving a permanent "mic in use" notification attached
-        // to a service that would never translate anything and never stop
-        // itself (the IDLE watchdog in onCreate only fires once a session has
-        // actually been seen active).
-        return START_NOT_STICKY
+    private fun finishIfIdle() {
+        if (EarslateRuntime.stateStore.state.value == RuntimeState.IDLE) finish()
+    }
+
+    // By the newest command's id: a command that arrived after it keeps the service.
+    private fun finish() {
+        stopForegroundSmart()
+        stopSelfResult(lifetime.newest)
     }
 
     override fun onDestroy() {
@@ -238,14 +239,7 @@ class TranslatorService : Service() {
         val controlEnabled = runCatching {
             EarslateRuntime.settingsRepository(this).settings.value.persistentNotification
         }.getOrDefault(false)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(
-                if (controlEnabled) STOP_FOREGROUND_DETACH else STOP_FOREGROUND_REMOVE,
-            )
-        } else {
-            @Suppress("DEPRECATION")
-            stopForeground(!controlEnabled)
-        }
+        stopForeground(if (controlEnabled) STOP_FOREGROUND_DETACH else STOP_FOREGROUND_REMOVE)
     }
 
     /** Reads the current target language display name from persisted settings. */
@@ -262,14 +256,31 @@ class TranslatorService : Service() {
         const val ACTION_START = "com.classeve.earslate.action.START"
         const val ACTION_STOP = "com.classeve.earslate.action.STOP"
 
+        fun hasMicrophone(context: Context): Boolean =
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+
+        /**
+         * True when a start from outside the app can go straight to the service.
+         * Otherwise the app has to ask first, and a service started from a
+         * notification or a tile may not open it (Android 12+): such a tap did nothing.
+         */
+        fun readyToStart(context: Context): Boolean =
+            hasMicrophone(context) && OnboardingPrefs.isAudioDisclosureAccepted(context)
+
         fun start(context: Context) {
             val intent = Intent(context, TranslatorService::class.java).setAction(ACTION_START)
             ContextCompat.startForegroundService(context, intent)
         }
 
         fun stop(context: Context) {
-            val intent = Intent(context, TranslatorService::class.java).setAction(ACTION_STOP)
-            ContextCompat.startForegroundService(context, intent)
+            // A plain start, never a foreground one: there is no microphone to promote
+            // for, and a foreground start that ends unpromoted brings the app down.
+            val sent = runCatching {
+                context.startService(Intent(context, TranslatorService::class.java).setAction(ACTION_STOP))
+            }.isSuccess
+            // Refused only in the background, where no service of ours is running.
+            if (!sent) EarslateRuntime.sessionCoordinator(context).stop()
         }
     }
 }

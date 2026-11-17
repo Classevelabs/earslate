@@ -15,6 +15,8 @@ import com.classeve.earslate.ui.captions.CaptionSide
 import com.classeve.earslate.ui.captions.CaptionsStore
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -635,6 +637,76 @@ class SessionCoordinatorTest {
         coordinator.start(TranslatorPolicy(english, otherLanguage = spanish))
         Thread.sleep(200)
         assertEquals(2, sockets.size)
+    }
+
+    // The service waits on this before a start, or a start made while a stop is
+    // still closing the session was taken for that session and did nothing.
+    @Test
+    fun `a session asked to stop can be waited out, and the next start then runs`() {
+        // A loudspeaker slow to let go, so the close takes long enough to be seen.
+        val slow = object : AudioPlaybackEngine by playback {
+            override fun stop(graceful: Boolean) {
+                Thread.sleep(400)
+                playback.stop(graceful)
+            }
+        }
+        val coordinator = start(TranslatorPolicy(english, otherLanguage = spanish), playbackEngine = slow)
+        awaitListening()
+        val closing = coordinator.running
+        assertNotNull(closing)
+        coordinator.stop()
+        // What the service waits on to end itself: the close is part of the session.
+        assertNotNull("the close is still under way", coordinator.lastSession)
+        runBlocking { withTimeout(6_000) { coordinator.awaitClosed() } }
+        assertTrue("the close was waited for", closing!!.isCompleted)
+        assertNull(coordinator.running)
+        assertNull(coordinator.lastSession)
+
+        coordinator.start(TranslatorPolicy(english, otherLanguage = spanish))
+        awaitListening()
+        assertEquals(4, sockets.size)
+    }
+
+    @Test
+    fun `a start made while the last session is still closing is not undone by that close`() {
+        val slow = object : AudioPlaybackEngine by playback {
+            override fun stop(graceful: Boolean) {
+                Thread.sleep(400)
+                playback.stop(graceful)
+            }
+        }
+        val coordinator = start(TranslatorPolicy(english, otherLanguage = spanish), playbackEngine = slow)
+        awaitListening()
+        coordinator.stop()
+        // No longer running, and its loudspeaker not yet let go.
+        await("the first session to stop counting as running") { coordinator.running == null }
+        coordinator.start(TranslatorPolicy(english, otherLanguage = spanish))
+        awaitListening()
+        Thread.sleep(600)
+        assertEquals(RuntimeState.LISTENING, state.state.value)
+        assertTrue("the second session's loudspeaker is on", playback.running)
+        assertEquals(1, focus.held.get())
+    }
+
+    @Test
+    fun `a running session that was not asked to stop is not waited for`() {
+        val coordinator = start(TranslatorPolicy(english, otherLanguage = spanish))
+        awaitListening()
+        runBlocking { withTimeout(500) { coordinator.awaitClosed() } }
+        assertNotNull(coordinator.running)
+    }
+
+    @Test
+    fun `a loudspeaker that fails to stop does not leave a session showing`() {
+        val failing = object : AudioPlaybackEngine by playback {
+            override fun stop(graceful: Boolean) = throw IllegalStateException("the track was already gone")
+        }
+        val coordinator = start(TranslatorPolicy(english, otherLanguage = spanish), playbackEngine = failing)
+        awaitListening()
+        coordinator.stop()
+        await("idle") { state.state.value == RuntimeState.IDLE }
+        assertEquals(0, focus.held.get())
+        assertNull(coordinator.running)
     }
 
     // ── a loudspeaker both people share ─────────────────────────────────

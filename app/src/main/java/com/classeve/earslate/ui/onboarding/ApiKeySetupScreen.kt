@@ -59,7 +59,9 @@ import com.classeve.earslate.ui.components.EmberButton
 import com.classeve.earslate.ui.components.FramedPanel
 import com.classeve.earslate.ui.components.SectionHeader
 import com.classeve.earslate.ui.theme.EarslateTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Where the user chooses a provider and supplies the API key that runs their
@@ -148,7 +150,9 @@ fun ApiKeySetupScreen(
                     // it went to store it — the worst possible instant, and with
                     // no message. Failing closed is right; failing silently and
                     // then crashing is not the same thing.
-                    val stored = runCatching { keys.save(provider, candidate) }
+                    // Off the main thread: making the key can take seconds in a
+                    // StrongBox chip, and the screen froze for all of it.
+                    val stored = withContext(Dispatchers.Default) { runCatching { keys.save(provider, candidate) } }
                     checking = false
                     stored.fold(
                         onSuccess = {

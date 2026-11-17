@@ -117,6 +117,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val ACTION_REQUEST_START = "com.classeve.earslate.action.REQUEST_START"
+        private const val STATE_ASKING_CONSENT = "asking_consent"
     }
 
     // Built with the activity: Play's result launcher must be registered before it starts.
@@ -125,7 +126,10 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
-    ) { _ ->
+    ) { answers ->
+        // Empty when Android dropped this request for one already showing (START
+        // tapped twice): that one's answer is the one that counts.
+        if (answers.isEmpty()) return@registerForActivityResult
         val micOk = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
         if (micOk) {
@@ -156,7 +160,7 @@ class MainActivity : ComponentActivity() {
                 },
             ),
         )
-        if (!canAskAgain) micPermissionPermanentlyDenied = true
+        micPermissionPermanentlyDenied = !canAskAgain
     }
 
     /**
@@ -202,8 +206,14 @@ class MainActivity : ComponentActivity() {
         // Warm up the audio device monitor so route state is populated for the UI.
         EarslateRuntime.deviceMonitor(this)
 
-        // Handle REQUEST_START from TranslatorTileService when permission is missing.
-        handleRequestStartIntent(intent)
+        // Handle REQUEST_START from the tile, the notification or the service. A
+        // recreated activity (rotation, font size) was asked once already, and
+        // puts back the consent question it was showing.
+        if (savedInstanceState == null) {
+            handleRequestStartIntent(intent)
+        } else if (savedInstanceState.getBoolean(STATE_ASKING_CONSENT)) {
+            showAudioEgressDisclosure()
+        }
 
         // Start the persistent notification control service if the user has opted in.
         if (EarslateRuntime.settingsRepository(this).settings.value.persistentNotification) {
@@ -241,6 +251,21 @@ class MainActivity : ComponentActivity() {
      * silently dropped whenever the activity already existed, so tapping the QS
      * tile or the notification's Start action appeared to do nothing.
      */
+    // The consent question, kept to be put back after a rotation and closed with
+    // the activity: left open, its window outlived the activity it belonged to.
+    private var disclosure: AlertDialog? = null
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(STATE_ASKING_CONSENT, disclosure?.isShowing == true)
+    }
+
+    override fun onDestroy() {
+        disclosure?.dismiss()
+        disclosure = null
+        super.onDestroy()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         // Keep getIntent() consistent with what we are about to act on.
@@ -249,7 +274,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleRequestStartIntent(intent: Intent?) {
-        if (intent?.action == ACTION_REQUEST_START) {
+        // Reopened from Recents, the intent that once asked for a start asks again;
+        // the microphone opens only for a request made now.
+        val fromRecents = (intent?.flags ?: 0) and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0
+        if (intent?.action == ACTION_REQUEST_START && !fromRecents) {
             requestStart()
         }
     }
@@ -261,15 +289,19 @@ class MainActivity : ComponentActivity() {
     fun requestAddQuickSettingsTile() {
         if (Build.VERSION.SDK_INT >= 33) {
             val sbm = getSystemService(StatusBarManager::class.java) ?: return
-            sbm.requestAddTileService(
-                ComponentName(this, TranslatorTileService::class.java),
-                getString(R.string.app_name),
-                Icon.createWithResource(this, R.drawable.ic_notification),
-                { /* executor */ it.run() },
-                { resultCode ->
-                    Log.i("MainActivity", "QS tile request result: $resultCode")
-                },
-            )
+            // An offer, never a reason to fail: a phone whose status bar has no
+            // tile service answers by throwing, right after setup completes.
+            runCatching {
+                sbm.requestAddTileService(
+                    ComponentName(this, TranslatorTileService::class.java),
+                    getString(R.string.app_name),
+                    Icon.createWithResource(this, R.drawable.ic_notification),
+                    { /* executor */ it.run() },
+                    { resultCode ->
+                        Log.i("MainActivity", "QS tile request result: $resultCode")
+                    },
+                )
+            }.onFailure { Log.w("MainActivity", "QS tile request refused: ${it.javaClass.simpleName}") }
         }
     }
 
@@ -325,7 +357,10 @@ class MainActivity : ComponentActivity() {
      * Data safety declaration must change with it.
      */
     private fun showAudioEgressDisclosure() {
-        AlertDialog.Builder(this)
+        // A window cannot be added to an activity that is going away, and START
+        // tapped twice stacked two of these.
+        if (isFinishing || isDestroyed || disclosure?.isShowing == true) return
+        disclosure = AlertDialog.Builder(this)
             .setTitle(getString(R.string.audio_disclosure_title))
             .setMessage(getString(R.string.audio_disclosure_body))
             .setCancelable(true)

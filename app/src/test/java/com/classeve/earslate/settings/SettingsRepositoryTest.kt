@@ -7,14 +7,22 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.classeve.earslate.session.TranslationProvider
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import java.io.IOException
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -160,5 +168,57 @@ class SettingsRepositoryTest {
         assertEquals("en-US", fresh.myLanguageBcp47)
         assertNull(fresh.otherLanguageBcp47)
         assertNull(fresh.provider)
+    }
+
+    // ── a disk that lets the app down ─────────────────────────────────────
+
+    @Test
+    fun `a damaged settings file reads as a fresh install and keeps the next choice`() = runBlocking {
+        // A length that runs past the end of the file: the parser refuses it.
+        val file = java.io.File(folder.root, "damaged.preferences_pb").apply { writeBytes(byteArrayOf(0x0A, 0x7F, 0x00, 0x13)) }
+        val settings = SettingsRepository(
+            PreferenceDataStoreFactory.create(corruptionHandler = SettingsFileDamaged, scope = scope) { file },
+            scope,
+        )
+        assertEquals(UserSettings(), settings.awaitSettings())
+        settings.setMyLanguage("hi-IN")
+        assertEquals("hi-IN", settings.awaitSettings().myLanguageBcp47)
+    }
+
+    @Test
+    fun `a disk that fails every read and write does not end the app`() = runBlocking {
+        val thrown = java.util.concurrent.CopyOnWriteArrayList<Throwable>()
+        val app = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, t -> thrown += t })
+        try {
+            val disk = FailingDisk()
+            val settings = SettingsRepository(disk, app)
+            disk.read.await()
+            settings.setMyLanguage("hi-IN")
+            settings.setOtherLanguage("ja-JP")
+            settings.setOtherLanguage(null)
+            settings.setPersistentNotification(true)
+            settings.setProvider(TranslationProvider.OPENAI)
+            settings.initializeFromLocaleIfNeeded(java.util.Locale.FRANCE)
+            // The failed read reaches the app's scope on another thread, if it reaches it at all.
+            delay(300)
+            assertEquals(emptyList<Throwable>(), thrown.toList())
+            assertEquals(UserSettings(), settings.settings.value)
+            assertTrue(app.isActive)
+        } finally {
+            app.cancel()
+        }
+    }
+
+    /** Every read and every write fails, as on a full or broken disk. */
+    private class FailingDisk : DataStore<Preferences> {
+        val read = CompletableDeferred<Unit>()
+
+        override val data: Flow<Preferences> = flow {
+            read.complete(Unit)
+            throw IOException("the disk would not read")
+        }
+
+        override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences =
+            throw IOException("the disk would not write")
     }
 }
