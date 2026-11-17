@@ -7,6 +7,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -181,7 +183,11 @@ fun ApiKeySetupScreen(
             .fillMaxSize()
             .background(EarslateTheme.colors.canvas)
             .padding(padding)
-            .statusBarsPadding(),
+            .statusBarsPadding()
+            // The app draws under the keyboard: without its height the key, once pasted,
+            // left Verify and save out of reach until the keyboard was closed.
+            .consumeWindowInsets(padding)
+            .imePadding(),
     ) {
         Column(
             modifier = Modifier

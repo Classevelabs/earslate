@@ -640,3 +640,19 @@ gate's are Folio 1.2.6's.
 
 **If regressed.** A crash on the phones that refuse, or a frozen screen while
 a key is saved.
+
+## The keyboard leaves the key screen's button in reach
+
+**Decision.** The key screen is padded by the keyboard's height (`imePadding`,
+after the padding the screen already has is marked as used), so the page
+scrolls to "Verify and save" while the keyboard is open.
+
+**Symptom.** earslate draws edge to edge, under the keyboard too. A key pasted
+into the field left "Verify and save" behind the keyboard, and the page could
+not be scrolled to it until the keyboard was closed.
+
+**Verified against.** An Android 15 emulator in 3-button navigation: with the
+keyboard open the button is reached by scrolling; with it closed, the end of
+the screen sits above the navigation bar.
+
+**If regressed.** A new user pastes the key and cannot see how to save it.
