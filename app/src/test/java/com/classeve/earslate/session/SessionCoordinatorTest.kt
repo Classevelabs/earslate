@@ -447,6 +447,58 @@ class SessionCoordinatorTest {
         await("the microphone to be reopened") { capture.starts.get() == 2 && state.state.value == RuntimeState.LISTENING }
     }
 
+    // A phone call does not stop the microphone: it goes on delivering frames,
+    // of silence. The screen said "Listening" for the whole of the call.
+    @Test
+    fun `a microphone taken by a phone call is said so, and listened to again when it is given back`() {
+        start(TranslatorPolicy(english, otherLanguage = spanish))
+        awaitListening()
+        val inbound = socketFor("en")
+
+        capture.taken(byACall = true)
+        await("the call to be noticed") { state.state.value == RuntimeState.MICROPHONE_TAKEN }
+        val before = micFrames(inbound).size
+        repeat(3) { capture.hear(TestAudio.silence(100, rateHz = 16_000)) }
+        assertEquals("the provider is still sent every frame, so its session stays in step", 3, micFrames(inbound).size - before)
+        assertEquals("the session is kept, not started again", 1, capture.starts.get())
+        assertNull(state.lastError.value)
+
+        capture.taken(byACall = false)
+        await("listening again") { state.state.value == RuntimeState.LISTENING }
+    }
+
+    @Test
+    fun `while a call has the microphone, a translation still being played does not make it listening`() {
+        start(TranslatorPolicy(english, otherLanguage = spanish))
+        awaitListening()
+        val inbound = socketFor("en")
+        capture.taken(byACall = true)
+        await("the call to be noticed") { state.state.value == RuntimeState.MICROPHONE_TAKEN }
+
+        inbound.translates("Hola, ¿dónde está la estación?", "es", "Hello, where is the station?")
+        await("the translation to be played") { playback.written.any { it.voiced } }
+        val until = System.currentTimeMillis() + 400
+        while (System.currentTimeMillis() < until) {
+            assertEquals(RuntimeState.MICROPHONE_TAKEN, state.state.value)
+            Thread.sleep(20)
+        }
+    }
+
+    // Whether a call has the microphone is the word of the microphone that is
+    // open now, not of the one the lost connection had.
+    @Test
+    fun `a session started again asks its new microphone, and does not go on believing the old one`() {
+        start(TranslatorPolicy(english, otherLanguage = spanish))
+        awaitListening()
+        capture.taken(byACall = true)
+        await("the call to be noticed") { state.state.value == RuntimeState.MICROPHONE_TAKEN }
+
+        capture.breaks()
+        await("the microphone to be reopened, and listening") {
+            capture.starts.get() == 2 && state.state.value == RuntimeState.LISTENING
+        }
+    }
+
     // Recorded live: the model went quiet for 3.4 s mid-sentence and then carried on.
     @Test
     fun `a provider that pauses for a few seconds has not gone away`() {

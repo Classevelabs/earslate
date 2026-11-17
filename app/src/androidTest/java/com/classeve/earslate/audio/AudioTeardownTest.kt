@@ -1,8 +1,12 @@
 package com.classeve.earslate.audio
 
 import android.Manifest
+import android.content.Context
+import android.media.AudioManager
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.rule.GrantPermissionRule
+import com.classeve.earslate.testing.PhoneCall
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -10,6 +14,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -217,5 +222,60 @@ class AudioTeardownTest {
 
         assertTrue("the second capture delivers: ${second.get()}", second.get() >= 2)
         assertTrue("and the first has stopped", first.get() - firstSoFar <= 1)
+    }
+
+    // ── a phone call ────────────────────────────────────────────────────
+
+    private fun inACall(): Boolean {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        return (context.getSystemService(Context.AUDIO_SERVICE) as AudioManager).mode == AudioManager.MODE_IN_CALL
+    }
+
+    // A call does not stop the record or fail a read. Nothing but this says it has happened.
+    @Test
+    fun aPhoneCallIsSaidToHaveTakenTheMicrophoneAndToHaveGivenItBack() {
+        assumeTrue("the run did not ask for a phone call, or this is a real phone", PhoneCall.wanted)
+        PhoneCall.end()
+        val engine = AndroidAudioCaptureEngine()
+        val taken = CopyOnWriteArrayList<Boolean>()
+        val frames = AtomicInteger()
+        val started = engine.start(16_000, 100, onFrame = { frames.incrementAndGet() }, onError = {}, onTaken = { taken += it })
+        assumeTrue("no usable microphone on this image", started)
+        try {
+            Thread.sleep(800)
+            assertFalse("the microphone is this app's until the call: $taken", taken.lastOrNull() == true)
+
+            PhoneCall.place()
+            await("the call to take the microphone", 30_000) { taken.lastOrNull() == true }
+            val soFar = frames.get()
+            Thread.sleep(600)
+            assertTrue("frames go on arriving through the call", frames.get() > soFar)
+
+            PhoneCall.end()
+            await("the microphone to be given back", 30_000) { taken.lastOrNull() == false }
+        } finally {
+            PhoneCall.end()
+            engine.stop()
+        }
+    }
+
+    @Test
+    fun aMicrophoneOpenedInTheMiddleOfACallIsToldSoToo() {
+        assumeTrue("the run did not ask for a phone call, or this is a real phone", PhoneCall.wanted)
+        PhoneCall.end()
+        val engine = AndroidAudioCaptureEngine()
+        val taken = CopyOnWriteArrayList<Boolean>()
+        try {
+            PhoneCall.place()
+            await("the call to be answered", 30_000) { inACall() }
+            assumeTrue("no usable microphone on this image", engine.start(16_000, 100, onFrame = {}, onError = {}, onTaken = { taken += it }))
+            await("the new microphone to be told a call has it", 30_000) { taken.lastOrNull() == true }
+
+            PhoneCall.end()
+            await("the microphone to be given back", 30_000) { taken.lastOrNull() == false }
+        } finally {
+            PhoneCall.end()
+            engine.stop()
+        }
     }
 }

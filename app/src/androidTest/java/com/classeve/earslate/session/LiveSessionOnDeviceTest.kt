@@ -37,7 +37,13 @@ class LiveSessionOnDeviceTest {
         @Volatile private var onFrame: ((ByteArray) -> Unit)? = null
         @Volatile var sampleRateHz = 0
 
-        override fun start(sampleRateHz: Int, frameMs: Int, onFrame: (ByteArray) -> Unit, onError: () -> Unit): Boolean {
+        override fun start(
+            sampleRateHz: Int,
+            frameMs: Int,
+            onFrame: (ByteArray) -> Unit,
+            onError: () -> Unit,
+            onTaken: (Boolean) -> Unit,
+        ): Boolean {
             this.sampleRateHz = sampleRateHz
             this.onFrame = onFrame
             return true
@@ -120,16 +126,17 @@ class LiveSessionOnDeviceTest {
 
             microphone.play(ByteArray(32_000))
             microphone.play(spanish)
-            // The room stays silent until the model, a few seconds behind, has finished.
+            // The room stays silent until the model, a few seconds behind, has said all of it.
+            // The first caption may be no more than "Hi, good morning."
+            fun english() = captions.settled().joinToString(" ").lowercase()
             val deadline = System.currentTimeMillis() + 25_000
-            while (captions.settled().isEmpty()) {
+            while (!english().let { it.contains("train") || it.contains("station") }) {
                 check(System.currentTimeMillis() < deadline) {
-                    "no caption was committed (state ${state.state.value}, error ${state.lastError.value?.message})"
+                    "the Spanish did not come out in English: \"${english()}\" " +
+                        "(state ${state.state.value}, error ${state.lastError.value?.message})"
                 }
                 microphone.play(ByteArray(3_200))
             }
-            val english = captions.settled().joinToString(" ").lowercase()
-            assertTrue("the Spanish was translated: $english", english.contains("train") || english.contains("station"))
             assertTrue("translated speech came out of the device's audio output", heardSomething)
             assertEquals("es-ES", state.heardLanguage.value?.bcp47)
             assertNull(state.lastError.value)

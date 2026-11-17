@@ -16,6 +16,8 @@ import com.classeve.earslate.service.TranslatorService
 import com.classeve.earslate.session.RuntimeState
 import com.classeve.earslate.settings.OnboardingPrefs
 import com.classeve.earslate.testing.OneKey
+import com.classeve.earslate.testing.PhoneCall
+import com.classeve.earslate.testing.screenNow
 import com.classeve.earslate.ui.MainActivity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -38,6 +40,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * device's own microphone hears, and the run checks that it comes out in
  * English on the screen. Without one, the run checks that the app listens,
  * stays up and stops.
+ *
+ * On an emulator a run can also ask for a phone call (`-e phoneCall true`):
+ * the session is then taken through one, to see that the app says the call has
+ * the microphone and listens again once it is over.
  */
 @RunWith(AndroidJUnit4::class)
 class WholeAppOnDeviceTest {
@@ -52,7 +58,13 @@ class WholeAppOnDeviceTest {
         val frames = AtomicInteger()
         @Volatile var sampleRateHz = 0
 
-        override fun start(sampleRateHz: Int, frameMs: Int, onFrame: (ByteArray) -> Unit, onError: () -> Unit): Boolean {
+        override fun start(
+            sampleRateHz: Int,
+            frameMs: Int,
+            onFrame: (ByteArray) -> Unit,
+            onError: () -> Unit,
+            onTaken: (Boolean) -> Unit,
+        ): Boolean {
             this.sampleRateHz = sampleRateHz
             // Three seconds of the room alone, then the recording, then the room again.
             var at = -sampleRateHz * 2 * 3
@@ -68,7 +80,7 @@ class WholeAppOnDeviceTest {
                 }
                 at += frame.size
                 onFrame(heard)
-            }, onError = onError)
+            }, onError = onError, onTaken = onTaken)
         }
 
         override fun stop() = microphone.stop()
@@ -99,7 +111,7 @@ class WholeAppOnDeviceTest {
             for (i in 0 until node.childCount) search(node.getChild(i))?.let { return it }
             return null
         }
-        return search(automation.rootInActiveWindow)
+        return search(automation.screenNow())
     }
 
     private fun described(description: String) = onScreen { it.contentDescription?.toString() == description }
@@ -166,9 +178,11 @@ class WholeAppOnDeviceTest {
             assertEquals("Gemini is sent 16 kHz", 16_000, microphone.sampleRateHz)
 
             if (spanish.isNotEmpty()) {
-                await("the Spanish to come out as a caption", 60_000) { captions.settled().isNotEmpty() }
-                val english = captions.settled().joinToString(" ").lowercase()
-                assertTrue("the Spanish was translated: $english", english.contains("train") || english.contains("station"))
+                // The model may say "Hi, good morning" as a caption of its own first.
+                await("the Spanish to come out in English, asking for the train station", 60_000) {
+                    val english = captions.settled().joinToString(" ").lowercase()
+                    english.contains("train") || english.contains("station")
+                }
                 assertEquals("es-ES", state.heardLanguage.value?.bcp47)
                 val theirs = state.heardLanguage.value!!.displayName
                 await("the screen to name their language, $theirs", 5_000) { showing(theirs) != null }
@@ -186,6 +200,21 @@ class WholeAppOnDeviceTest {
             assertNull(state.lastError.value)
             assertNull(state.notice.value)
 
+            if (PhoneCall.wanted) {
+                PhoneCall.end()
+                PhoneCall.place()
+                await("the app to say a call has the microphone", 30_000) { state.state.value == RuntimeState.MICROPHONE_TAKEN }
+                assertTrue("the session is kept through the call", serviceRunning())
+                // The call's own screen is in front. The person comes back to the app.
+                context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                val status = context.getString(R.string.status_microphone_taken)
+                await("the screen to say \"$status\"", 10_000) { described("Translator status: $status") != null }
+                await("the screen to say why", 10_000) { showing("cannot hear") != null }
+                PhoneCall.end()
+                await("the app to listen again once the call is over", 30_000) { state.state.value == RuntimeState.LISTENING }
+                assertNull(state.lastError.value)
+            }
+
             tap("stop") { described("Stop translating") }
             await("the session to end", 15_000) { state.state.value == RuntimeState.IDLE }
             await("the service to stop", 10_000) { !serviceRunning() }
@@ -195,6 +224,7 @@ class WholeAppOnDeviceTest {
             assertEquals("the microphone is closed", framesAtStop, microphone.frames.get())
             assertNull(state.lastError.value)
         } finally {
+            if (PhoneCall.wanted) PhoneCall.end()
             TranslatorService.stop(context)
             activity.finish()
         }
